@@ -8,6 +8,7 @@ apt-get update
 # ubuntu 13.04 deps
 sudo apt-get install \
   g++ \
+  cmake
   automake \
   autoconf \
   autoconf-archive \
