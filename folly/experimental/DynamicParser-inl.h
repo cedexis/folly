@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,7 +24,6 @@
  */
 #pragma once
 
-#include <folly/Conv.h>
 #include <boost/function_types/is_member_pointer.hpp>
 #include <boost/function_types/parameter_types.hpp>
 #include <boost/mpl/equal.hpp>
@@ -32,17 +31,20 @@
 #include <boost/mpl/transform.hpp>
 #include <boost/mpl/vector.hpp>
 
+#include <folly/Conv.h>
+
 namespace folly {
 
 // Auto-conversion of key/value based on callback signature, documented in
 // DynamicParser.h.
 namespace detail {
 class IdentifyCallable {
-public:
+ public:
   enum class Kind { Function, MemberFunction };
   template <typename Fn>
   constexpr static Kind getKind() { return test<Fn>(nullptr); }
-private:
+
+ private:
   template <typename Fn>
   using IsMemFn = typename boost::function_types::template is_member_pointer<
     decltype(&Fn::operator())
@@ -77,22 +79,18 @@ using ArgumentTypes =
 // extended.  The comparison deliberately strips cv-qualifieers and
 // reference, leaving that choice up to the caller.
 template <typename Fn, typename... Args>
-constexpr bool hasArgumentTypes() {
-  using HasArgumentTypes = typename boost::mpl::template equal<
-    typename boost::mpl::template transform<
-      typename boost::mpl::template transform<
-        ArgumentTypes<Fn>,
-        typename std::template remove_reference<boost::mpl::_1>
-      >::type,
-      typename std::template remove_cv<boost::mpl::_1>
-    >::type,
-    boost::mpl::vector<Args...>
-  >::type;
-  return HasArgumentTypes::value;
-}
+struct HasArgumentTypes
+    : boost::mpl::template equal<
+          typename boost::mpl::template transform<
+              typename boost::mpl::template transform<
+                  ArgumentTypes<Fn>,
+                  typename std::template remove_reference<boost::mpl::_1>>::
+                  type,
+              typename std::template remove_cv<boost::mpl::_1>>::type,
+          boost::mpl::vector<Args...>>::type {};
 template <typename... Args>
 using EnableForArgTypes =
-  typename std::enable_if<hasArgumentTypes<Args...>(), void>::type;
+    typename std::enable_if<HasArgumentTypes<Args...>::value, void>::type;
 
 // No arguments
 template <typename Fn> EnableForArgTypes<Fn>
@@ -215,7 +213,7 @@ template <typename Fn> EnableForArgTypes<Fn, int64_t, std::string>
 invokeForKeyValue(Fn fn, const folly::dynamic& k, const folly::dynamic& v) {
   fn(k.asInt(), v.asString());
 }
-}  // namespace detail
+} // namespace detail
 
 template <typename Fn>
 void DynamicParser::optional(const folly::dynamic& key, Fn fn) {
@@ -267,11 +265,11 @@ template <typename Fn>
 void DynamicParser::wrapError(const folly::dynamic* lookup_k, Fn fn) {
   try {
     fn();
-  } catch (DynamicParserLogicError& ex) {
+  } catch (DynamicParserLogicError&) {
     // When the parser is misused, we throw all the way up to the user,
     // instead of reporting it as if the input is invalid.
     throw;
-  } catch (DynamicParserParseError& ex) {
+  } catch (DynamicParserParseError&) {
     // We are just bubbling up a parse error for OnError::THROW.
     throw;
   } catch (const std::exception& ex) {
@@ -302,4 +300,4 @@ inline const folly::dynamic& DynamicParser::ParserStack::value() const{
   return *value_;
 }
 
-}  // namespace folly
+} // namespace folly

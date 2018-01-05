@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,9 @@
 
 #pragma once
 
-#include <folly/futures/Promise.h>
 #include <folly/Portability.h>
+#include <folly/executors/InlineExecutor.h>
+#include <folly/futures/Promise.h>
 
 namespace folly {
 
@@ -34,7 +35,7 @@ namespace folly {
  */
 template <class T>
 class SharedPromise {
-public:
+ public:
   SharedPromise() = default;
   ~SharedPromise() = default;
 
@@ -49,6 +50,15 @@ public:
   /**
    * Return a Future tied to the shared core state. Unlike Promise::getFuture,
    * this can be called an unlimited number of times per SharedPromise.
+   */
+  SemiFuture<T> getSemiFuture();
+
+  /**
+   * Return a Future tied to the shared core state. Unlike Promise::getFuture,
+   * this can be called an unlimited number of times per SharedPromise.
+   * NOTE: This function is deprecated. Please use getSemiFuture and pass the
+   *       appropriate executor to .via on the returned SemiFuture to get a
+   *       valid Future where necessary.
    */
   Future<T> getFuture();
 
@@ -107,7 +117,7 @@ public:
 
   bool isFulfilled();
 
-private:
+ private:
   std::mutex mutex_;
   size_t size_{0};
   bool hasValue_{false};
@@ -116,7 +126,7 @@ private:
   std::function<void(exception_wrapper const&)> interruptHandler_;
 };
 
-}
+} // namespace folly
 
 #include <folly/futures/Future.h>
 #include <folly/futures/SharedPromise-inl.h>

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,7 +33,7 @@ intptr_t TimeoutController::registerTimeout(
     }
 
     timeoutHandleBuckets_.emplace_back(
-        duration, folly::make_unique<TimeoutHandleList>());
+        duration, std::make_unique<TimeoutHandleList>());
     return *timeoutHandleBuckets_.back().second;
   }();
 
@@ -104,5 +104,5 @@ void TimeoutController::cancel(intptr_t p) {
     list.pop();
   }
 }
-}
-}
+} // namespace fibers
+} // namespace folly

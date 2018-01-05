@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,20 +19,25 @@
 #include <atomic>
 #include <mutex>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include <folly/Executor.h>
 #include <folly/Function.h>
 #include <folly/MicroSpinLock.h>
 #include <folly/Optional.h>
-#include <folly/futures/Future.h>
-#include <folly/futures/Promise.h>
+#include <folly/ScopeGuard.h>
 #include <folly/Try.h>
+#include <folly/Utility.h>
+#include <folly/futures/FutureException.h>
 #include <folly/futures/detail/FSM.h>
+#include <folly/portability/BitsFunctexcept.h>
 
 #include <folly/io/async/Request.h>
 
-namespace folly { namespace detail {
+namespace folly {
+namespace futures {
+namespace detail {
 
 /*
         OnlyCallback
@@ -72,8 +77,8 @@ enum class State : uint8_t {
 /// first blush, but it's the same principle. In general, as long as the user
 /// doesn't access a Future or Promise object from more than one thread at a
 /// time there won't be any problems.
-template<typename T>
-class Core {
+template <typename T>
+class Core final {
   static_assert(!std::is_void<T>::value,
                 "void futures are not supported. Use Unit instead.");
  public:
@@ -87,6 +92,13 @@ class Core {
       fsm_(State::OnlyResult),
       attached_(1) {}
 
+  template <typename... Args>
+  explicit Core(in_place_t, Args&&... args) noexcept(
+      std::is_nothrow_constructible<T, Args&&...>::value)
+      : result_(in_place, in_place, std::forward<Args>(args)...),
+        fsm_(State::OnlyResult),
+        attached_(1) {}
+
   ~Core() {
     DCHECK(attached_ == 0);
   }
@@ -99,28 +111,8 @@ class Core {
   Core(Core&&) noexcept = delete;
   Core& operator=(Core&&) = delete;
 
-  // Core is assumed to be convertible only if the type is convertible
-  // and the size is the same. This is a compromise for the complexity
-  // of having to make Core truly have a conversion constructor which
-  // would cause various other problems.
-  // If we made Core move constructible then we would need to update the
-  // Promise and Future with the location of the new Core. This is complex
-  // and may be inefficient.
-  // Core should only be modified so that for size(T) == size(U),
-  // sizeof(Core<T>) == size(Core<U>).
-  // This assumption is used as a proxy to make sure that
-  // the members of Core<T> and Core<U> line up so that we can use a
-  // reinterpret cast.
-  template <
-      class U,
-      typename = typename std::enable_if<std::is_convertible<U, T>::value &&
-                                         sizeof(U) == sizeof(T)>::type>
-  static Core<T>* convert(Core<U>* from) {
-    return reinterpret_cast<Core<T>*>(from);
-  }
-
   /// May call from any thread
-  bool hasResult() const {
+  bool hasResult() const noexcept {
     switch (fsm_.getState()) {
       case State::OnlyResult:
       case State::Armed:
@@ -134,7 +126,7 @@ class Core {
   }
 
   /// May call from any thread
-  bool ready() const {
+  bool ready() const noexcept {
     return hasResult();
   }
 
@@ -143,7 +135,7 @@ class Core {
     if (ready()) {
       return *result_;
     } else {
-      throw FutureNotReady();
+      throwFutureNotReady();
     }
   }
 
@@ -169,7 +161,7 @@ class Core {
       case State::OnlyCallback:
       case State::Armed:
       case State::Done:
-        throw std::logic_error("setCallback called twice");
+        std::__throw_logic_error("setCallback called twice");
     FSM_END
 
     // we could always call this, it is an optimization to only call it when
@@ -196,7 +188,7 @@ class Core {
       case State::OnlyResult:
       case State::Armed:
       case State::Done:
-        throw std::logic_error("setResult called twice");
+        std::__throw_logic_error("setResult called twice");
     FSM_END
 
     if (transitionToArmed) {
@@ -259,7 +251,7 @@ class Core {
       interruptLock_.lock();
     }
     if (!interrupt_ && !hasResult()) {
-      interrupt_ = folly::make_unique<exception_wrapper>(std::move(e));
+      interrupt_ = std::make_unique<exception_wrapper>(std::move(e));
       if (interruptHandler_) {
         interruptHandler_(*interrupt_);
       }
@@ -300,7 +292,36 @@ class Core {
     interruptHandler_ = std::move(fn);
   }
 
- protected:
+ private:
+  // Helper class that stores a pointer to the `Core` object and calls
+  // `derefCallback` and `detachOne` in the destructor.
+  class CoreAndCallbackReference {
+   public:
+    explicit CoreAndCallbackReference(Core* core) noexcept : core_(core) {}
+
+    ~CoreAndCallbackReference() {
+      if (core_) {
+        core_->derefCallback();
+        core_->detachOne();
+      }
+    }
+
+    CoreAndCallbackReference(CoreAndCallbackReference const& o) = delete;
+    CoreAndCallbackReference& operator=(CoreAndCallbackReference const& o) =
+        delete;
+
+    CoreAndCallbackReference(CoreAndCallbackReference&& o) noexcept {
+      std::swap(core_, o.core_);
+    }
+
+    Core* getCore() const noexcept {
+      return core_;
+    }
+
+   private:
+    Core* core_{nullptr};
+  };
+
   void maybeCallback() {
     FSM_START(fsm_)
       case State::Armed:
@@ -316,7 +337,8 @@ class Core {
 
   void doCallback() {
     Executor* x = executor_;
-    int8_t priority;
+    // initialize, solely to appease clang's -Wconditional-uninitialized
+    int8_t priority = 0;
     if (x) {
       if (!executorLock_.try_lock()) {
         executorLock_.lock();
@@ -326,53 +348,73 @@ class Core {
       executorLock_.unlock();
     }
 
-    // keep Core alive until callback did its thing
-    ++attached_;
-
     if (x) {
+      exception_wrapper ew;
+      // We need to reset `callback_` after it was executed (which can happen
+      // through the executor or, if `Executor::add` throws, below). The
+      // executor might discard the function without executing it (now or
+      // later), in which case `callback_` also needs to be reset.
+      // The `Core` has to be kept alive throughout that time, too. Hence we
+      // increment `attached_` and `callbackReferences_` by two, and construct
+      // exactly two `CoreAndCallbackReference` objects, which call
+      // `derefCallback` and `detachOne` in their destructor. One will guard
+      // this scope, the other one will guard the lambda passed to the executor.
+      attached_ += 2;
+      callbackReferences_ += 2;
+      CoreAndCallbackReference guard_local_scope(this);
+      CoreAndCallbackReference guard_lambda(this);
       try {
         if (LIKELY(x->getNumPriorities() == 1)) {
-          x->add([this]() mutable {
-            SCOPE_EXIT { detachOne(); };
-            RequestContextScopeGuard rctx(context_);
-            SCOPE_EXIT { callback_ = {}; };
-            callback_(std::move(*result_));
+          x->add([core_ref = std::move(guard_lambda)]() mutable {
+            auto cr = std::move(core_ref);
+            Core* const core = cr.getCore();
+            RequestContextScopeGuard rctx(core->context_);
+            core->callback_(std::move(*core->result_));
           });
         } else {
-          x->addWithPriority([this]() mutable {
-            SCOPE_EXIT { detachOne(); };
-            RequestContextScopeGuard rctx(context_);
-            SCOPE_EXIT { callback_ = {}; };
-            callback_(std::move(*result_));
-          }, priority);
+          x->addWithPriority(
+              [core_ref = std::move(guard_lambda)]() mutable {
+                auto cr = std::move(core_ref);
+                Core* const core = cr.getCore();
+                RequestContextScopeGuard rctx(core->context_);
+                core->callback_(std::move(*core->result_));
+              },
+              priority);
         }
+      } catch (const std::exception& e) {
+        ew = exception_wrapper(std::current_exception(), e);
       } catch (...) {
-        --attached_; // Account for extra ++attached_ before try
+        ew = exception_wrapper(std::current_exception());
+      }
+      if (ew) {
         RequestContextScopeGuard rctx(context_);
-        result_ = Try<T>(exception_wrapper(std::current_exception()));
-        SCOPE_EXIT { callback_ = {}; };
+        result_ = Try<T>(std::move(ew));
         callback_(std::move(*result_));
       }
     } else {
-      SCOPE_EXIT { detachOne(); };
+      attached_++;
+      SCOPE_EXIT {
+        callback_ = {};
+        detachOne();
+      };
       RequestContextScopeGuard rctx(context_);
-      SCOPE_EXIT { callback_ = {}; };
       callback_(std::move(*result_));
     }
   }
 
   void detachOne() {
-    auto a = --attached_;
-    assert(a >= 0);
-    assert(a <= 2);
-    if (a == 0) {
+    auto a = attached_--;
+    assert(a >= 1);
+    if (a == 1) {
       delete this;
     }
   }
 
-  // Core should only be modified so that for size(T) == size(U),
-  // sizeof(Core<T>) == size(Core<U>).
-  // See Core::convert for details.
+  void derefCallback() {
+    if (--callbackReferences_ == 0) {
+      callback_ = {};
+    }
+  }
 
   folly::Function<void(Try<T>&&)> callback_;
   // place result_ next to increase the likelihood that the value will be
@@ -380,6 +422,7 @@ class Core {
   folly::Optional<Try<T>> result_;
   FSM<State> fsm_;
   std::atomic<unsigned char> attached_;
+  std::atomic<unsigned char> callbackReferences_{0};
   std::atomic<bool> active_ {true};
   std::atomic<bool> interruptHandlerSet_ {false};
   folly::MicroSpinLock interruptLock_ {0};
@@ -391,79 +434,28 @@ class Core {
   std::function<void(exception_wrapper const&)> interruptHandler_ {nullptr};
 };
 
-template <typename... Ts>
-struct CollectAllVariadicContext {
-  CollectAllVariadicContext() {}
-  template <typename T, size_t I>
-  inline void setPartialResult(Try<T>& t) {
-    std::get<I>(results) = std::move(t);
-  }
-  ~CollectAllVariadicContext() {
-    p.setValue(std::move(results));
-  }
-  Promise<std::tuple<Try<Ts>...>> p;
-  std::tuple<Try<Ts>...> results;
-  typedef Future<std::tuple<Try<Ts>...>> type;
-};
-
-template <typename... Ts>
-struct CollectVariadicContext {
-  CollectVariadicContext() {}
-  template <typename T, size_t I>
-  inline void setPartialResult(Try<T>& t) {
-    if (t.hasException()) {
-       if (!threw.exchange(true)) {
-         p.setException(std::move(t.exception()));
-       }
-     } else if (!threw) {
-       std::get<I>(results) = std::move(t);
-     }
-  }
-  ~CollectVariadicContext() {
-    if (!threw.exchange(true)) {
-      p.setValue(unwrap(std::move(results)));
-    }
-  }
-  Promise<std::tuple<Ts...>> p;
-  std::tuple<folly::Try<Ts>...> results;
-  std::atomic<bool> threw {false};
-  typedef Future<std::tuple<Ts...>> type;
-
- private:
-  template <typename... Ts2>
-  static std::tuple<Ts...> unwrap(std::tuple<folly::Try<Ts>...>&& o,
-                                  Ts2&&... ts2) {
-    static_assert(sizeof...(ts2) <
-                  std::tuple_size<std::tuple<folly::Try<Ts>...>>::value,
-                  "Non-templated unwrap should be used instead");
-    assert(std::get<sizeof...(ts2)>(o).hasValue());
-
-    return unwrap(std::move(o),
-                  std::forward<Ts2>(ts2)...,
-                  std::move(*std::get<sizeof...(ts2)>(o)));
-  }
-
-  static std::tuple<Ts...> unwrap(std::tuple<folly::Try<Ts>...>&& /* o */,
-                                  Ts&&... ts) {
-    return std::tuple<Ts...>(std::forward<Ts>(ts)...);
-  }
-};
-
 template <template <typename...> class T, typename... Ts>
 void collectVariadicHelper(const std::shared_ptr<T<Ts...>>& /* ctx */) {
   // base case
 }
 
-template <template <typename ...> class T, typename... Ts,
-          typename THead, typename... TTail>
+template <
+    template <typename...> class T,
+    typename... Ts,
+    typename THead,
+    typename... TTail>
 void collectVariadicHelper(const std::shared_ptr<T<Ts...>>& ctx,
                            THead&& head, TTail&&... tail) {
-  head.setCallback_([ctx](Try<typename THead::value_type>&& t) {
-    ctx->template setPartialResult<typename THead::value_type,
-                                   sizeof...(Ts) - sizeof...(TTail) - 1>(t);
+  using ValueType = typename std::decay<THead>::type::value_type;
+  std::forward<THead>(head).setCallback_([ctx](Try<ValueType>&& t) {
+    ctx->template setPartialResult<
+        ValueType,
+        sizeof...(Ts) - sizeof...(TTail)-1>(t);
   });
   // template tail-recursion
   collectVariadicHelper(ctx, std::forward<TTail>(tail)...);
 }
 
-}} // folly::detail
+} // namespace detail
+} // namespace futures
+} // namespace folly

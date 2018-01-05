@@ -12,6 +12,13 @@ AC_INIT([folly], m4_translit(folly_version_str, [:], [.]), [folly@fb.com])
 LT_VERSION=folly_version_str:0
 AC_SUBST([LT_VERSION])
 
+#declare pkg-config variables
+PKG_VERSION=m4_join([.], m4_reverse(m4_translit(folly_version_str, [:], [,])))
+AC_SUBST([PKG_VERSION])
+AC_SUBST([PKG_CXXFLAGS])
+AC_SUBST([PKG_DEPS])
+AC_SUBST([PKG_LIBS])
+
 AC_CONFIG_SRCDIR([Likely.h])
 AC_CONFIG_HEADERS([config.h])
 AX_PREFIX_CONFIG_H([folly-config.h], [folly], [config.h])
@@ -20,13 +27,6 @@ AC_CONFIG_AUX_DIR([build-aux])
 AM_INIT_AUTOMAKE([foreign dist-bzip2 nostdinc subdir-objects])
 
 AC_CONFIG_MACRO_DIR([m4])
-
-AX_CONFIG_FEATURE_DEFAULT_DISABLED
-AX_CONFIG_FEATURE(
-        [deprecated-assoc],
-        [supports deprecated associative containers (hash_map/hash_set)],
-        [HAVE_DEPRECATED_ASSOC],
-        [Define if you want to support deprecated associative containers])
 
 AC_PROG_INSTALL
 AM_PROG_LIBTOOL
@@ -53,6 +53,49 @@ fi
 
 CXXFLAGS="$STD $CXXFLAGS"
 
+# expose required -std option via pkg-config
+PKG_CXXFLAGS=$STD
+
+# See if -Wunknown-warning-option is supported
+AC_MSG_CHECKING(
+  [whether -Wunknown-warning-option is supported])
+AC_CACHE_VAL([folly_cv_cxx_unknown_warning_option_support], [
+  folly_save_CXXFLAGS="$CXXFLAGS"
+  CXXFLAGS="$CXXFLAGS -Werror=unknown-warning-option"
+  AC_COMPILE_IFELSE(
+    [AC_LANG_PROGRAM([[]], [[]])],
+    [
+      # The compiler didn't completely error out on -Werror=unknown-warning-option
+      CXXFLAGS="$CXXFLAGS -Werror=unknown-warning-option -Wthis-is-an-unknown-option-that-should-error"
+      AC_COMPILE_IFELSE(
+        [AC_LANG_PROGRAM([[]], [[]])],
+        [folly_cv_cxx_unknown_warning_option_support=no],
+        [folly_cv_cxx_unknown_warning_option_support=yes])
+    ],
+    [folly_cv_cxx_unknown_warning_option_support=no])
+  CXXFLAGS="$folly_save_CXXFLAGS"])
+AC_MSG_RESULT([$folly_cv_cxx_unknown_warning_option_support])
+
+# See if -Wshadow-local and -Wshadow-compatible-local are supported
+AC_MSG_CHECKING(
+  [whether -Wshadow-local and -Wshadow-compatible-local are supported])
+AC_CACHE_VAL([folly_cv_cxx_shadow_local_support], [
+  folly_save_CXXFLAGS="$CXXFLAGS"
+  CXXFLAGS="$CXXFLAGS -Wshadow-local -Wshadow-compatible-local"
+  if test "$folly_cv_cxx_unknown_warning_option_support" = yes; then
+    CXXFLAGS="$CXXFLAGS -Werror=unknown-warning-option"
+  fi
+  AC_COMPILE_IFELSE(
+    [AC_LANG_PROGRAM([[]], [[]])],
+    [folly_cv_cxx_shadow_local_support=yes],
+    [folly_cv_cxx_shadow_local_support=no])
+  CXXFLAGS="$folly_save_CXXFLAGS"])
+AC_MSG_RESULT([$folly_cv_cxx_shadow_local_support])
+if test "$folly_cv_cxx_shadow_local_support" = yes; then
+  AC_DEFINE([HAVE_SHADOW_LOCAL_WARNINGS], [1],
+  [Define if both -Wshadow-local and -Wshadow-compatible-local are supported.])
+fi
+
 # Checks for glog and gflags
 # There are no symbols with C linkage, so we do a try-run
 AC_HAVE_LIBRARY([gflags],[],[AC_MSG_ERROR(
@@ -75,8 +118,9 @@ AC_CACHE_CHECK(
 )
 
 if test "$folly_cv_prog_cc_gflags" != "yes"; then
-  AC_MSG_ERROR(["libgflags invalid, see config.log for details"])
+  AC_MSG_ERROR(["gflags invalid, see config.log for details"])
 fi
+FB_CHECK_PKG_CONFIG([GFLAGS], [gflags])
 
 AC_HAVE_LIBRARY([glog],[],[AC_MSG_ERROR(
                 [Please install google-glog library])])
@@ -100,11 +144,21 @@ AC_CACHE_CHECK(
 if test "$folly_cv_prog_cc_glog" != "yes"; then
   AC_MSG_ERROR(["libglog invalid, see config.log for details"])
 fi
+FB_CHECK_PKG_CONFIG([GLOG], [libglog])
 
-AC_CHECK_LIB(ssl,
-        SSL_ctrl,
-        [],
-        [AC_MSG_ERROR(["Error: libssl required"])])
+AS_IF(
+  [test "x$OPENSSL_INCLUDES" = "x"],
+  [
+    AX_CHECK_OPENSSL([], [AC_MSG_ERROR(["Error: libssl required"])])
+  ],
+  [
+    # AX_CHECK_OPENSSL doesn't seem to play nice with builds started
+    # via build/bootstrap-osx-homebrew.sh
+    AC_MSG_WARN(["Using existing OpenSSL flags from environment."])
+    PKG_CXXFLAGS="$PKG_CXXFLAGS $OPENSSL_INCLUDES"
+  ]
+)
+FB_CHECK_PKG_CONFIG([OPENSSL], [openssl])
 
 # check for boost libs
 AX_BOOST_BASE([1.51.0], [], [AC_MSG_ERROR(
@@ -122,7 +176,7 @@ AM_PATH_PYTHON
 
 # Checks for header files.
 AC_HEADER_STDC
-AC_CHECK_HEADERS([fcntl.h features.h inttypes.h limits.h sched.h stdint.h stdlib.h string.h sys/time.h unistd.h mutex.h malloc.h byteswap.h bits/functexcept.h bits/c++config.h])
+AC_CHECK_HEADERS([features.h malloc.h bits/functexcept.h bits/c++config.h])
 
 AC_CHECK_HEADER(double-conversion/double-conversion.h, [], [AC_MSG_ERROR(
                 [Couldn't find double-conversion.h, please download from \
@@ -131,18 +185,47 @@ AC_CHECK_LIB([double-conversion],[ceil],[],[AC_MSG_ERROR(
              [Please install double-conversion library])])
 
 AC_CHECK_LIB([event], [event_set], [], [AC_MSG_ERROR([Unable to find libevent])])
+FB_CHECK_PKG_CONFIG([EVENT], [libevent])
 
-AC_CHECK_LIB([jemalloc], [xallocx])
+AC_ARG_WITH([jemalloc], [
+  --with-jemalloc     Whether to make folly jemalloc aware
+],[
+  AC_CHECK_LIB([jemalloc], [xallocx],[
+    AC_DEFINE([USE_JEMALLOC], [1], [Enable jemalloc])
+  ],[
+    AC_MSG_ERROR([--with-jemalloc requested, but jemalloc not found])
+  ])
+])
 
 # Checks for typedefs, structures, and compiler characteristics.
-AC_HEADER_STDBOOL
 AC_C_CONST
 AC_C_INLINE
 AC_TYPE_SIZE_T
 AC_HEADER_TIME
 AC_C_VOLATILE
-AC_CHECK_TYPE([__int128], AC_DEFINE([HAVE_INT128_T], [1], [Define if we have __int128]))
-AC_CHECK_TYPES([ptrdiff_t, pthread_spinlock_t])
+AC_CHECK_TYPE([__int128], [folly_cv_prog_cc_int128=yes],
+    [folly_cv_prog_cc_int128=no])
+if test "$folly_cv_prog_cc_int128" = "yes"; then
+  AC_DEFINE([HAVE_INT128_T], [1], [Define if we have __int128])
+  AC_CACHE_CHECK(
+    [for __int128 type traits],
+    [folly_cv_prog_cc_int128traits],
+    [AC_COMPILE_IFELSE(
+      [AC_LANG_SOURCE([[
+#include <type_traits>
+static_assert(
+  ::std::is_same<::std::make_signed<unsigned __int128>::type, __int128>::value,
+  "signed form of \`unsigned __uint128\` must be \`__int128\`.");
+      ]])],
+      [folly_cv_prog_cc_int128traits=yes],
+      [folly_cv_prog_cc_int128traits=no])
+    ])
+  if test "$folly_cv_prog_cc_int128traits" = "no"; then
+    AC_DEFINE([SUPPLY_MISSING_INT128_TRAITS], [1], [Define if we need the standard integer traits defined for the type `__int128'.])
+  fi
+fi
+
+AC_CHECK_TYPES([pthread_spinlock_t])
 
 AC_CACHE_CHECK(
   [for ifunc support],
@@ -185,37 +268,6 @@ AC_DEFINE_UNQUOTED(
   [Define to "override" if the compiler supports C++11 "override"])
 
 AC_CACHE_CHECK(
-  [for std::this_thread::sleep_for],
-  [folly_cv_func_this_thread_sleep_for],
-  [AC_COMPILE_IFELSE(
-    [AC_LANG_SOURCE[
-      #include <thread>
-      #include <chrono>
-      void func() { std::this_thread::sleep_for(std::chrono::seconds(1)); }]],
-    [folly_cv_func_this_thread_sleep_for=yes],
-    [folly_cv_func_this_thread_sleep_for=no])])
-
-if test "$folly_cv_func_this_thread_sleep_for" = yes; then
-    AC_DEFINE([HAVE_STD__THIS_THREAD__SLEEP_FOR], [1],
-              [Define to 1 if std::this_thread::sleep_for() is defined.])
-fi
-
-AC_CACHE_CHECK(
-  [for constexpr strlen],
-  [folly_cv_func_constexpr_strlen],
-  [AC_COMPILE_IFELSE(
-    [AC_LANG_SOURCE[
-      #include <cstring>
-      static constexpr int val = strlen("foo");]],
-    [folly_cv_func_constexpr_strlen=yes],
-    [folly_cv_func_constexpr_strlen=no])])
-
-if test "$folly_cv_func_constexpr_strlen" = yes; then
-    AC_DEFINE([HAVE_CONSTEXPR_STRLEN], [1],
-              [Define to 1 if strlen(3) is constexpr.])
-fi
-
-AC_CACHE_CHECK(
   [for libc++],
   [folly_cv_lib_libcpp],
   [AC_COMPILE_IFELSE(
@@ -253,11 +305,16 @@ if test "$folly_cv_lib_libatomic" = no; then
                   [Please install the GNU Atomic library])])
 fi
 
+if test "$build_os" = "linux-gnu"; then
+  AC_HAVE_LIBRARY([dl],[],[AC_MSG_ERROR(
+                  [Folly depends on libdl])])
+fi
+
 AC_CACHE_CHECK(
   [for liblinux-vdso support],
   [folly_cv_lib_liblinux_vdso],
   [AC_RUN_IFELSE(
-    [AC_LANG_PROGRAM[
+    [AC_LANG_SOURCE[
       #include <dlfcn.h>
       int main() {
         void *h = dlopen("linux-vdso.so.1", RTLD_LAZY | RTLD_LOCAL | RTLD_NOLOAD);
@@ -274,6 +331,8 @@ AC_CACHE_CHECK(
 if test "$folly_cv_lib_liblinux_vdso" = yes; then
   AC_DEFINE([HAVE_LINUX_VDSO], [1], [Define to 1 if liblinux-vdso is available])
 fi
+
+AC_DEFINE([HAVE_PTHREAD], [1], [Define to 1 if pthread is avaliable])
 
 AC_CACHE_CHECK(
   [for usable std::is_trivially_copyable],
@@ -489,15 +548,24 @@ AC_DEFINE_UNQUOTED(
   [Define to 1 if the compiler has VLA (variable-length array) support,
    otherwise define to 0])
 
+AC_CACHE_CHECK(
+  [for variable template support],
+  [folly_cv_prog_cc_have_variable_templates],
+  [AC_COMPILE_IFELSE(
+    [AC_LANG_SOURCE[
+      template <class> constexpr bool g = true;
+      int main() {}
+    ]],
+    [folly_cv_prog_cc_have_variable_templates=yes],
+    [folly_cv_prog_cc_have_variable_templates=no])])
+
+AM_CONDITIONAL(
+  [HAVE_VARIABLE_TEMPLATES],
+  [test "x${folly_cv_prog_cc_have_variable_templates}" = "xyes"],
+  [Define to 1 if the compiler supports variable templates])
+
 # Checks for library functions.
-AC_CHECK_FUNCS([getdelim \
-                gettimeofday \
-                memmove \
-                memset \
-                pow \
-                strerror \
-                sched_yield \
-                malloc_size \
+AC_CHECK_FUNCS([malloc_size \
                 malloc_usable_size \
                 memrchr \
                 pipe2 \
@@ -509,22 +577,17 @@ AC_CHECK_HEADER([lz4.h], AC_CHECK_LIB([lz4], [LZ4_decompress_safe]))
 AC_CHECK_HEADER([snappy.h], AC_CHECK_LIB([snappy], [main]))
 AC_CHECK_HEADER([zlib.h], AC_CHECK_LIB([z], [main]))
 AC_CHECK_HEADER([lzma.h], AC_CHECK_LIB([lzma], [main]))
-AC_CHECK_HEADER([zstd.h], AC_CHECK_LIB([zstd], [main]))
+AC_CHECK_HEADER([zstd.h], AC_CHECK_LIB([zstd], [ZSTD_compressStream]))
+AC_CHECK_HEADER([bzlib.h], AC_CHECK_LIB([bz2], [main]))
+AC_CHECK_HEADER([linux/membarrier.h], AC_DEFINE([HAVE_LINUX_MEMBARRIER_H], [1], [Define to 1 if membarrier.h is available]))
 
 AC_ARG_ENABLE([follytestmain],
    AS_HELP_STRING([--enable-follytestmain], [enables using main function from folly for tests]),
-   [follytestmain=${enableval}], [follytestmain=no])
+   [use_follytestmain=${enableval}], [use_follytestmain=yes])
 
-use_follytestmain=yes
-if test "x${follytestmain}" = "xyes"; then
-   AC_CHECK_HEADERS([libdwarf.h dwarf.h],, AC_MSG_ERROR([Please install libdwarf development package]))
-   AC_CHECK_HEADERS([libelf.h elf.h],, AC_MSG_ERROR([Please install libelf development package]))
-   AC_CHECK_HEADERS([libunwind.h],, AC_MSG_ERROR([Please install libinwind development package]))
-else
-   AC_CHECK_HEADERS([libdwarf.h dwarf.h],, [use_follytestmain=no])
-   AC_CHECK_HEADERS([libelf.h elf.h],, [use_follytestmain=no])
-   AC_CHECK_HEADERS([libunwind.h],, [use_follytestmain=no])
-fi
+# libdwarf used to install in /usr/include, now installs in /usr/include/libdwarf.
+have_libdwarf=no
+AC_CHECK_HEADERS([libdwarf/dwarf.h dwarf.h], [have_libdwarf=yes])
 
 AC_ARG_ENABLE([mobile],
    AS_HELP_STRING([--enable-mobile],
@@ -535,13 +598,37 @@ AS_IF([test "x${mobile}" = "xyes"], [
               [Define to 1 for compiler guards for mobile targets.])
 ])
 
+AC_ARG_ENABLE([exception-tracer],
+    AS_HELP_STRING([--enable-exception-tracer], [enables building exception tracer]),
+    [build_exception_tracer=${enableval}], [build_exception_tracer=no])
+
+AC_ARG_ENABLE([symbolizer],
+    AS_HELP_STRING([--enable-symbolizer], [try to build symbolizer if possible]),
+    [folly_try_use_symbolizer=${enableval}], [folly_try_use_symbolizer=yes])
+
+folly_use_symbolizer=no
+if test "$folly_try_use_symbolizer" = yes; then
+  if test "$build_os" = "linux-gnu" && test "$have_libdwarf" = yes; then
+      AC_CHECK_HEADER(
+        [elf.h],
+        AC_CHECK_LIB([unwind], [backtrace], [folly_use_symbolizer=yes]),
+      )
+  fi
+fi
+if test "$folly_use_symbolizer" = yes; then
+  AC_DEFINE([USE_SYMBOLIZER], [1], [Define to 1 if we should use the symbolizer in init])
+fi
+
+
 # Include directory that contains "folly" so #include <folly/Foo.h> works
 AM_CPPFLAGS='-I$(top_srcdir)/..'
-AM_CPPFLAGS="$AM_CPPFLAGS $BOOST_CPPFLAGS"
+AM_CPPFLAGS="$AM_CPPFLAGS $BOOST_CPPFLAGS $OPENSSL_INCLUDES"
 AM_LDFLAGS="$AM_LDFLAGS $BOOST_CONTEXT_LIB $BOOST_PROGRAM_OPTIONS_LIB"
 AM_LDFLAGS="$AM_LDFLAGS $BOOST_THREAD_LIB $BOOST_FILESYSTEM_LIB"
 AM_LDFLAGS="$AM_LDFLAGS $BOOST_SYSTEM_LIB $BOOST_REGEX_LIB -lpthread"
 AM_LDFLAGS="$AM_LDFLAGS $BOOST_CHRONO_LIB"
+
+AM_LDFLAGS="$AM_LDFLAGS $OPENSSL_LDFLAGS $OPENSSL_LIBS"
 
 AC_SUBST([AM_CPPFLAGS])
 AC_SUBST([AM_LDFLAGS])
@@ -557,13 +644,30 @@ AM_CONDITIONAL([HAVE_BITS_FUNCTEXCEPT_H], [test "$ac_cv_header_bits_functexcept_
 AM_CONDITIONAL([HAVE_EXTRANDOM_SFMT19937],
                [test "$folly_cv_prog_cc_have_extrandom_sfmt19937" = "yes"])
 AM_CONDITIONAL([FOLLY_TESTMAIN], [test "x${use_follytestmain}" = "xyes"])
+AM_CONDITIONAL([HAVE_LIBDWARF], [test "x${have_libdwarf}" = "xyes"])
 AM_CONDITIONAL([HAVE_BOOST_CONTEXT], [test "x${ax_cv_boost_context}" = "xyes"])
+AM_CONDITIONAL([EXCEPTION_TRACER], [test "x${build_exception_tracer}" = "xyes"])
+AM_CONDITIONAL([USE_SYMBOLIZER], [test "x${folly_use_symbolizer}" = "xyes"])
+
+# remove pkg-config deps from dependent libraries
+# (at least for pkg-config file purposes)
+FB_FILTER_PKG_LIBS([$AM_LDFLAGS $LIBS])
 
 # Output
 AC_CONFIG_FILES([Makefile
+                 chrono/test/Makefile
+                 io/test/Makefile
+                 libfolly.pc
                  test/Makefile
                  test/function_benchmark/Makefile
                  experimental/Makefile
+                 experimental/io/test/Makefile
+                 experimental/logging/Makefile
+                 experimental/logging/example/Makefile
                  experimental/symbolizer/Makefile
-                 init/Makefile])
+                 init/Makefile
+                 stats/test/Makefile])
+
+AM_COND_IF([EXCEPTION_TRACER],
+           [AC_CONFIG_FILES([experimental/exception_tracer/Makefile])])
 AC_OUTPUT

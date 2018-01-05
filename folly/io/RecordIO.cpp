@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -54,7 +54,7 @@ void RecordIOWriter::write(std::unique_ptr<IOBuf> buf) {
   DCHECK_EQ(buf->computeChainDataLength(), totalLength);
 
   // We're going to write.  Reserve space for ourselves.
-  off_t pos = filePos_.fetch_add(totalLength);
+  off_t pos = filePos_.fetch_add(off_t(totalLength));
 
 #if FOLLY_HAVE_PWRITEV
   auto iov = buf->getIov();
@@ -66,7 +66,7 @@ void RecordIOWriter::write(std::unique_ptr<IOBuf> buf) {
 #endif
 
   checkUnixError(bytes, "pwrite() failed");
-  DCHECK_EQ(bytes, totalLength);
+  DCHECK_EQ(size_t(bytes), totalLength);
 }
 
 RecordIOReader::RecordIOReader(File file, uint32_t fileId)
@@ -84,7 +84,7 @@ RecordIOReader::Iterator::Iterator(ByteRange range, uint32_t fileId, off_t pos)
     range_.clear();
   } else {
     recordAndPos_.second = pos;
-    range_.advance(pos);
+    range_.advance(size_t(pos));
     advanceToValid();
   }
 }
@@ -95,12 +95,12 @@ void RecordIOReader::Iterator::advanceToValid() {
     recordAndPos_ = std::make_pair(ByteRange(), off_t(-1));
     range_.clear();  // at end
   } else {
-    size_t skipped = record.begin() - range_.begin();
+    size_t skipped = size_t(record.begin() - range_.begin());
     DCHECK_GE(skipped, headerSize());
     skipped -= headerSize();
     range_.advance(skipped);
     recordAndPos_.first = record;
-    recordAndPos_.second += skipped;
+    recordAndPos_.second += off_t(skipped);
   }
 }
 
@@ -138,7 +138,7 @@ uint64_t dataHash(ByteRange range) {
   return hash::SpookyHashV2::Hash64(range.data(), range.size(), kHashSeed);
 }
 
-}  // namespace
+} // namespace
 
 size_t prependHeader(std::unique_ptr<IOBuf>& buf, uint32_t fileId) {
   if (fileId == 0) {
@@ -165,7 +165,7 @@ size_t prependHeader(std::unique_ptr<IOBuf>& buf, uint32_t fileId) {
   memset(header, 0, sizeof(Header));
   header->magic = detail::Header::kMagic;
   header->fileId = fileId;
-  header->dataLength = lengthAndHash.first;
+  header->dataLength = uint32_t(lengthAndHash.first);
   header->dataHash = lengthAndHash.second;
   header->headerHash = headerHash(*header);
 
@@ -229,6 +229,6 @@ RecordInfo findRecord(ByteRange searchRange,
   return {0, {}};
 }
 
-}  // namespace
+} // namespace recordio_helpers
 
-}  // namespaces
+} // namespace folly

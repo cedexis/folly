@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -42,16 +42,16 @@
 #include <atomic>
 #include <cinttypes>
 #include <cstdlib>
-#include <folly/Portability.h>
 #include <mutex>
-#include <pthread.h>
 #include <type_traits>
 
 #include <glog/logging.h>
-#include <folly/detail/Sleeper.h>
 
-#if !FOLLY_X64 && !FOLLY_A64 && !FOLLY_PPC64
-# error "PicoSpinLock.h is currently x64, aarch64 and ppc64 only."
+#include <folly/Portability.h>
+#include <folly/synchronization/detail/Sleeper.h>
+
+#if !FOLLY_X64 && !FOLLY_AARCH64 && !FOLLY_PPC64
+#error "PicoSpinLock.h is currently x64, aarch64 and ppc64 only."
 #endif
 
 namespace folly {
@@ -69,7 +69,7 @@ namespace folly {
  * have a real constructor because we want this to be a POD type so we
  * can put it into packed structs.
  */
-template<class IntType, int Bit = sizeof(IntType) * 8 - 1>
+template <class IntType, int Bit = sizeof(IntType) * 8 - 1>
 struct PicoSpinLock {
   // Internally we deal with the unsigned version of the type.
   typedef typename std::make_unsigned<IntType>::type UIntType;
@@ -82,7 +82,7 @@ struct PicoSpinLock {
 
  public:
   static const UIntType kLockBitMask_ = UIntType(1) << Bit;
-  UIntType lock_;
+  mutable UIntType lock_;
 
   /*
    * You must call this function before using this class, if you
@@ -94,7 +94,8 @@ struct PicoSpinLock {
    */
   void init(IntType initialValue = 0) {
     CHECK(!(initialValue & kLockBitMask_));
-    lock_ = initialValue;
+    reinterpret_cast<std::atomic<UIntType>*>(&lock_)->store(
+        UIntType(initialValue), std::memory_order_release);
   }
 
   /*
@@ -107,7 +108,10 @@ struct PicoSpinLock {
    * as you normally get.)
    */
   IntType getData() const {
-    return static_cast<IntType>(lock_ & ~kLockBitMask_);
+    auto res = reinterpret_cast<std::atomic<UIntType>*>(&lock_)->load(
+                   std::memory_order_relaxed) &
+        ~kLockBitMask_;
+    return res;
   }
 
   /*
@@ -118,7 +122,10 @@ struct PicoSpinLock {
    */
   void setData(IntType w) {
     CHECK(!(w & kLockBitMask_));
-    lock_ = (lock_ & kLockBitMask_) | w;
+    auto l = reinterpret_cast<std::atomic<UIntType>*>(&lock_);
+    l->store(
+        (l->load(std::memory_order_relaxed) & kLockBitMask_) | w,
+        std::memory_order_relaxed);
   }
 
   /*
@@ -128,7 +135,28 @@ struct PicoSpinLock {
   bool try_lock() const {
     bool ret = false;
 
-#if FOLLY_X64
+#if defined(FOLLY_SANITIZE_THREAD)
+    // TODO: Might be able to fully move to std::atomic when gcc emits lock btr:
+    // https://gcc.gnu.org/bugzilla/show_bug.cgi?id=49244
+    ret =
+        !(reinterpret_cast<std::atomic<UIntType>*>(&lock_)->fetch_or(
+              kLockBitMask_, std::memory_order_acquire) &
+          kLockBitMask_);
+#elif _MSC_VER
+    switch (sizeof(IntType)) {
+      case 2:
+        // There is no _interlockedbittestandset16 for some reason :(
+        ret = _InterlockedOr16(
+            (volatile short*)&lock_, (short)kLockBitMask_) & kLockBitMask_;
+        break;
+      case 4:
+        ret = _interlockedbittestandset((volatile long*)&lock_, Bit);
+        break;
+      case 8:
+        ret = _interlockedbittestandset64((volatile long long*)&lock_, Bit);
+        break;
+    }
+#elif FOLLY_X64
 #define FB_DOBTS(size)                                  \
   asm volatile("lock; bts" #size " %1, (%2); setnc %0"  \
                : "=r" (ret)                             \
@@ -143,8 +171,11 @@ struct PicoSpinLock {
     }
 
 #undef FB_DOBTS
-#elif FOLLY_A64
-    ret = __atomic_fetch_or(&lock_, 1 << Bit, __ATOMIC_SEQ_CST);
+#elif FOLLY_AARCH64
+    using SIntType = typename std::make_signed<UIntType>::type;
+    auto const lock = reinterpret_cast<SIntType*>(&lock_);
+    auto const mask = static_cast<SIntType>(kLockBitMask_);
+    return !(mask & __atomic_fetch_or(lock, mask, __ATOMIC_ACQUIRE));
 #elif FOLLY_PPC64
 #define FB_DOBTS(size)                                 \
     asm volatile("\teieio\n"                           \
@@ -193,7 +224,20 @@ struct PicoSpinLock {
    * integer.
    */
   void unlock() const {
-#if FOLLY_X64
+#ifdef _MSC_VER
+    switch (sizeof(IntType)) {
+      case 2:
+        // There is no _interlockedbittestandreset16 for some reason :(
+        _InterlockedAnd16((volatile short*)&lock_, (short)~kLockBitMask_);
+        break;
+      case 4:
+        _interlockedbittestandreset((volatile long*)&lock_, Bit);
+        break;
+      case 8:
+        _interlockedbittestandreset64((volatile long long*)&lock_, Bit);
+        break;
+    }
+#elif FOLLY_X64
 #define FB_DOBTR(size)                          \
   asm volatile("lock; btr" #size " %0, (%1)"    \
                :                                \
@@ -211,8 +255,11 @@ struct PicoSpinLock {
     }
 
 #undef FB_DOBTR
-#elif FOLLY_A64
-    __atomic_fetch_and(&lock_, ~(1 << Bit), __ATOMIC_SEQ_CST);
+#elif FOLLY_AARCH64
+    using SIntType = typename std::make_signed<UIntType>::type;
+    auto const lock = reinterpret_cast<SIntType*>(&lock_);
+    auto const mask = static_cast<SIntType>(kLockBitMask_);
+    __atomic_fetch_and(lock, ~mask, __ATOMIC_RELEASE);
 #elif FOLLY_PPC64
 #define FB_DOBTR(size)                                 \
     asm volatile("\teieio\n"                           \
@@ -241,4 +288,4 @@ struct PicoSpinLock {
   }
 };
 
-}
+} // namespace folly

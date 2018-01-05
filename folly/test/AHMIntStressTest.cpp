@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,15 +14,14 @@
  * limitations under the License.
  */
 
-#include <gtest/gtest.h>
-
-#include <thread>
 #include <memory>
 #include <mutex>
+#include <thread>
 
 #include <folly/AtomicHashMap.h>
-#include <folly/ScopeGuard.h>
 #include <folly/Memory.h>
+#include <folly/ScopeGuard.h>
+#include <folly/portability/GTest.h>
 
 namespace {
 
@@ -34,7 +33,7 @@ struct MyObject {
 typedef folly::AtomicHashMap<int,std::shared_ptr<MyObject>> MyMap;
 typedef std::lock_guard<std::mutex> Guard;
 
-std::unique_ptr<MyMap> newMap() { return folly::make_unique<MyMap>(100); }
+std::unique_ptr<MyMap> newMap() { return std::make_unique<MyMap>(100); }
 
 struct MyObjectDirectory {
   MyObjectDirectory()
@@ -94,7 +93,7 @@ struct MyObjectDirectory {
   std::shared_ptr<MyMap> prev_;
 };
 
-}
+} // namespace
 
 //////////////////////////////////////////////////////////////////////
 
@@ -109,18 +108,18 @@ TEST(AHMIntStressTest, Test) {
 
   std::vector<std::thread> threads;
   for (int threadId = 0; threadId < 64; ++threadId) {
-    threads.emplace_back(
-      [objs,threadId] {
-        for (int recycles = 0; recycles < 500; ++recycles) {
-          for (int i = 0; i < 10; i++) {
-            auto val = objs->get(i);
-          }
-
-          objs->archive();
+    threads.emplace_back([objs] {
+      for (int recycles = 0; recycles < 500; ++recycles) {
+        for (int i = 0; i < 10; i++) {
+          auto val = objs->get(i);
         }
+
+        objs->archive();
       }
-    );
+    });
   }
 
-  for (auto& t : threads) t.join();
+  for (auto& t : threads) {
+    t.join();
+}
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -94,10 +94,11 @@ folly::dynamic parseBser(const folly::IOBuf*);
 size_t decodePduLength(const folly::IOBuf*);
 
 folly::fbstring toBser(folly::dynamic const&, const serialization_opts&);
-std::unique_ptr<folly::IOBuf> toBserIOBuf(folly::dynamic const&,
-                                          const serialization_opts&);
-}
-}
+std::unique_ptr<folly::IOBuf> toBserIOBuf(
+    folly::dynamic const&,
+    const serialization_opts&);
+} // namespace bser
+} // namespace folly
 
 /* vim:ts=2:sw=2:et:
  */

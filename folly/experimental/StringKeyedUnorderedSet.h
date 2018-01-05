@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,11 +18,15 @@
 
 #pragma once
 
+#include <functional>
 #include <initializer_list>
 #include <memory>
 #include <unordered_set>
+#include <utility>
+
 #include <folly/Range.h>
 #include <folly/experimental/StringKeyedCommon.h>
+#include <folly/hash/Hash.h>
 
 namespace folly {
 
@@ -33,14 +37,15 @@ namespace folly {
  * It uses kind of hack: string pointed by StringPiece is copied when
  * StringPiece is inserted into set
  */
-template <class Hasher = StringPieceHash,
-          class Eq = std::equal_to<StringPiece>,
-          class Alloc = std::allocator<folly::StringPiece>>
+template <
+    class Hasher = Hash,
+    class Eq = std::equal_to<StringPiece>,
+    class Alloc = std::allocator<folly::StringPiece>>
 class BasicStringKeyedUnorderedSet
     : private std::unordered_set<StringPiece, Hasher, Eq, Alloc> {
   using Base = std::unordered_set<StringPiece, Hasher, Eq, Alloc>;
 
-public:
+ public:
   typedef typename Base::key_type key_type;
   typedef typename Base::value_type value_type;
   typedef typename Base::hasher hasher;
@@ -155,9 +160,11 @@ public:
   using Base::cbegin;
   using Base::cend;
   using Base::find;
+  using Base::count;
 
-  bool operator==(const BasicStringKeyedUnorderedSet& rhs) const {
-    const Base& lhs = *this;
+  bool operator==(const BasicStringKeyedUnorderedSet& other) const {
+    Base const& lhs = *this;
+    Base const& rhs = static_cast<Base const&>(other);
     return lhs == rhs;
   }
 
@@ -209,6 +216,10 @@ public:
   using Base::bucket_size;
   using Base::bucket;
 
+  void swap(BasicStringKeyedUnorderedSet& other) & {
+    return Base::swap(other);
+  }
+
   ~BasicStringKeyedUnorderedSet() {
     // Here we assume that unordered_set doesn't use keys in destructor
     for (auto& it : *this) {
@@ -219,4 +230,4 @@ public:
 
 typedef BasicStringKeyedUnorderedSet<> StringKeyedUnorderedSet;
 
-} // folly
+} // namespace folly

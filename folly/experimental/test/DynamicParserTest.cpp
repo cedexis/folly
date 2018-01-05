@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,10 +25,9 @@
 #include <folly/Optional.h>
 #include <folly/experimental/DynamicParser.h>
 #include <folly/experimental/TestUtil.h>
-#include <gtest/gtest.h>
+#include <folly/portability/GTest.h>
 
 using namespace folly;
-using dynamic = folly::dynamic;
 
 // NB Auto-conversions are exercised by all the tests, there's not a great
 // reason to test all of them explicitly, since any uncaught bugs will fail
@@ -192,15 +191,15 @@ TEST(TestDynamicParser, AllParserFeaturesSuccess) {
   p.required(4, [&](const dynamic& v) {
     EXPECT_EQ(4, p.key().getInt());
     EXPECT_EQ(v, p.value());
-    p.optional("bools", [&](const std::string& k, const dynamic& v) {
+    p.optional("bools", [&](const std::string& k, const dynamic& v2) {
       EXPECT_EQ(std::string("bools"), k);
       EXPECT_EQ(k, p.key().getString());
-      EXPECT_EQ(v, p.value());
-      p.arrayItems([&](int64_t k, bool v) {
+      EXPECT_EQ(v2, p.value());
+      p.arrayItems([&](int64_t k, bool v3) {
         EXPECT_EQ(bools.size(), k);
         EXPECT_EQ(k, p.key().getInt());
-        EXPECT_EQ(v, p.value().asBool());
-        bools.push_back(v);
+        EXPECT_EQ(v3, p.value().asBool());
+        bools.push_back(v3);
       });
     });
   });

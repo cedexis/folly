@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 #pragma once
 
 #include <folly/Traits.h>
-#include <folly/portability/Memory.h>
+#include <folly/functional/Invoke.h>
 
 #include <cstddef>
 #include <cstdlib>
@@ -25,6 +25,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 namespace folly {
@@ -37,29 +38,28 @@ namespace folly {
  * @author Xu Ning (xning@fb.com)
  */
 
-#if __cplusplus >= 201402L ||                                              \
-    (defined __cpp_lib_make_unique && __cpp_lib_make_unique >= 201304L) || \
-    (defined(_MSC_VER) && _MSC_VER >= 1900)
+#if __cplusplus >= 201402L || __cpp_lib_make_unique >= 201304L || \
+    (__ANDROID__ && __cplusplus >= 201300L) || _MSC_VER >= 1900
 
 /* using override */ using std::make_unique;
 
 #else
 
-template<typename T, typename... Args>
+template <typename T, typename... Args>
 typename std::enable_if<!std::is_array<T>::value, std::unique_ptr<T>>::type
 make_unique(Args&&... args) {
   return std::unique_ptr<T>(new T(std::forward<Args>(args)...));
 }
 
 // Allows 'make_unique<T[]>(10)'. (N3690 s20.9.1.4 p3-4)
-template<typename T>
+template <typename T>
 typename std::enable_if<std::is_array<T>::value, std::unique_ptr<T>>::type
 make_unique(const size_t n) {
   return std::unique_ptr<T>(new typename std::remove_extent<T>::type[n]());
 }
 
 // Disallows 'make_unique<T[10]>()'. (N3690 s20.9.1.4 p5)
-template<typename T, typename... Args>
+template <typename T, typename... Args>
 typename std::enable_if<
   std::extent<T>::value != 0, std::unique_ptr<T>>::type
 make_unique(Args&&...) = delete;
@@ -88,7 +88,9 @@ make_unique(Args&&...) = delete;
 
 template <typename T, void(*f)(T*)>
 struct static_function_deleter {
-  void operator()(T* t) { f(t); }
+  void operator()(T* t) const {
+    f(t);
+  }
 };
 
 /**
@@ -107,11 +109,45 @@ struct static_function_deleter {
  *
  *  Useful when `T` is long, such as:
  *
- *      using T = foobar::cpp2::FooBarServiceAsyncClient;
+ *      using T = foobar::FooBarAsyncClient;
  */
 template <typename T, typename D>
 std::shared_ptr<T> to_shared_ptr(std::unique_ptr<T, D>&& ptr) {
   return std::shared_ptr<T>(std::move(ptr));
+}
+
+/**
+ *  to_weak_ptr
+ *
+ *  Make a weak_ptr and return it from a shared_ptr without specifying the
+ *  template type parameter and letting the compiler deduce it.
+ *
+ *  So you can write this:
+ *
+ *      auto wptr = to_weak_ptr(getSomethingShared<T>());
+ *
+ *  Instead of this:
+ *
+ *      auto wptr = weak_ptr<T>(getSomethingShared<T>());
+ *
+ *  Useful when `T` is long, such as:
+ *
+ *      using T = foobar::FooBarAsyncClient;
+ */
+template <typename T>
+std::weak_ptr<T> to_weak_ptr(const std::shared_ptr<T>& ptr) {
+  return std::weak_ptr<T>(ptr);
+}
+
+struct SysBufferDeleter {
+  void operator()(void* p) const {
+    ::free(p);
+  }
+};
+
+using SysBufferUniquePtr = std::unique_ptr<void, SysBufferDeleter>;
+inline SysBufferUniquePtr allocate_sys_buffer(size_t size) {
+  return SysBufferUniquePtr(::malloc(size));
 }
 
 /**
@@ -131,7 +167,9 @@ class SysAlloc {
  public:
   void* allocate(size_t size) {
     void* p = ::malloc(size);
-    if (!p) throw std::bad_alloc();
+    if (!p) {
+      throw std::bad_alloc();
+    }
     return p;
   }
   void deallocate(void* p) {
@@ -277,7 +315,7 @@ class allocator_delete
 {
   typedef typename std::remove_reference<Allocator>::type allocator_type;
 
-public:
+ public:
   typedef typename Allocator::pointer pointer;
 
   allocator_delete() = default;
@@ -300,31 +338,31 @@ public:
   }
 
   void operator()(pointer p) const {
-    if (!p) return;
+    if (!p) {
+      return;
+    }
     const_cast<allocator_delete*>(this)->destroy(p);
     const_cast<allocator_delete*>(this)->deallocate(p, 1);
   }
 };
 
-template <typename T, typename Allocator>
-class is_simple_allocator {
-  FOLLY_CREATE_HAS_MEMBER_FN_TRAITS(has_destroy, destroy);
+namespace detail {
 
-  typedef typename std::remove_const<
-    typename std::remove_reference<Allocator>::type
-  >::type allocator;
-  typedef typename std::remove_reference<T>::type value_type;
-  typedef value_type* pointer;
+FOLLY_CREATE_MEMBER_INVOKE_TRAITS(destroy_invoke_traits, destroy);
 
-public:
-  constexpr static bool value = !has_destroy<allocator, void(pointer)>::value
-    && !has_destroy<allocator, void(void*)>::value;
-};
+} // namespace detail
+
+template <typename Allocator, typename Value>
+using is_simple_allocator =
+    Negation<detail::destroy_invoke_traits::is_invocable<Allocator, Value*>>;
 
 template <typename T, typename Allocator>
 struct as_stl_allocator {
   typedef typename std::conditional<
-    is_simple_allocator<T, Allocator>::value,
+    is_simple_allocator<
+      typename std::remove_reference<Allocator>::type,
+      typename std::remove_reference<T>::type
+    >::value,
     folly::StlAllocator<
       typename std::remove_reference<Allocator>::type,
       typename std::remove_reference<T>::type
@@ -335,7 +373,10 @@ struct as_stl_allocator {
 
 template <typename T, typename Allocator>
 typename std::enable_if<
-  is_simple_allocator<T, Allocator>::value,
+  is_simple_allocator<
+    typename std::remove_reference<Allocator>::type,
+    typename std::remove_reference<T>::type
+  >::value,
   folly::StlAllocator<
     typename std::remove_reference<Allocator>::type,
     typename std::remove_reference<T>::type
@@ -349,7 +390,10 @@ typename std::enable_if<
 
 template <typename T, typename Allocator>
 typename std::enable_if<
-  !is_simple_allocator<T, Allocator>::value,
+  !is_simple_allocator<
+    typename std::remove_reference<Allocator>::type,
+    typename std::remove_reference<T>::type
+  >::value,
   typename std::remove_reference<Allocator>::type
 >::type make_stl_allocator(Allocator&& allocator) {
   return std::move(allocator);
@@ -367,7 +411,10 @@ struct AllocatorUniquePtr {
   typedef std::unique_ptr<T,
     folly::allocator_delete<
       typename std::conditional<
-        is_simple_allocator<T, Allocator>::value,
+        is_simple_allocator<
+          typename std::remove_reference<Allocator>::type,
+          typename std::remove_reference<T>::type
+        >::value,
         folly::StlAllocator<typename std::remove_reference<Allocator>::type, T>,
         typename std::remove_reference<Allocator>::type
       >::type
@@ -417,4 +464,93 @@ std::shared_ptr<T> allocate_shared(Allocator&& allocator, Args&&... args) {
  */
 template <class T> struct IsArenaAllocator : std::false_type { };
 
-}  // namespace folly
+/*
+ * folly::enable_shared_from_this
+ *
+ * To be removed once C++17 becomes a minimum requirement for folly.
+ */
+#if __cplusplus >= 201700L || \
+    __cpp_lib_enable_shared_from_this >= 201603L
+
+// Guaranteed to have std::enable_shared_from_this::weak_from_this(). Prefer
+// type alias over our own class.
+/* using override */ using std::enable_shared_from_this;
+
+#else
+
+/**
+ * Extends std::enabled_shared_from_this. Offers weak_from_this() to pre-C++17
+ * code. Use as drop-in replacement for std::enable_shared_from_this.
+ *
+ * C++14 has no direct means of creating a std::weak_ptr, one must always
+ * create a (temporary) std::shared_ptr first. C++17 adds weak_from_this() to
+ * std::enable_shared_from_this to avoid that overhead. Alas code that must
+ * compile under different language versions cannot call
+ * std::enable_shared_from_this::weak_from_this() directly. Hence this class.
+ *
+ * @example
+ *   class MyClass : public folly::enable_shared_from_this<MyClass> {};
+ *
+ *   int main() {
+ *     std::shared_ptr<MyClass> sp = std::make_shared<MyClass>();
+ *     std::weak_ptr<MyClass> wp = sp->weak_from_this();
+ *   }
+ */
+template <typename T>
+class enable_shared_from_this : public std::enable_shared_from_this<T> {
+ public:
+  constexpr enable_shared_from_this() noexcept = default;
+
+  std::weak_ptr<T> weak_from_this() noexcept {
+    return weak_from_this_<T>(this);
+  }
+
+  std::weak_ptr<T const> weak_from_this() const noexcept {
+    return weak_from_this_<T>(this);
+  }
+
+ private:
+  // Uses SFINAE to detect and call
+  // std::enable_shared_from_this<T>::weak_from_this() if available. Falls
+  // back to std::enable_shared_from_this<T>::shared_from_this() otherwise.
+  template <typename U>
+  auto weak_from_this_(std::enable_shared_from_this<U>* base_ptr)
+  noexcept -> decltype(base_ptr->weak_from_this()) {
+    return base_ptr->weak_from_this();
+  }
+
+  template <typename U>
+  auto weak_from_this_(std::enable_shared_from_this<U> const* base_ptr)
+  const noexcept -> decltype(base_ptr->weak_from_this()) {
+    return base_ptr->weak_from_this();
+  }
+
+  template <typename U>
+  std::weak_ptr<U> weak_from_this_(...) noexcept {
+    try {
+      return this->shared_from_this();
+    } catch (std::bad_weak_ptr const&) {
+      // C++17 requires that weak_from_this() on an object not owned by a
+      // shared_ptr returns an empty weak_ptr. Sadly, in C++14,
+      // shared_from_this() on such an object is undefined behavior, and there
+      // is nothing we can do to detect and handle the situation in a portable
+      // manner. But in case a compiler is nice enough to implement C++17
+      // semantics of shared_from_this() and throws a bad_weak_ptr, we catch it
+      // and return an empty weak_ptr.
+      return std::weak_ptr<U>{};
+    }
+  }
+
+  template <typename U>
+  std::weak_ptr<U const> weak_from_this_(...) const noexcept {
+    try {
+      return this->shared_from_this();
+    } catch (std::bad_weak_ptr const&) {
+      return std::weak_ptr<U const>{};
+    }
+  }
+};
+
+#endif
+
+} // namespace folly

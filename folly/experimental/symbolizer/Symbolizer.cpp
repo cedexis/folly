@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2012-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,158 +16,41 @@
 
 #include <folly/experimental/symbolizer/Symbolizer.h>
 
+#include <link.h>
+
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
-#include <limits.h>
-#include <unistd.h>
 
-#ifdef __GNUC__
+#ifdef __GLIBCXX__
 #include <ext/stdio_filebuf.h>
 #include <ext/stdio_sync_filebuf.h>
 #endif
 
 #include <folly/Conv.h>
 #include <folly/FileUtil.h>
+#include <folly/Memory.h>
 #include <folly/ScopeGuard.h>
 #include <folly/String.h>
 
-#include <folly/experimental/symbolizer/Elf.h>
 #include <folly/experimental/symbolizer/Dwarf.h>
+#include <folly/experimental/symbolizer/Elf.h>
 #include <folly/experimental/symbolizer/LineReader.h>
+#include <folly/portability/Unistd.h>
 
+/*
+ * This is declared in `link.h' on Linux platforms, but apparently not on the
+ * Mac version of the file.  It's harmless to declare again, in any case.
+ *
+ * Note that declaring it with `extern "C"` results in linkage conflicts.
+ */
+extern struct r_debug _r_debug;
 
 namespace folly {
 namespace symbolizer {
 
 namespace {
-
-/**
- * Read a hex value.
- */
-uintptr_t readHex(StringPiece& sp) {
-  uintptr_t val = 0;
-  const char* p = sp.begin();
-  for (; p != sp.end(); ++p) {
-    unsigned int v;
-    if (*p >= '0' && *p <= '9') {
-      v = (*p - '0');
-    } else if (*p >= 'a' && *p <= 'f') {
-      v = (*p - 'a') + 10;
-    } else if (*p >= 'A' && *p <= 'F') {
-      v = (*p - 'A') + 10;
-    } else {
-      break;
-    }
-    val = (val << 4) + v;
-  }
-  sp.assign(p, sp.end());
-  return val;
-}
-
-/**
- * Skip over non-space characters.
- */
-void skipNS(StringPiece& sp) {
-  const char* p = sp.begin();
-  for (; p != sp.end() && (*p != ' ' && *p != '\t'); ++p) { }
-  sp.assign(p, sp.end());
-}
-
-/**
- * Skip over space and tab characters.
- */
-void skipWS(StringPiece& sp) {
-  const char* p = sp.begin();
-  for (; p != sp.end() && (*p == ' ' || *p == '\t'); ++p) { }
-  sp.assign(p, sp.end());
-}
-
-/**
- * Parse a line from /proc/self/maps
- */
-bool parseProcMapsLine(StringPiece line,
-                       uintptr_t& from,
-                       uintptr_t& to,
-                       uintptr_t& fileOff,
-                       bool& isSelf,
-                       StringPiece& fileName) {
-  isSelf = false;
-  // from     to       perm offset   dev   inode             path
-  // 00400000-00405000 r-xp 00000000 08:03 35291182          /bin/cat
-  if (line.empty()) {
-    return false;
-  }
-
-  // Remove trailing newline, if any
-  if (line.back() == '\n') {
-    line.pop_back();
-  }
-
-  // from
-  from = readHex(line);
-  if (line.empty() || line.front() != '-') {
-    return false;
-  }
-  line.pop_front();
-
-  // to
-  to = readHex(line);
-  if (line.empty() || line.front() != ' ') {
-    return false;
-  }
-  line.pop_front();
-
-  // perms
-  skipNS(line);
-  if (line.empty() || line.front() != ' ') {
-    return false;
-  }
-  line.pop_front();
-
-  uintptr_t fileOffset = readHex(line);
-  if (line.empty() || line.front() != ' ') {
-    return false;
-  }
-  line.pop_front();
-  // main mapping starts at 0 but there can be multi-segment binary
-  // such as
-  // from     to       perm offset   dev   inode             path
-  // 00400000-00405000 r-xp 00000000 08:03 54011424          /bin/foo
-  // 00600000-00605000 r-xp 00020000 08:03 54011424          /bin/foo
-  // 00800000-00805000 r-xp 00040000 08:03 54011424          /bin/foo
-  // if the offset > 0, this indicates to the caller that the baseAddress
-  // need to be used for undo relocation step.
-  fileOff = fileOffset;
-
-  // dev
-  skipNS(line);
-  if (line.empty() || line.front() != ' ') {
-    return false;
-  }
-  line.pop_front();
-
-  // inode
-  skipNS(line);
-  if (line.empty() || line.front() != ' ') {
-    return false;
-  }
-
-  // if inode is 0, such as in case of ANON pages, there should be atleast
-  // one white space before EOL
-  skipWS(line);
-  if (line.empty()) {
-    // There will be no fileName for ANON text pages
-    // if the parsing came this far without a fileName, then from/to address
-    // may contain text in ANON pages.
-    isSelf = true;
-    fileName.clear();
-    return true;
-  }
-
-  fileName = line;
-  return true;
-}
 
 ElfCache* defaultElfCache() {
   static constexpr size_t defaultCapacity = 500;
@@ -175,10 +58,12 @@ ElfCache* defaultElfCache() {
   return cache;
 }
 
-}  // namespace
+} // namespace
 
-void SymbolizedFrame::set(const std::shared_ptr<ElfFile>& file,
-                          uintptr_t address) {
+void SymbolizedFrame::set(
+    const std::shared_ptr<ElfFile>& file,
+    uintptr_t address,
+    Dwarf::LocationInfoMode mode) {
   clear();
   found = true;
 
@@ -191,19 +76,18 @@ void SymbolizedFrame::set(const std::shared_ptr<ElfFile>& file,
   file_ = file;
   name = file->getSymbolName(sym);
 
-  Dwarf(file.get()).findAddress(address, location);
+  Dwarf(file.get()).findAddress(address, location, mode);
 }
 
+Symbolizer::Symbolizer(ElfCacheBase* cache, Dwarf::LocationInfoMode mode)
+    : cache_(cache ? cache : defaultElfCache()), mode_(mode) {}
 
-Symbolizer::Symbolizer(ElfCacheBase* cache)
-  : cache_(cache ?: defaultElfCache()) {
-}
-
-void Symbolizer::symbolize(const uintptr_t* addresses,
-                           SymbolizedFrame* frames,
-                           size_t addressCount) {
+void Symbolizer::symbolize(
+    const uintptr_t* addresses,
+    SymbolizedFrame* frames,
+    size_t addrCount) {
   size_t remaining = 0;
-  for (size_t i = 0; i < addressCount; ++i) {
+  for (size_t i = 0; i < addrCount; ++i) {
     auto& frame = frames[i];
     if (!frame.found) {
       ++remaining;
@@ -211,101 +95,59 @@ void Symbolizer::symbolize(const uintptr_t* addresses,
     }
   }
 
-  if (remaining == 0) {  // we're done
+  if (remaining == 0) { // we're done
     return;
   }
 
-  int fd = openNoInt("/proc/self/maps", O_RDONLY);
-  if (fd == -1) {
+  if (_r_debug.r_version != 1) {
     return;
   }
 
-  char selfFile[PATH_MAX + 8];
+  char selfPath[PATH_MAX + 8];
   ssize_t selfSize;
-  if ((selfSize = readlink("/proc/self/exe", selfFile, PATH_MAX + 1)) == -1) {
-    // something terribly wrong
+  if ((selfSize = readlink("/proc/self/exe", selfPath, PATH_MAX + 1)) == -1) {
+    // Something has gone terribly wrong.
     return;
   }
-  selfFile[selfSize] = '\0';
+  selfPath[selfSize] = '\0';
 
-  char buf[PATH_MAX + 100];  // Long enough for any line
-  LineReader reader(fd, buf, sizeof(buf));
+  for (auto lmap = _r_debug.r_map; lmap != nullptr && remaining != 0;
+       lmap = lmap->l_next) {
+    // The empty string is used in place of the filename for the link_map
+    // corresponding to the running executable.  Additionally, the `l_addr' is
+    // 0 and the link_map appears to be first in the list---but none of this
+    // behavior appears to be documented, so checking for the empty string is
+    // as good as anything.
+    auto const objPath = lmap->l_name[0] != '\0' ? lmap->l_name : selfPath;
 
-  while (remaining != 0) {
-    StringPiece line;
-    if (reader.readLine(line) != LineReader::kReading) {
-      break;
-    }
-
-    // Parse line
-    uintptr_t from;
-    uintptr_t to;
-    uintptr_t fileOff;
-    uintptr_t base;
-    bool isSelf = false; // fileName can potentially be '/proc/self/exe'
-    StringPiece fileName;
-    if (!parseProcMapsLine(line, from, to, fileOff, isSelf, fileName)) {
+    auto const elfFile = cache_->getFile(objPath);
+    if (!elfFile) {
       continue;
     }
 
-    base = from;
-    bool first = true;
-    std::shared_ptr<ElfFile> elfFile;
+    // Get the address at which the object is loaded.  We have to use the ELF
+    // header for the running executable, since its `l_addr' is zero, but we
+    // should use `l_addr' for everything else---in particular, if the object
+    // is position-independent, getBaseAddress() (which is p_vaddr) will be 0.
+    auto const base =
+        lmap->l_addr != 0 ? lmap->l_addr : elfFile->getBaseAddress();
 
-    // case of text on ANON?
-    // Recompute from/to/base from the executable
-    if (isSelf && fileName.empty()) {
-      elfFile = cache_->getFile(selfFile);
-
-      if (elfFile != nullptr) {
-        auto textSection = elfFile->getSectionByName(".text");
-        base = elfFile->getBaseAddress();
-        from = textSection->sh_addr;
-        to = from + textSection->sh_size;
-        fileName = selfFile;
-        first = false; // no need to get this file again from the cache
-      }
-    }
-
-    // See if any addresses are here
-    for (size_t i = 0; i < addressCount; ++i) {
+    for (size_t i = 0; i < addrCount && remaining != 0; ++i) {
       auto& frame = frames[i];
       if (frame.found) {
         continue;
       }
 
-      uintptr_t address = addresses[i];
+      auto const addr = addresses[i];
+      // Get the unrelocated, ELF-relative address.
+      auto const adjusted = addr - base;
 
-      if (from > address || address >= to) {
-        continue;
+      if (elfFile->getSectionContainingAddress(adjusted)) {
+        frame.set(elfFile, adjusted, mode_);
+        --remaining;
       }
-
-      // Found
-      frame.found = true;
-      --remaining;
-
-      // Open the file on first use
-      if (first) {
-        first = false;
-        elfFile = cache_->getFile(fileName);
-
-        // Need to get the correct base address as from
-        // when fileOff > 0
-        if (fileOff && elfFile != nullptr) {
-          base = elfFile->getBaseAddress();
-        }
-      }
-
-      if (!elfFile) {
-        continue;
-      }
-
-      // Undo relocation
-      frame.set(elfFile, address - base);
     }
   }
-
-  closeNoInt(fd);
 }
 
 namespace {
@@ -313,7 +155,7 @@ constexpr char kHexChars[] = "0123456789abcdef";
 constexpr auto kAddressColor = SymbolizePrinter::Color::BLUE;
 constexpr auto kFunctionColor = SymbolizePrinter::Color::PURPLE;
 constexpr auto kFileColor = SymbolizePrinter::Color::DEFAULT;
-}  // namespace
+} // namespace
 
 constexpr char AddressFormatter::bufTemplate[];
 constexpr std::array<const char*, SymbolizePrinter::Color::NUM>
@@ -343,7 +185,9 @@ void SymbolizePrinter::print(uintptr_t address, const SymbolizedFrame& frame) {
     return;
   }
 
-  SCOPE_EXIT { color(Color::DEFAULT); };
+  SCOPE_EXIT {
+    color(Color::DEFAULT);
+  };
 
   if (!(options_ & NO_FRAME_ADDRESS)) {
     color(kAddressColor);
@@ -353,8 +197,8 @@ void SymbolizePrinter::print(uintptr_t address, const SymbolizedFrame& frame) {
   }
 
   const char padBuf[] = "                       ";
-  folly::StringPiece pad(padBuf,
-                         sizeof(padBuf) - 1 - (16 - 2 * sizeof(uintptr_t)));
+  folly::StringPiece pad(
+      padBuf, sizeof(padBuf) - 1 - (16 - 2 * sizeof(uintptr_t)));
 
   color(kFunctionColor);
   if (!frame.found) {
@@ -402,24 +246,25 @@ void SymbolizePrinter::print(uintptr_t address, const SymbolizedFrame& frame) {
 }
 
 void SymbolizePrinter::color(SymbolizePrinter::Color color) {
-  if ((options_ & COLOR) == 0 &&
-      ((options_ & COLOR_IF_TTY) == 0 || !isTty_)) {
+  if ((options_ & COLOR) == 0 && ((options_ & COLOR_IF_TTY) == 0 || !isTty_)) {
     return;
   }
-  if (color < 0 || color >= kColorMap.size()) {
+  if (static_cast<size_t>(color) >= kColorMap.size()) { // catches underflow too
     return;
   }
   doPrint(kColorMap[color]);
 }
 
-void SymbolizePrinter::println(uintptr_t address,
-                               const SymbolizedFrame& frame) {
+void SymbolizePrinter::println(
+    uintptr_t address,
+    const SymbolizedFrame& frame) {
   print(address, frame);
   doPrint("\n");
 }
 
-void SymbolizePrinter::printTerse(uintptr_t address,
-                                  const SymbolizedFrame& frame) {
+void SymbolizePrinter::printTerse(
+    uintptr_t address,
+    const SymbolizedFrame& frame) {
   if (frame.found && frame.name && frame.name[0] != '\0') {
     char demangledBuf[2048] = {0};
     demangle(frame.name, demangledBuf, sizeof(demangledBuf));
@@ -439,9 +284,10 @@ void SymbolizePrinter::printTerse(uintptr_t address,
   }
 }
 
-void SymbolizePrinter::println(const uintptr_t* addresses,
-                               const SymbolizedFrame* frames,
-                               size_t frameCount) {
+void SymbolizePrinter::println(
+    const uintptr_t* addresses,
+    const SymbolizedFrame* frames,
+    size_t frameCount) {
   for (size_t i = 0; i < frameCount; ++i) {
     println(addresses[i], frames[i]);
   }
@@ -466,36 +312,34 @@ int getFD(const std::ios& stream) {
       return sbuf->fd();
     }
   }
-#endif  // __GNUC__
+#endif // __GNUC__
   return -1;
 }
 
 bool isColorfulTty(int options, int fd) {
   if ((options & SymbolizePrinter::TERSE) != 0 ||
-      (options & SymbolizePrinter::COLOR_IF_TTY) == 0 ||
-      fd < 0 || !::isatty(fd)) {
+      (options & SymbolizePrinter::COLOR_IF_TTY) == 0 || fd < 0 ||
+      !::isatty(fd)) {
     return false;
   }
   auto term = ::getenv("TERM");
   return !(term == nullptr || term[0] == '\0' || strcmp(term, "dumb") == 0);
 }
 
-}  // anonymous namespace
+} // namespace
 
 OStreamSymbolizePrinter::OStreamSymbolizePrinter(std::ostream& out, int options)
-  : SymbolizePrinter(options, isColorfulTty(options, getFD(out))),
-    out_(out) {
-}
+    : SymbolizePrinter(options, isColorfulTty(options, getFD(out))),
+      out_(out) {}
 
 void OStreamSymbolizePrinter::doPrint(StringPiece sp) {
   out_ << sp;
 }
 
 FDSymbolizePrinter::FDSymbolizePrinter(int fd, int options, size_t bufferSize)
-  : SymbolizePrinter(options, isColorfulTty(options, fd)),
-    fd_(fd),
-    buffer_(bufferSize ? IOBuf::create(bufferSize) : nullptr) {
-}
+    : SymbolizePrinter(options, isColorfulTty(options, fd)),
+      fd_(fd),
+      buffer_(bufferSize ? IOBuf::create(bufferSize) : nullptr) {}
 
 FDSymbolizePrinter::~FDSymbolizePrinter() {
   flush();
@@ -523,9 +367,8 @@ void FDSymbolizePrinter::flush() {
 }
 
 FILESymbolizePrinter::FILESymbolizePrinter(FILE* file, int options)
-  : SymbolizePrinter(options, isColorfulTty(options, fileno(file))),
-    file_(file) {
-}
+    : SymbolizePrinter(options, isColorfulTty(options, fileno(file))),
+      file_(file) {}
 
 void FILESymbolizePrinter::doPrint(StringPiece sp) {
   fwrite(sp.data(), 1, sp.size(), file_);
@@ -535,5 +378,49 @@ void StringSymbolizePrinter::doPrint(StringPiece sp) {
   buf_.append(sp.data(), sp.size());
 }
 
-}  // namespace symbolizer
-}  // namespace folly
+StackTracePrinter::StackTracePrinter(size_t minSignalSafeElfCacheSize, int fd)
+    : fd_(fd),
+      elfCache_(std::max(countLoadedElfFiles(), minSignalSafeElfCacheSize)),
+      printer_(
+          fd,
+          SymbolizePrinter::COLOR_IF_TTY,
+          size_t(64) << 10), // 64KiB
+      addresses_(std::make_unique<FrameArray<kMaxStackTraceDepth>>()) {}
+
+void StackTracePrinter::flush() {
+  printer_.flush();
+  fsyncNoInt(fd_);
+}
+
+void StackTracePrinter::printStackTrace(bool symbolize) {
+  SCOPE_EXIT {
+    flush();
+  };
+
+  // Skip the getStackTrace frame
+  if (!getStackTraceSafe(*addresses_)) {
+    print("(error retrieving stack trace)\n");
+  } else if (symbolize) {
+    // Do our best to populate location info, process is going to terminate,
+    // so performance isn't critical.
+    Symbolizer symbolizer(&elfCache_, Dwarf::LocationInfoMode::FULL);
+    symbolizer.symbolize(*addresses_);
+
+    // Skip the top 2 frames:
+    // getStackTraceSafe
+    // StackTracePrinter::printStackTrace (here)
+    //
+    // Leaving signalHandler on the stack for clarity, I think.
+    printer_.println(*addresses_, 2);
+  } else {
+    print("(safe mode, symbolizer not available)\n");
+    AddressFormatter formatter;
+    for (size_t i = 0; i < addresses_->frameCount; ++i) {
+      print(formatter.format(addresses_->addresses[i]));
+      print("\n");
+    }
+  }
+}
+
+} // namespace symbolizer
+} // namespace folly

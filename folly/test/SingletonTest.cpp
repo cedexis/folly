@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,16 +16,21 @@
 
 #include <thread>
 
+#include <boost/thread/barrier.hpp>
+#include <glog/logging.h>
+
 #include <folly/Singleton.h>
-#include <folly/Subprocess.h>
 #include <folly/experimental/io/FsUtil.h>
 #include <folly/io/async/EventBase.h>
+#include <folly/portability/GMock.h>
+#include <folly/portability/GTest.h>
 #include <folly/test/SingletonTestStructs.h>
 
-#include <glog/logging.h>
-#include <gmock/gmock.h>
-#include <gtest/gtest.h>
-#include <boost/thread/barrier.hpp>
+#ifndef _MSC_VER
+#include <folly/Subprocess.h>
+#endif
+
+FOLLY_GCC_DISABLE_WARNING("-Wdeprecated-declarations")
 
 using namespace folly;
 
@@ -171,13 +176,11 @@ TEST(Singleton, NaughtyUsage) {
   SingletonNaughtyUsage2<Watchdog> watchdog_singleton;
 
   // double registration
-  EXPECT_DEATH([]() { SingletonNaughtyUsage2<Watchdog> watchdog_singleton; }(),
-               "");
+  EXPECT_DEATH([]() { SingletonNaughtyUsage2<Watchdog> w2; }(), "");
   vault2.destroyInstances();
 
   // double registration after destroy
-  EXPECT_DEATH([]() { SingletonNaughtyUsage2<Watchdog> watchdog_singleton; }(),
-               "");
+  EXPECT_DEATH([]() { SingletonNaughtyUsage2<Watchdog> w3; }(), "");
 }
 
 struct SharedPtrUsageTag {};
@@ -199,7 +202,18 @@ TEST(Singleton, SharedPtrUsage) {
   auto& vault = *SingletonVault::singleton<SharedPtrUsageTag>();
 
   EXPECT_EQ(vault.registeredSingletonCount(), 0);
-  SingletonSharedPtrUsage<Watchdog> watchdog_singleton;
+  std::vector<std::unique_ptr<Watchdog>> watchdog_instances;
+  SingletonSharedPtrUsage<Watchdog> watchdog_singleton(
+      [&] {
+        watchdog_instances.push_back(std::make_unique<Watchdog>());
+        return watchdog_instances.back().get();
+      },
+      [&](Watchdog* ptr) {
+        // Make sure that only second instance is destroyed. First instance is
+        // expected to be leaked.
+        EXPECT_EQ(watchdog_instances[1].get(), ptr);
+        watchdog_instances[1].reset();
+      });
   EXPECT_EQ(vault.registeredSingletonCount(), 1);
 
   SingletonSharedPtrUsage<ChildWatchdog> child_watchdog_singleton;
@@ -248,8 +262,9 @@ TEST(Singleton, SharedPtrUsage) {
     auto start_time = std::chrono::steady_clock::now();
     vault.destroyInstances();
     auto duration = std::chrono::steady_clock::now() - start_time;
-    EXPECT_TRUE(duration > std::chrono::seconds{4} &&
-                duration < std::chrono::seconds{6});
+    EXPECT_TRUE(
+        duration > std::chrono::seconds{4} &&
+        duration < std::chrono::seconds{folly::kIsSanitizeAddress ? 30 : 6});
   }
   EXPECT_EQ(vault.registeredSingletonCount(), 4);
   EXPECT_EQ(vault.livingSingletonCount(), 0);
@@ -390,8 +405,8 @@ template <typename T, typename Tag = detail::DefaultTag>
 using SingletonCreationError = Singleton<T, Tag, CreationErrorTag>;
 
 TEST(Singleton, SingletonCreationError) {
-  SingletonVault::singleton<CreationErrorTag>();
   SingletonCreationError<ErrorConstructor> error_once_singleton;
+  SingletonVault::singleton<CreationErrorTag>()->registrationComplete();
 
   // first time should error out
   EXPECT_THROW(error_once_singleton.try_get(), std::runtime_error);
@@ -408,6 +423,7 @@ using SingletonConcurrencyStress = Singleton <T, Tag, ConcurrencyStressTag>;
 TEST(Singleton, SingletonConcurrencyStress) {
   auto& vault = *SingletonVault::singleton<ConcurrencyStressTag>();
   SingletonConcurrencyStress<Slowpoke> slowpoke_singleton;
+  vault.registrationComplete();
 
   std::vector<std::thread> ts;
   for (size_t i = 0; i < 100; ++i) {
@@ -432,7 +448,7 @@ TEST(Singleton, SingletonConcurrencyStress) {
 
 namespace {
 struct EagerInitSyncTag {};
-}
+} // namespace
 template <typename T, typename Tag = detail::DefaultTag>
 using SingletonEagerInitSync = Singleton<T, Tag, EagerInitSyncTag>;
 TEST(Singleton, SingletonEagerInitSync) {
@@ -450,7 +466,7 @@ TEST(Singleton, SingletonEagerInitSync) {
 
 namespace {
 struct EagerInitAsyncTag {};
-}
+} // namespace
 template <typename T, typename Tag = detail::DefaultTag>
 using SingletonEagerInitAsync = Singleton<T, Tag, EagerInitAsyncTag>;
 TEST(Singleton, SingletonEagerInitAsync) {
@@ -484,7 +500,7 @@ class TestEagerInitParallelExecutor : public folly::Executor {
     }
   }
 
-  virtual ~TestEagerInitParallelExecutor() override {
+  ~TestEagerInitParallelExecutor() override {
     for (auto eb : eventBases_) {
       eb->runInEventBaseThread([eb] { eb->terminateLoopSoon(); });
     }
@@ -493,9 +509,9 @@ class TestEagerInitParallelExecutor : public folly::Executor {
     }
   }
 
-  virtual void add(folly::Func func) override {
+  void add(folly::Func func) override {
     const auto index = (counter_ ++) % eventBases_.size();
-    eventBases_[index]->add(func);
+    eventBases_[index]->add(std::move(func));
   }
 
  private:
@@ -503,11 +519,11 @@ class TestEagerInitParallelExecutor : public folly::Executor {
   std::vector<std::shared_ptr<std::thread>> threads_;
   std::atomic<size_t> counter_ {0};
 };
-}  // namespace
+} // namespace
 
 namespace {
 struct EagerInitParallelTag {};
-}
+} // namespace
 template <typename T, typename Tag = detail::DefaultTag>
 using SingletonEagerInitParallel = Singleton<T, Tag, EagerInitParallelTag>;
 TEST(Singleton, SingletonEagerInitParallel) {
@@ -582,16 +598,30 @@ TEST(Singleton, MockTest) {
 
   // If serial_count value is the same, then singleton was not replaced.
   EXPECT_NE(serial_count_first, serial_count_mock);
+
+  // Override existing mock using make_mock one more time
+  SingletonMock<Watchdog>::make_mock();
+
+  EXPECT_EQ(vault.registeredSingletonCount(), 1);
+  int serial_count_mock2 = SingletonMock<Watchdog>::try_get()->serial_number;
+
+  // If serial_count value is the same, then singleton was not replaced.
+  EXPECT_NE(serial_count_first, serial_count_mock2);
+  EXPECT_NE(serial_count_mock, serial_count_mock2);
+
+  vault.destroyInstances();
 }
 
+#ifndef _MSC_VER
+// Subprocess isn't currently supported under MSVC.
 TEST(Singleton, DoubleRegistrationLogging) {
   const auto basename = "singleton_double_registration";
   const auto sub = fs::executable_path().remove_filename() / basename;
   auto p = Subprocess(
       std::vector<std::string>{sub.string()},
       Subprocess::Options()
-          .stdin(Subprocess::CLOSE)
-          .stdout(Subprocess::CLOSE)
+          .stdinFd(Subprocess::CLOSE)
+          .stdoutFd(Subprocess::CLOSE)
           .pipeStderr()
           .closeOtherFds());
   auto err = p.communicate("").second;
@@ -599,4 +629,151 @@ TEST(Singleton, DoubleRegistrationLogging) {
   EXPECT_EQ(ProcessReturnCode::KILLED, res.state());
   EXPECT_EQ(SIGABRT, res.killSignal());
   EXPECT_THAT(err, testing::StartsWith("Double registration of singletons"));
+}
+#endif
+
+// Singleton using a non default constructor test/example:
+struct X {
+  X() : X(-1, "unset") {}
+  X(int a1, std::string a2) : a1(a1), a2(a2) {
+    LOG(INFO) << "X(" << a1 << "," << a2 << ")";
+  }
+  const int a1;
+  const std::string a2;
+};
+
+folly::Singleton<X> singleton_x([]() { return new X(42, "foo"); });
+
+TEST(Singleton, CustomCreator) {
+  X x1;
+  std::shared_ptr<X> x2p = singleton_x.try_get();
+  EXPECT_NE(nullptr, x2p);
+  EXPECT_NE(x1.a1, x2p->a1);
+  EXPECT_NE(x1.a2, x2p->a2);
+  EXPECT_EQ(42, x2p->a1);
+  EXPECT_EQ(std::string("foo"), x2p->a2);
+}
+
+struct ConcurrentCreationDestructionTag {};
+template <typename T, typename Tag = detail::DefaultTag>
+using SingletonConcurrentCreationDestruction =
+    Singleton<T, Tag, ConcurrentCreationDestructionTag>;
+
+folly::Baton<> slowpokeNeedySingletonBaton;
+
+struct SlowpokeNeedySingleton {
+  SlowpokeNeedySingleton() {
+    slowpokeNeedySingletonBaton.post();
+    /* sleep override */ std::this_thread::sleep_for(
+        std::chrono::milliseconds(100));
+    auto unused =
+        SingletonConcurrentCreationDestruction<NeededSingleton>::try_get();
+    EXPECT_NE(unused, nullptr);
+  }
+};
+
+TEST(Singleton, ConcurrentCreationDestruction) {
+  auto& vault = *SingletonVault::singleton<ConcurrentCreationDestructionTag>();
+  SingletonConcurrentCreationDestruction<NeededSingleton> neededSingleton;
+  SingletonConcurrentCreationDestruction<SlowpokeNeedySingleton> needySingleton;
+  vault.registrationComplete();
+
+  std::thread needyThread([&] { needySingleton.try_get(); });
+
+  slowpokeNeedySingletonBaton.wait();
+
+  vault.destroyInstances();
+
+  needyThread.join();
+}
+
+struct MainThreadDestructorTag {};
+template <typename T, typename Tag = detail::DefaultTag>
+using SingletonMainThreadDestructor =
+    Singleton<T, Tag, MainThreadDestructorTag>;
+
+struct ThreadLoggingSingleton {
+  ThreadLoggingSingleton() {
+    initThread = std::this_thread::get_id();
+  }
+
+  ~ThreadLoggingSingleton() {
+    destroyThread = std::this_thread::get_id();
+  }
+
+  static std::thread::id initThread;
+  static std::thread::id destroyThread;
+};
+std::thread::id ThreadLoggingSingleton::initThread{};
+std::thread::id ThreadLoggingSingleton::destroyThread{};
+
+TEST(Singleton, MainThreadDestructor) {
+  auto& vault = *SingletonVault::singleton<MainThreadDestructorTag>();
+  SingletonMainThreadDestructor<ThreadLoggingSingleton> singleton;
+
+  vault.registrationComplete();
+  EXPECT_EQ(std::thread::id(), ThreadLoggingSingleton::initThread);
+
+  singleton.try_get();
+  EXPECT_EQ(std::this_thread::get_id(), ThreadLoggingSingleton::initThread);
+
+  std::thread t([instance = singleton.try_get()] {
+    /* sleep override */ std::this_thread::sleep_for(
+        std::chrono::milliseconds{100});
+  });
+
+  EXPECT_EQ(std::thread::id(), ThreadLoggingSingleton::destroyThread);
+
+  vault.destroyInstances();
+  EXPECT_EQ(std::this_thread::get_id(), ThreadLoggingSingleton::destroyThread);
+
+  t.join();
+}
+
+TEST(Singleton, DoubleMakeMockAfterTryGet) {
+  // to keep track of calls to ctor and dtor below
+  struct Counts {
+    size_t ctor = 0;
+    size_t dtor = 0;
+  };
+
+  // a test type which keeps track of its ctor and dtor calls
+  struct VaultTag {};
+  struct PrivateTag {};
+  struct Object {
+    explicit Object(Counts& counts) : counts_(counts) {
+      ++counts_.ctor;
+    }
+    ~Object() {
+      ++counts_.dtor;
+    }
+    Counts& counts_;
+  };
+  using SingletonObject = Singleton<Object, PrivateTag, VaultTag>;
+
+  // register everything
+  Counts counts;
+  auto& vault = *SingletonVault::singleton<VaultTag>();
+  auto new_object = [&] { return new Object(counts); };
+  SingletonObject object_(new_object);
+  vault.registrationComplete();
+
+  // no eager inits, nada (sanity)
+  EXPECT_EQ(0, counts.ctor);
+  EXPECT_EQ(0, counts.dtor);
+
+  // explicit request, ctor
+  SingletonObject::try_get();
+  EXPECT_EQ(1, counts.ctor);
+  EXPECT_EQ(0, counts.dtor);
+
+  // first make_mock, dtor (ctor is lazy)
+  SingletonObject::make_mock(new_object);
+  EXPECT_EQ(1, counts.ctor);
+  EXPECT_EQ(1, counts.dtor);
+
+  // second make_mock, nada (dtor already ran, ctor is lazy)
+  SingletonObject::make_mock(new_object);
+  EXPECT_EQ(1, counts.ctor);
+  EXPECT_EQ(1, counts.dtor);
 }

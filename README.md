@@ -70,11 +70,31 @@ Folly is published on Github at https://github.com/facebook/folly
 
 #### Dependencies
 
-folly requires gcc 4.8+ and a version of boost compiled with C++11 support.
+folly requires gcc 4.9+ and a version of boost compiled with C++14 support.
 
 Please download googletest from
-https://googletest.googlecode.com/files/gtest-1.7.0.zip and unzip it in the
-folly/test subdirectory.
+https://github.com/google/googletest/archive/release-1.8.0.tar.gz and unpack it into the
+folly/test subdirectory as `gtest`:
+
+    (cd folly/test && \
+     rm -rf gtest && \
+     wget https://github.com/google/googletest/archive/release-1.8.0.tar.gz && \
+     tar zxf release-1.8.0.tar.gz && \
+     rm -f release-1.8.0.tar.gz && \
+     mv googletest-release-1.8.0 gtest)
+
+#### Linking non-default boost libraries
+
+If you have boost installed in a non-default location, you need to be sure that
+the linker and configure scripts know where to find boost.  This means making
+sure that the `LIBRARY_PATH` environment variable contains `<BOOST_ROOT>/lib`,
+as well as including the path explicitly when running
+`./configure`:
+
+```
+export LIBRARY_PATH=$BOOST_ROOT/lib:$LIBRARY_PATH
+./configure --with-boost=$BOOST_ROOT/lib
+```
 
 #### Ubuntu 12.04
 
@@ -106,10 +126,11 @@ sudo apt-get install \
     zlib1g-dev \
     binutils-dev \
     libjemalloc-dev \
-    libssl-dev
+    libssl-dev \
+    pkg-config
 ```
 
-If advanced debugging functionality for tests are required
+If advanced debugging functionality is required
 
 ```
 sudo apt-get install \
@@ -129,7 +150,7 @@ sudo apt-get install \
 
 The above packages are sufficient for Ubuntu 13.10 and Ubuntu 14.04.
 
-In the folly directory, run
+In the folly directory, run:
 ```
   autoreconf -ivf
   ./configure
@@ -137,6 +158,10 @@ In the folly directory, run
   make check
   sudo make install
 ```
+
+#### Ubuntu 16.04 LTS
+The packages listed above for 13.10 and 14.04 are sufficient for installation,
+and the build commands remain the same.
 
 #### OS X (Homebrew)
 
@@ -147,8 +172,6 @@ You may also use `folly/build/bootstrap-osx-homebrew.sh` to build against `maste
 ```
   cd folly
   ./build/bootstrap-osx-homebrew.sh
-  make
-  make check
 ```
 
 #### OS X (MacPorts)
@@ -192,6 +215,12 @@ Download and install folly with the parameters listed below:
   make
   sudo make install
 ```
+
+#### Windows (Vcpkg)
+
+folly is available in [Vcpkg](https://github.com/Microsoft/vcpkg#vcpkg) and releases may be built via `vcpkg install folly:x64-windows`.
+
+You may also use `vcpkg install folly:x64-windows --head` to build against `master`.
 
 #### Other Linux distributions
 

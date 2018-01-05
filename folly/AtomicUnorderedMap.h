@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,22 +17,22 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
+#include <limits>
 #include <stdexcept>
 #include <system_error>
 #include <type_traits>
-#include <stdint.h>
 
-#include <folly/Bits.h>
+#include <boost/type_traits/has_trivial_destructor.hpp>
+
 #include <folly/Conv.h>
 #include <folly/Likely.h>
 #include <folly/Random.h>
 #include <folly/detail/AtomicUnorderedMapUtils.h>
+#include <folly/lang/Bits.h>
 #include <folly/portability/SysMman.h>
 #include <folly/portability/Unistd.h>
-
-#include <boost/type_traits/has_trivial_destructor.hpp>
-#include <limits>
 
 namespace folly {
 
@@ -129,16 +129,17 @@ namespace folly {
 /// which is much faster than destructing all of the keys and values.
 /// Feel free to override if std::is_trivial_destructor isn't recognizing
 /// the triviality of your destructors.
-template <typename Key,
-          typename Value,
-          typename Hash = std::hash<Key>,
-          typename KeyEqual = std::equal_to<Key>,
-          bool SkipKeyValueDeletion =
-              (boost::has_trivial_destructor<Key>::value &&
-               boost::has_trivial_destructor<Value>::value),
-          template<typename> class Atom = std::atomic,
-          typename IndexType = uint32_t,
-          typename Allocator = folly::detail::MMapAlloc>
+template <
+    typename Key,
+    typename Value,
+    typename Hash = std::hash<Key>,
+    typename KeyEqual = std::equal_to<Key>,
+    bool SkipKeyValueDeletion =
+        (boost::has_trivial_destructor<Key>::value &&
+         boost::has_trivial_destructor<Value>::value),
+    template <typename> class Atom = std::atomic,
+    typename IndexType = uint32_t,
+    typename Allocator = folly::detail::MMapAlloc>
 
 struct AtomicUnorderedInsertMap {
 
@@ -212,7 +213,7 @@ struct AtomicUnorderedInsertMap {
       const Allocator& alloc = Allocator())
     : allocator_(alloc)
   {
-    size_t capacity = maxSize / std::min(1.0f, maxLoadFactor) + 128;
+    size_t capacity = size_t(maxSize / std::min(1.0f, maxLoadFactor) + 128);
     size_t avail = size_t{1} << (8 * sizeof(IndexType) - 2);
     if (capacity > avail && maxSize < avail) {
       // we'll do our best
@@ -262,7 +263,7 @@ struct AtomicUnorderedInsertMap {
   ///  auto value = memo.findOrConstruct(key, [=](void* raw) {
   ///    new (raw) std::string(computation(key));
   ///  })->first;
-  template<typename Func>
+  template <typename Func>
   std::pair<const_iterator,bool> findOrConstruct(const Key& key, Func&& func) {
     auto const slot = keyToSlotIdx(key);
     auto prev = slots_[slot].headAndState_.load(std::memory_order_acquire);
@@ -314,7 +315,7 @@ struct AtomicUnorderedInsertMap {
   /// Eventually we can duplicate all of the std::pair constructor
   /// forms, including a recursive tuple forwarding template
   /// http://functionalcpp.wordpress.com/2013/08/28/tuple-forwarding/).
-  template<class K, class V>
+  template <class K, class V>
   std::pair<const_iterator,bool> emplace(const K& key, V&& value) {
     return findOrConstruct(key, [&](void* raw) {
       new (raw) Value(std::forward<V>(value));
@@ -338,8 +339,7 @@ struct AtomicUnorderedInsertMap {
   }
 
  private:
-
-  enum {
+  enum : IndexType {
     kMaxAllocationTries = 1000, // after this we throw
   };
 
@@ -437,7 +437,7 @@ struct AtomicUnorderedInsertMap {
   /// Allocates a slot and returns its index.  Tries to put it near
   /// slots_[start].
   IndexType allocateNear(IndexType start) {
-    for (auto tries = 0; tries < kMaxAllocationTries; ++tries) {
+    for (IndexType tries = 0; tries < kMaxAllocationTries; ++tries) {
       auto slot = allocationAttempt(start, tries);
       auto prev = slots_[slot].headAndState_.load(std::memory_order_acquire);
       if ((prev & 3) == EMPTY &&
@@ -454,13 +454,13 @@ struct AtomicUnorderedInsertMap {
   /// can specialize it differently during deterministic testing
   IndexType allocationAttempt(IndexType start, IndexType tries) const {
     if (LIKELY(tries < 8 && start + tries < numSlots_)) {
-      return start + tries;
+      return IndexType(start + tries);
     } else {
       IndexType rv;
       if (sizeof(IndexType) <= 4) {
-        rv = folly::Random::rand32(numSlots_);
+        rv = IndexType(folly::Random::rand32(numSlots_));
       } else {
-        rv = folly::Random::rand64(numSlots_);
+        rv = IndexType(folly::Random::rand64(numSlots_));
       }
       assert(rv < numSlots_);
       return rv;
@@ -479,15 +479,16 @@ struct AtomicUnorderedInsertMap {
 /// to select a 64 bit slot index type.  Use this if you need a capacity
 /// bigger than 2^30 (about a billion).  This increases memory overheads,
 /// obviously.
-template <typename Key,
-          typename Value,
-          typename Hash = std::hash<Key>,
-          typename KeyEqual = std::equal_to<Key>,
-          bool SkipKeyValueDeletion =
-              (boost::has_trivial_destructor<Key>::value &&
-               boost::has_trivial_destructor<Value>::value),
-          template <typename> class Atom = std::atomic,
-          typename Allocator = folly::detail::MMapAlloc>
+template <
+    typename Key,
+    typename Value,
+    typename Hash = std::hash<Key>,
+    typename KeyEqual = std::equal_to<Key>,
+    bool SkipKeyValueDeletion =
+        (boost::has_trivial_destructor<Key>::value &&
+         boost::has_trivial_destructor<Value>::value),
+    template <typename> class Atom = std::atomic,
+    typename Allocator = folly::detail::MMapAlloc>
 using AtomicUnorderedInsertMap64 =
     AtomicUnorderedInsertMap<Key,
                              Value,
@@ -502,8 +503,7 @@ using AtomicUnorderedInsertMap64 =
 /// updating values inserted into an AtomicUnorderedInsertMap<K,
 /// MutableAtom<V>>.  This relies on AtomicUnorderedInsertMap's guarantee
 /// that it doesn't move values.
-template <typename T,
-          template<typename> class Atom = std::atomic>
+template <typename T, template <typename> class Atom = std::atomic>
 struct MutableAtom {
   mutable Atom<T> data;
 
@@ -519,5 +519,4 @@ struct MutableData {
   explicit MutableData(const T& init) : data(init) {}
 };
 
-
-}
+} // namespace folly

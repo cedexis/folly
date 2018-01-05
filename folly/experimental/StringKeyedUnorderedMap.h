@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,11 +18,15 @@
 
 #pragma once
 
+#include <functional>
 #include <initializer_list>
 #include <memory>
 #include <unordered_map>
+#include <utility>
+
 #include <folly/Range.h>
 #include <folly/experimental/StringKeyedCommon.h>
+#include <folly/hash/Hash.h>
 
 namespace folly {
 
@@ -33,16 +37,17 @@ namespace folly {
  * It uses kind of hack: string pointed by StringPiece is copied when
  * StringPiece is inserted into map
  */
-template <class Value,
-          class Hash = StringPieceHash,
-          class Eq = std::equal_to<StringPiece>,
-          class Alloc = std::allocator<std::pair<const StringPiece, Value>>>
+template <
+    class Value,
+    class Hash = Hash,
+    class Eq = std::equal_to<StringPiece>,
+    class Alloc = std::allocator<std::pair<const StringPiece, Value>>>
 class StringKeyedUnorderedMap
     : private std::unordered_map<StringPiece, Value, Hash, Eq, Alloc> {
-private:
+ private:
   using Base = std::unordered_map<StringPiece, Value, Hash, Eq, Alloc>;
 
-public:
+ public:
   typedef typename Base::key_type key_type;
   typedef typename Base::mapped_type mapped_type;
   typedef typename Base::value_type value_type;
@@ -146,9 +151,14 @@ public:
   using Base::cbegin;
   using Base::cend;
 
-  bool operator==(const StringKeyedUnorderedMap& rhs) {
-    const Base& lhs = *this;
+  bool operator==(StringKeyedUnorderedMap const& other) const {
+    Base const& lhs = *this;
+    Base const& rhs = static_cast<Base const&>(other);
     return lhs == rhs;
+  }
+
+  void swap(StringKeyedUnorderedMap& other) & {
+    return Base::swap(other);
   }
 
   // No need for copy/move overload as StringPiece is small struct.
@@ -226,4 +236,4 @@ public:
   }
 };
 
-} // folly
+} // namespace folly

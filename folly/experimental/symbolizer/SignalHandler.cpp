@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2013-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,25 +18,27 @@
 
 #include <folly/experimental/symbolizer/SignalHandler.h>
 
+#include <signal.h>
 #include <sys/types.h>
+
+#include <algorithm>
 #include <atomic>
 #include <ctime>
 #include <mutex>
-#include <pthread.h>
-#include <signal.h>
-#include <unistd.h>
 #include <vector>
 
 #include <glog/logging.h>
 
 #include <folly/Conv.h>
-#include <folly/FileUtil.h>
-#include <folly/Portability.h>
 #include <folly/ScopeGuard.h>
+#include <folly/experimental/symbolizer/ElfCache.h>
 #include <folly/experimental/symbolizer/Symbolizer.h>
+#include <folly/portability/PThread.h>
 #include <folly/portability/SysSyscall.h>
+#include <folly/portability/Unistd.h>
 
-namespace folly { namespace symbolizer {
+namespace folly {
+namespace symbolizer {
 
 namespace {
 
@@ -58,22 +60,20 @@ class FatalSignalCallbackRegistry {
 };
 
 FatalSignalCallbackRegistry::FatalSignalCallbackRegistry()
-  : installed_(false) {
-}
+    : installed_(false) {}
 
 void FatalSignalCallbackRegistry::add(SignalCallback func) {
   std::lock_guard<std::mutex> lock(mutex_);
-  CHECK(!installed_)
-    << "FatalSignalCallbackRegistry::add may not be used "
-       "after installing the signal handlers.";
+  CHECK(!installed_) << "FatalSignalCallbackRegistry::add may not be used "
+                        "after installing the signal handlers.";
   handlers_.push_back(func);
 }
 
 void FatalSignalCallbackRegistry::markInstalled() {
   std::lock_guard<std::mutex> lock(mutex_);
   CHECK(!installed_.exchange(true))
-    << "FatalSignalCallbackRegistry::markInstalled must be called "
-    << "at most once";
+      << "FatalSignalCallbackRegistry::markInstalled must be called "
+      << "at most once";
 }
 
 void FatalSignalCallbackRegistry::run() {
@@ -88,20 +88,20 @@ void FatalSignalCallbackRegistry::run() {
 
 // Leak it so we don't have to worry about destruction order
 FatalSignalCallbackRegistry* gFatalSignalCallbackRegistry =
-  new FatalSignalCallbackRegistry;
+    new FatalSignalCallbackRegistry;
 
 struct {
   int number;
   const char* name;
   struct sigaction oldAction;
 } kFatalSignals[] = {
-  { SIGSEGV, "SIGSEGV", {} },
-  { SIGILL,  "SIGILL",  {} },
-  { SIGFPE,  "SIGFPE",  {} },
-  { SIGABRT, "SIGABRT", {} },
-  { SIGBUS,  "SIGBUS",  {} },
-  { SIGTERM, "SIGTERM", {} },
-  { 0,       nullptr,   {} }
+    {SIGSEGV, "SIGSEGV", {}},
+    {SIGILL, "SIGILL", {}},
+    {SIGFPE, "SIGFPE", {}},
+    {SIGABRT, "SIGABRT", {}},
+    {SIGBUS, "SIGBUS", {}},
+    {SIGTERM, "SIGTERM", {}},
+    {0, nullptr, {}},
 };
 
 void callPreviousSignalHandler(int signum) {
@@ -124,38 +124,22 @@ void callPreviousSignalHandler(int signum) {
   raise(signum);
 }
 
-constexpr size_t kDefaultCapacity = 500;
-
 // Note: not thread-safe, but that's okay, as we only let one thread
 // in our signal handler at a time.
 //
 // Leak it so we don't have to worry about destruction order
-auto gSignalSafeElfCache = new SignalSafeElfCache(kDefaultCapacity);
-
-// Buffered writer (using a fixed-size buffer). We try to write only once
-// to prevent interleaving with messages written from other threads.
-//
-// Leak it so we don't have to worry about destruction order.
-auto gPrinter = new FDSymbolizePrinter(STDERR_FILENO,
-                                       SymbolizePrinter::COLOR_IF_TTY,
-                                       size_t(64) << 10);  // 64KiB
-
-// Flush gPrinter, also fsync, in case we're about to crash again...
-void flush() {
-  gPrinter->flush();
-  fsyncNoInt(STDERR_FILENO);
-}
+StackTracePrinter* gStackTracePrinter = new StackTracePrinter();
 
 void printDec(uint64_t val) {
   char buf[20];
   uint32_t n = uint64ToBufferUnsafe(val, buf);
-  gPrinter->print(StringPiece(buf, n));
+  gStackTracePrinter->print(StringPiece(buf, n));
 }
 
 const char kHexChars[] = "0123456789abcdef";
 void printHex(uint64_t val) {
   // TODO(tudorb): Add this to folly/Conv.h
-  char buf[2 + 2 * sizeof(uint64_t)];  // "0x" prefix, 2 digits for each byte
+  char buf[2 + 2 * sizeof(uint64_t)]; // "0x" prefix, 2 digits for each byte
 
   char* end = buf + sizeof(buf);
   char* p = end;
@@ -166,15 +150,21 @@ void printHex(uint64_t val) {
   *--p = 'x';
   *--p = '0';
 
-  gPrinter->print(StringPiece(p, end));
+  gStackTracePrinter->print(StringPiece(p, end));
 }
 
 void print(StringPiece sp) {
-  gPrinter->print(sp);
+  gStackTracePrinter->print(sp);
+}
+
+void flush() {
+  gStackTracePrinter->flush();
 }
 
 void dumpTimeInfo() {
-  SCOPE_EXIT { flush(); };
+  SCOPE_EXIT {
+    flush();
+  };
   time_t now = time(nullptr);
   print("*** Aborted at ");
   printDec(now);
@@ -336,7 +326,9 @@ const char* signal_reason(int signum, int si_code) {
 }
 
 void dumpSignalInfo(int signum, siginfo_t* siginfo) {
-  SCOPE_EXIT { flush(); };
+  SCOPE_EXIT {
+    flush();
+  };
   // Get the signal name, if possible.
   const char* name = nullptr;
   for (auto p = kFatalSignals; p->name; ++p) {
@@ -381,37 +373,6 @@ void dumpSignalInfo(int signum, siginfo_t* siginfo) {
   print("), stack trace: ***\n");
 }
 
-FOLLY_NOINLINE void dumpStackTrace(bool symbolize);
-
-void dumpStackTrace(bool symbolize) {
-  SCOPE_EXIT { flush(); };
-  // Get and symbolize stack trace
-  constexpr size_t kMaxStackTraceDepth = 100;
-  FrameArray<kMaxStackTraceDepth> addresses;
-
-  // Skip the getStackTrace frame
-  if (!getStackTraceSafe(addresses)) {
-    print("(error retrieving stack trace)\n");
-  } else if (symbolize) {
-    Symbolizer symbolizer(gSignalSafeElfCache);
-    symbolizer.symbolize(addresses);
-
-    // Skip the top 2 frames:
-    // getStackTraceSafe
-    // dumpStackTrace (here)
-    //
-    // Leaving signalHandler on the stack for clarity, I think.
-    gPrinter->println(addresses, 2);
-  } else {
-    print("(safe mode, symbolizer not available)\n");
-    AddressFormatter formatter;
-    for (size_t i = 0; i < addresses.frameCount; ++i) {
-      print(formatter.format(addresses.addresses[i]));
-      print("\n");
-    }
-  }
-}
-
 // On Linux, pthread_t is a pointer, so 0 is an invalid value, which we
 // take to indicate "no thread in the signal handler".
 //
@@ -434,7 +395,7 @@ void innerSignalHandler(int signum, siginfo_t* info, void* /* uctx */) {
       // next time around.
       if (!gInRecursiveSignalHandler.exchange(true)) {
         print("Entered fatal signal handler recursively. We're in trouble.\n");
-        dumpStackTrace(false);  // no symbolization
+        gStackTracePrinter->printStackTrace(false); // no symbolization
       }
       return;
     }
@@ -442,7 +403,7 @@ void innerSignalHandler(int signum, siginfo_t* info, void* /* uctx */) {
     // Wait a while, try again.
     timespec ts;
     ts.tv_sec = 0;
-    ts.tv_nsec = 100L * 1000 * 1000;  // 100ms
+    ts.tv_nsec = 100L * 1000 * 1000; // 100ms
     nanosleep(&ts, nullptr);
 
     prevSignalThread = kInvalidThreadId;
@@ -450,14 +411,16 @@ void innerSignalHandler(int signum, siginfo_t* info, void* /* uctx */) {
 
   dumpTimeInfo();
   dumpSignalInfo(signum, info);
-  dumpStackTrace(true);  // with symbolization
+  gStackTracePrinter->printStackTrace(true); // with symbolization
 
   // Run user callbacks
   gFatalSignalCallbackRegistry->run();
 }
 
 void signalHandler(int signum, siginfo_t* info, void* uctx) {
-  SCOPE_EXIT { flush(); };
+  SCOPE_EXIT {
+    flush();
+  };
   innerSignalHandler(signum, info, uctx);
 
   gSignalThread = kInvalidThreadId;
@@ -465,7 +428,7 @@ void signalHandler(int signum, siginfo_t* info, void* uctx) {
   callPreviousSignalHandler(signum);
 }
 
-}  // namespace
+} // namespace
 
 void addFatalSignalCallback(SignalCallback cb) {
   gFatalSignalCallbackRegistry->add(cb);
@@ -479,7 +442,7 @@ namespace {
 
 std::atomic<bool> gAlreadyInstalled;
 
-}  // namespace
+} // namespace
 
 void installFatalSignalHandler() {
   if (gAlreadyInstalled.exchange(true)) {
@@ -502,5 +465,5 @@ void installFatalSignalHandler() {
     CHECK_ERR(sigaction(p->number, &sa, &p->oldAction));
   }
 }
-
-}}  // namespaces
+} // namespace symbolizer
+} // namespace folly

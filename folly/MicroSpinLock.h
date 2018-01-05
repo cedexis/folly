@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -38,17 +38,15 @@
  */
 
 #include <array>
-#include <cinttypes>
-#include <type_traits>
-#include <boost/noncopyable.hpp>
-#include <cstdlib>
-#include <pthread.h>
-#include <mutex>
 #include <atomic>
+#include <cassert>
+#include <cstdint>
+#include <mutex>
+#include <type_traits>
 
-#include <glog/logging.h>
-#include <folly/detail/Sleeper.h>
 #include <folly/Portability.h>
+#include <folly/lang/Align.h>
+#include <folly/synchronization/detail/Sleeper.h>
 
 namespace folly {
 
@@ -86,11 +84,11 @@ struct MicroSpinLock {
         sleeper.wait();
       }
     } while (!try_lock());
-    DCHECK(payload()->load() == LOCKED);
+    assert(payload()->load() == LOCKED);
   }
 
   void unlock() {
-    CHECK(payload()->load() == LOCKED);
+    assert(payload()->load() == LOCKED);
     payload()->store(FREE, std::memory_order_release);
   }
 
@@ -121,7 +119,7 @@ static_assert(
 #define FOLLY_CACHE_LINE_SIZE 64
 
 template <class T, size_t N>
-struct FOLLY_ALIGNED_MAX SpinLockArray {
+struct alignas(max_align_v) SpinLockArray {
   T& operator[](size_t i) {
     return data_[i].lock;
   }
@@ -142,10 +140,10 @@ struct FOLLY_ALIGNED_MAX SpinLockArray {
                 "Invalid size of PaddedSpinLock");
 
   // Check if T can theoretically cross a cache line.
-  static_assert(alignof(std::max_align_t) > 0 &&
-                FOLLY_CACHE_LINE_SIZE % alignof(std::max_align_t) == 0 &&
-                sizeof(T) <= alignof(std::max_align_t),
-                "T can cross cache line boundaries");
+  static_assert(
+      max_align_v > 0 && FOLLY_CACHE_LINE_SIZE % max_align_v == 0 &&
+          sizeof(T) <= max_align_v,
+      "T can cross cache line boundaries");
 
   char padding_[FOLLY_CACHE_LINE_SIZE];
   std::array<PaddedSpinLock, N> data_;
@@ -157,4 +155,4 @@ typedef std::lock_guard<MicroSpinLock> MSLGuard;
 
 //////////////////////////////////////////////////////////////////////
 
-}
+} // namespace folly

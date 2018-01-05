@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,8 @@
 #pragma once
 
 #include <folly/fibers/EventBaseLoopController.h>
-#include <folly/fibers/FiberManager.h>
+#include <folly/fibers/FiberManagerInternal.h>
+#include <folly/io/async/VirtualEventBase.h>
 
 namespace folly {
 namespace fibers {
@@ -24,5 +25,9 @@ namespace fibers {
 FiberManager& getFiberManager(
     folly::EventBase& evb,
     const FiberManager::Options& opts = FiberManager::Options());
-}
-}
+
+FiberManager& getFiberManager(
+    folly::VirtualEventBase& evb,
+    const FiberManager::Options& opts = FiberManager::Options());
+} // namespace fibers
+} // namespace folly

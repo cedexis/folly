@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,8 @@
 
 #include <folly/ssl/OpenSSLHash.h>
 
-#include <gtest/gtest.h>
-
 #include <folly/io/IOBufQueue.h>
+#include <folly/portability/GTest.h>
 
 using namespace std;
 using namespace folly;
@@ -27,8 +26,7 @@ using namespace folly::ssl;
 namespace {
 
 class OpenSSLHashTest : public testing::Test {};
-
-}
+} // namespace
 
 TEST_F(OpenSSLHashTest, sha256) {
   IOBuf buf;
@@ -46,6 +44,39 @@ TEST_F(OpenSSLHashTest, sha256) {
   EXPECT_EQ(expected, out);
 }
 
+TEST_F(OpenSSLHashTest, sha256_hashcopy) {
+  std::array<uint8_t, 32> expected, actual;
+
+  OpenSSLHash::Digest digest;
+  digest.hash_init(EVP_sha256());
+  digest.hash_update(ByteRange(StringPiece("foobar")));
+
+  OpenSSLHash::Digest copy(digest);
+
+  digest.hash_final(range(expected));
+  copy.hash_final(range(actual));
+
+  EXPECT_EQ(expected, actual);
+}
+
+TEST_F(OpenSSLHashTest, sha256_hashcopy_intermediate) {
+  std::array<uint8_t, 32> expected, actual;
+
+  OpenSSLHash::Digest digest;
+  digest.hash_init(EVP_sha256());
+  digest.hash_update(ByteRange(StringPiece("foo")));
+
+  OpenSSLHash::Digest copy(digest);
+
+  digest.hash_update(ByteRange(StringPiece("bar")));
+  copy.hash_update(ByteRange(StringPiece("bar")));
+
+  digest.hash_final(range(expected));
+  copy.hash_final(range(actual));
+
+  EXPECT_EQ(expected, actual);
+}
+
 TEST_F(OpenSSLHashTest, hmac_sha256) {
   auto key = ByteRange(StringPiece("qwerty"));
 
@@ -59,9 +90,12 @@ TEST_F(OpenSSLHashTest, hmac_sha256) {
   auto combined = ByteRange(StringPiece("foobar"));
   HMAC(
       EVP_sha256(),
-      key.data(), key.size(),
-      combined.data(), combined.size(),
-      expected.data(), nullptr);
+      key.data(),
+      int(key.size()),
+      combined.data(),
+      combined.size(),
+      expected.data(),
+      nullptr);
 
   auto out = vector<uint8_t>(32);
   OpenSSLHash::hmac_sha256(range(out), key, buf);

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,19 +16,20 @@
 /* -*- Mode: C++; tab-width: 2; c-basic-offset: 2; indent-tabs-mode: nil -*- */
 
 #include <atomic>
-#include <thread>
-#include <mutex>
-#include <folly/Memory.h>
 #include <condition_variable>
-#include <gtest/gtest.h>
+#include <mutex>
+#include <thread>
 
-#include <folly/Baton.h>
+#include <folly/Memory.h>
 #include <folly/experimental/RCURefCount.h>
 #include <folly/experimental/ReadMostlySharedPtr.h>
+#include <folly/portability/GTest.h>
+#include <folly/synchronization/Baton.h>
 
 using folly::ReadMostlyMainPtr;
 using folly::ReadMostlyWeakPtr;
 using folly::ReadMostlySharedPtr;
+using folly::ReadMostlyMainPtrDeleter;
 
 // send SIGALRM to test process after this many seconds
 const unsigned int TEST_TIMEOUT = 10;
@@ -83,12 +84,12 @@ TEST_F(ReadMostlySharedPtrTest, BasicStores) {
 
   // Store 1.
   std::atomic<int> cnt1{0};
-  ptr.reset(folly::make_unique<TestObject>(1, cnt1));
+  ptr.reset(std::make_unique<TestObject>(1, cnt1));
   EXPECT_EQ(1, cnt1.load());
 
   // Store 2, check that 1 is destroyed.
   std::atomic<int> cnt2{0};
-  ptr.reset(folly::make_unique<TestObject>(2, cnt2));
+  ptr.reset(std::make_unique<TestObject>(2, cnt2));
   EXPECT_EQ(1, cnt2.load());
   EXPECT_EQ(0, cnt1.load());
 
@@ -108,13 +109,13 @@ TEST_F(ReadMostlySharedPtrTest, BasicLoads) {
     EXPECT_EQ(ptr.get(), nullptr);
 
     std::atomic<int> cnt1{0};
-    ptr.reset(folly::make_unique<TestObject>(1, cnt1));
+    ptr.reset(std::make_unique<TestObject>(1, cnt1));
     EXPECT_EQ(1, cnt1.load());
 
     x = ptr;
     EXPECT_EQ(1, x->value);
 
-    ptr.reset(folly::make_unique<TestObject>(2, cnt2));
+    ptr.reset(std::make_unique<TestObject>(2, cnt2));
     EXPECT_EQ(1, cnt2.load());
     EXPECT_EQ(1, cnt1.load());
 
@@ -173,18 +174,18 @@ TEST_F(ReadMostlySharedPtrTest, LoadsFromThreads) {
 
     loads[0].requestAndWait();
 
-    ptr.reset(folly::make_unique<TestObject>(1, cnt));
+    ptr.reset(std::make_unique<TestObject>(1, cnt));
     loads[1].requestAndWait();
 
-    ptr.reset(folly::make_unique<TestObject>(2, cnt));
+    ptr.reset(std::make_unique<TestObject>(2, cnt));
     loads[2].requestAndWait();
     loads[3].requestAndWait();
 
-    ptr.reset(folly::make_unique<TestObject>(3, cnt));
-    ptr.reset(folly::make_unique<TestObject>(4, cnt));
+    ptr.reset(std::make_unique<TestObject>(3, cnt));
+    ptr.reset(std::make_unique<TestObject>(4, cnt));
     loads[4].requestAndWait();
 
-    ptr.reset(folly::make_unique<TestObject>(5, cnt));
+    ptr.reset(std::make_unique<TestObject>(5, cnt));
     loads[5].requestAndWait();
     loads[6].requestAndWait();
 
@@ -200,8 +201,7 @@ TEST_F(ReadMostlySharedPtrTest, LoadsFromThreads) {
 TEST_F(ReadMostlySharedPtrTest, Ctor) {
   std::atomic<int> cnt1{0};
   {
-    ReadMostlyMainPtr<TestObject> ptr(
-      folly::make_unique<TestObject>(1, cnt1));
+    ReadMostlyMainPtr<TestObject> ptr(std::make_unique<TestObject>(1, cnt1));
 
     EXPECT_EQ(1, ptr.getShared()->value);
   }
@@ -210,11 +210,13 @@ TEST_F(ReadMostlySharedPtrTest, Ctor) {
 }
 
 TEST_F(ReadMostlySharedPtrTest, ClearingCache) {
+  std::atomic<int> cnt1{0};
+  std::atomic<int> cnt2{0};
+
   ReadMostlyMainPtr<TestObject> ptr;
 
   // Store 1.
-  std::atomic<int> cnt1{0};
-  ptr.reset(folly::make_unique<TestObject>(1, cnt1));
+  ptr.reset(std::make_unique<TestObject>(1, cnt1));
 
   Coordinator c;
 
@@ -229,11 +231,119 @@ TEST_F(ReadMostlySharedPtrTest, ClearingCache) {
   EXPECT_EQ(1, cnt1.load());
 
   // Store 2 and check that 1 is destroyed.
-  std::atomic<int> cnt2{0};
-  ptr.reset(folly::make_unique<TestObject>(2, cnt2));
+  ptr.reset(std::make_unique<TestObject>(2, cnt2));
   EXPECT_EQ(0, cnt1.load());
 
   // Unblock thread.
   c.completed();
   t.join();
+}
+
+size_t useGlobalCalls = 0;
+
+class TestRefCount {
+ public:
+  ~TestRefCount() noexcept {
+    DCHECK_EQ(count_.load(), 0);
+  }
+
+  int64_t operator++() noexcept {
+    auto ret = ++count_;
+    DCHECK_GT(ret, 0);
+    return ret;
+  }
+
+  int64_t operator--() noexcept {
+    auto ret = --count_;
+    DCHECK_GE(ret, 0);
+    return ret;
+  }
+
+  int64_t operator*() noexcept {
+    return count_.load();
+  }
+
+  void useGlobal() {
+    ++useGlobalCalls;
+  }
+
+  template <typename Container>
+  static void useGlobal(const Container&) {
+    ++useGlobalCalls;
+  }
+
+ private:
+  std::atomic<int64_t> count_{1};
+};
+
+TEST_F(ReadMostlySharedPtrTest, ReadMostlyMainPtrDeleter) {
+  EXPECT_EQ(0, useGlobalCalls);
+  {
+    ReadMostlyMainPtr<int, TestRefCount> ptr1(std::make_shared<int>(42));
+    ReadMostlyMainPtr<int, TestRefCount> ptr2(std::make_shared<int>(42));
+  }
+
+  EXPECT_EQ(4, useGlobalCalls);
+
+  useGlobalCalls = 0;
+  {
+    ReadMostlyMainPtr<int, TestRefCount> ptr1(std::make_shared<int>(42));
+    ReadMostlyMainPtr<int, TestRefCount> ptr2(std::make_shared<int>(42));
+
+    ReadMostlyMainPtrDeleter<TestRefCount> deleter;
+    deleter.add(std::move(ptr1));
+    deleter.add(std::move(ptr2));
+  }
+
+  EXPECT_EQ(1, useGlobalCalls);
+}
+
+TEST_F(ReadMostlySharedPtrTest, nullptr) {
+  {
+    ReadMostlyMainPtr<int, TestRefCount> nptr;
+    EXPECT_TRUE(nptr == nullptr);
+    EXPECT_TRUE(nullptr == nptr);
+    EXPECT_EQ(nptr, nullptr);
+    EXPECT_EQ(nullptr, nptr);
+    EXPECT_FALSE(nptr);
+    EXPECT_TRUE(!nptr);
+
+    ReadMostlyMainPtr<int, TestRefCount> ptr(std::make_shared<int>(42));
+    EXPECT_FALSE(ptr == nullptr);
+    EXPECT_FALSE(nullptr == ptr);
+    EXPECT_NE(ptr, nullptr);
+    EXPECT_NE(nullptr, ptr);
+    EXPECT_FALSE(!ptr);
+    EXPECT_TRUE(ptr);
+  }
+  {
+    ReadMostlySharedPtr<int, TestRefCount> nptr;
+    EXPECT_TRUE(nptr == nullptr);
+    EXPECT_TRUE(nullptr == nptr);
+    EXPECT_EQ(nptr, nullptr);
+    EXPECT_EQ(nullptr, nptr);
+    EXPECT_FALSE(nptr);
+    EXPECT_TRUE(!nptr);
+
+    ReadMostlyMainPtr<int, TestRefCount> ptr(std::make_shared<int>(42));
+    EXPECT_FALSE(ptr == nullptr);
+    EXPECT_FALSE(nullptr == ptr);
+    EXPECT_NE(ptr, nullptr);
+    EXPECT_NE(nullptr, ptr);
+    EXPECT_FALSE(!ptr);
+    EXPECT_TRUE(ptr);
+  }
+}
+
+TEST_F(ReadMostlySharedPtrTest, getStdShared) {
+  const ReadMostlyMainPtr<int> rmmp1(std::make_shared<int>(42));
+
+  ReadMostlyMainPtr<int> rmmp2;
+  rmmp2.reset(rmmp1.getStdShared());
+
+  const ReadMostlySharedPtr<int> rmsp1 = rmmp1.getShared();
+  ReadMostlySharedPtr<int> rmsp2(rmsp1);
+
+  // No conditions to check; we just wanted to ensure this compiles.
+  SUCCEED();
 }

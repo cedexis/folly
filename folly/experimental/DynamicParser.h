@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,8 +24,8 @@
  */
 #pragma once
 
-#include <folly/dynamic.h>
 #include <folly/ScopeGuard.h>
+#include <folly/dynamic.h>
 
 namespace folly {
 
@@ -188,7 +188,7 @@ namespace detail {
 // Firstly, the input dynamic need not correspond to valid JSON.  Secondly,
 // wrapError() uses integer-keyed objects to report arrary-indexing errors.
 std::string toPseudoJson(const folly::dynamic& d);
-}  // namespace detail
+} // namespace detail
 
 /**
  * With DynamicParser::OnError::THROW, reports the first error.
@@ -207,7 +207,8 @@ struct DynamicParserParseError : public std::runtime_error {
    *   {"nested": {"key1": {"key_errors": {"key3": "err"}, "value": 7}}}
    */
   const folly::dynamic& error() const { return error_; }
-private:
+
+ private:
   folly::dynamic error_;
 };
 
@@ -223,7 +224,7 @@ struct DynamicParserLogicError : public std::logic_error {
 };
 
 class DynamicParser {
-public:
+ public:
   enum class OnError {
     // After parsing, releaseErrors() reports all parse errors.
     // Throws DynamicParserLogicError on programmer errors.
@@ -294,7 +295,7 @@ public:
     return *this;
   }
 
-private:
+ private:
   /**
    * If `fn` throws an exception, wrapError() catches it and inserts an
    * enriched description into stack_.errors_.  If lookup_key is non-null,
@@ -321,7 +322,7 @@ private:
       explicit Pop(ParserStack* sp)
         : key_(sp->key_), value_(sp->value_), stackPtr_(sp) {}
       void operator()() noexcept;  // ScopeGuard requires noexcept
-    private:
+     private:
       const folly::dynamic* key_;
       const folly::dynamic* value_;
       ParserStack* stackPtr_;
@@ -357,9 +358,9 @@ private:
     folly::dynamic releaseErrors();
 
     // Invoked on error when using OnError::THROW.
-    void throwErrors();
+    [[noreturn]] void throwErrors();
 
-  private:
+   private:
     friend struct Pop;
 
     folly::dynamic releaseErrorsImpl();  // for releaseErrors() & throwErrors()
@@ -391,6 +392,6 @@ private:
   bool allowNonStringKeyErrors_{false};  // See the setter's docblock.
 };
 
-}  // namespace folly
+} // namespace folly
 
 #include <folly/experimental/DynamicParser-inl.h>

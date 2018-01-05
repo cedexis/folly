@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,21 +16,20 @@
 
 #include <folly/SmallLocks.h>
 
-#include <folly/Random.h>
-
 #include <cassert>
+#include <condition_variable>
 #include <cstdio>
 #include <mutex>
-#include <condition_variable>
 #include <string>
-#include <vector>
-#include <pthread.h>
-
 #include <thread>
+#include <vector>
 
-#include <gtest/gtest.h>
+#include <glog/logging.h>
 
+#include <folly/Random.h>
 #include <folly/portability/Asm.h>
+#include <folly/portability/GTest.h>
+#include <folly/portability/PThread.h>
 #include <folly/portability/Unistd.h>
 
 using folly::MSLGuard;
@@ -72,12 +71,12 @@ void splock_test() {
   const int max = 1000;
   auto rng = folly::ThreadLocalPRNG();
   for (int i = 0; i < max; i++) {
-    folly::asm_pause();
+    folly::asm_volatile_pause();
     MSLGuard g(v.lock);
 
     int first = v.ar[0];
-    for (size_t i = 1; i < sizeof v.ar / sizeof i; ++i) {
-      EXPECT_EQ(first, v.ar[i]);
+    for (size_t j = 1; j < sizeof v.ar / sizeof j; ++j) {
+      EXPECT_EQ(first, v.ar[j]);
     }
 
     int byte = folly::Random::rand32(rng);
@@ -86,14 +85,15 @@ void splock_test() {
 }
 
 #ifdef FOLLY_PICO_SPIN_LOCK_H_
-template<class T> struct PslTest {
+template <class T> struct PslTest {
   PicoSpinLock<T> lock;
 
   PslTest() { lock.init(); }
 
   void doTest() {
-    T ourVal = rand() % (T(1) << (sizeof(T) * 8 - 1));
-    for (int i = 0; i < 10000; ++i) {
+    using UT = typename std::make_unsigned<T>::type;
+    T ourVal = rand() % T(UT(1) << (sizeof(UT) * 8 - 1));
+    for (int i = 0; i < 100; ++i) {
       std::lock_guard<PicoSpinLock<T>> guard(lock);
       lock.setData(ourVal);
       for (int n = 0; n < 10; ++n) {
@@ -104,7 +104,7 @@ template<class T> struct PslTest {
   }
 };
 
-template<class T>
+template <class T>
 void doPslTest() {
   PslTest<T> testObj;
 
@@ -135,7 +135,7 @@ struct TestClobber {
   MicroSpinLock lock_;
 };
 
-}
+} // namespace
 
 TEST(SmallLocks, SpinLockCorrectness) {
   EXPECT_EQ(sizeof(MicroSpinLock), 1);
@@ -216,7 +216,7 @@ struct SimpleBarrier {
   std::condition_variable cv_;
   bool ready_;
 };
-}
+} // namespace
 
 TEST(SmallLocks, MicroLock) {
   volatile uint64_t counters[4] = {0, 0, 0, 0};
@@ -231,9 +231,9 @@ TEST(SmallLocks, MicroLock) {
   // affect bits outside the ones MicroLock is defined to affect.
   struct {
     uint8_t a;
-    volatile uint8_t b;
+    std::atomic<uint8_t> b;
     MicroLock alock;
-    volatile uint8_t d;
+    std::atomic<uint8_t> d;
   } x;
 
   uint8_t origB = 'b';

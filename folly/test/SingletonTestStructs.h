@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,26 +20,17 @@
 #include <vector>
 
 #include <glog/logging.h>
-#include <gtest/gtest.h>
 
-// A simple class that tracks how often instances of the class and
-// subclasses are created, and the ordering.  Also tracks a global
-// unique counter for each object.
-std::atomic<size_t> global_counter(19770326);
+#include <folly/portability/GTest.h>
 
 struct Watchdog {
-  static std::vector<Watchdog*>& creation_order() {
-    static std::vector<Watchdog*> ret;
-    return ret;
-  }
+  static std::vector<Watchdog*>& creation_order();
 
-  Watchdog() : serial_number(++global_counter) {
-    creation_order().push_back(this);
-  }
+  Watchdog();
 
   ~Watchdog() {
     if (creation_order().back() != this) {
-      throw std::out_of_range("Watchdog destruction order mismatch");
+      LOG(FATAL) << "Watchdog destruction order mismatch";
     }
     creation_order().pop_back();
   }

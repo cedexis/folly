@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,11 +15,10 @@
  */
 #include <iostream>
 
-#include <folly/io/async/AsyncSocket.h>
 #include <folly/io/async/AsyncServerSocket.h>
+#include <folly/io/async/AsyncSocket.h>
 #include <folly/io/async/EventBase.h>
-
-#include <gtest/gtest.h>
+#include <folly/portability/GTest.h>
 
 namespace folly {
 
@@ -89,4 +88,4 @@ TEST(AsyncSocketTest, duplicateBind) {
   EXPECT_THROW(server2->bind(address.getPort()), std::exception);
 }
 
-} // namespace
+} // namespace folly

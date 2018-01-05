@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,12 @@
 #include <array>
 
 #include <folly/io/async/AsyncSocketException.h>
+#include <folly/io/async/SSLContext.h>
 #include <folly/io/async/ssl/SSLErrors.h>
-#include <gtest/gtest.h>
-#include <openssl/ssl.h>
+#include <folly/ssl/Init.h>
+
+#include <folly/portability/GTest.h>
+#include <folly/portability/OpenSSL.h>
 
 using namespace testing;
 
@@ -51,6 +54,8 @@ TEST(AsyncSocketException, SimpleTest) {
 
 TEST(AsyncSocketException, SSLExceptionType) {
   {
+    // Initiailzes OpenSSL everything. Else some of the calls will block
+    folly::ssl::init();
     SSLException eof(SSL_ERROR_ZERO_RETURN, 0, 0, 0);
     EXPECT_EQ(eof.getType(), AsyncSocketException::END_OF_FILE);
 

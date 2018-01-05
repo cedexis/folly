@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,10 +14,9 @@
  * limitations under the License.
  */
 
-#include <gtest/gtest.h>
-
 #include <folly/futures/Future.h>
 #include <folly/futures/detail/Core.h>
+#include <folly/portability/GTest.h>
 
 using namespace folly;
 
@@ -27,7 +26,7 @@ TEST(Core, size) {
     typename std::aligned_storage<lambdaBufSize>::type lambdaBuf_;
     folly::Optional<Try<Unit>> result_;
     std::function<void(Try<Unit>&&)> callback_;
-    detail::FSM<detail::State> fsm_;
+    futures::detail::FSM<futures::detail::State> fsm_;
     std::atomic<unsigned char> attached_;
     std::atomic<bool> active_;
     std::atomic<bool> interruptHandlerSet_;
@@ -41,5 +40,5 @@ TEST(Core, size) {
   };
   // If this number goes down, it's fine!
   // If it goes up, please seek professional advice ;-)
-  EXPECT_GE(sizeof(Gold), sizeof(detail::Core<Unit>));
+  EXPECT_GE(sizeof(Gold), sizeof(futures::detail::Core<Unit>));
 }

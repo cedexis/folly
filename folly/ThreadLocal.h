@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,10 @@
  * objects of a parent.  accessAllThreads() initializes an accessor which holds
  * a global lock *that blocks all creation and destruction of ThreadLocal
  * objects with the same Tag* and can be used as an iterable container.
+ * accessAllThreads() can race with destruction of thread-local elements. We
+ * provide a strict mode which is dangerous because it requires the access lock
+ * to be held while destroying thread-local elements which could cause
+ * deadlocks. We gate this mode behind the AccessModeStrict template parameter.
  *
  * Intended use is for frequent write, infrequent read data access patterns such
  * as counters.
@@ -36,27 +40,21 @@
 
 #pragma once
 
+#include <boost/iterator/iterator_facade.hpp>
 #include <folly/Likely.h>
 #include <folly/Portability.h>
 #include <folly/ScopeGuard.h>
-#include <boost/iterator/iterator_facade.hpp>
+#include <folly/SharedMutex.h>
+#include <folly/detail/ThreadLocalDetail.h>
 #include <type_traits>
 #include <utility>
 
 namespace folly {
-enum class TLPDestructionMode {
-  THIS_THREAD,
-  ALL_THREADS
-};
-}  // namespace
 
-#include <folly/detail/ThreadLocalDetail.h>
+template <class T, class Tag, class AccessMode>
+class ThreadLocalPtr;
 
-namespace folly {
-
-template<class T, class Tag> class ThreadLocalPtr;
-
-template<class T, class Tag=void>
+template <class T, class Tag = void, class AccessMode = void>
 class ThreadLocal {
  public:
   constexpr ThreadLocal() : constructor_([]() {
@@ -89,7 +87,7 @@ class ThreadLocal {
     tlp_.reset(newPtr);
   }
 
-  typedef typename ThreadLocalPtr<T,Tag>::Accessor Accessor;
+  typedef typename ThreadLocalPtr<T, Tag, AccessMode>::Accessor Accessor;
   Accessor accessAllThreads() const {
     return tlp_.accessAllThreads();
   }
@@ -109,7 +107,7 @@ class ThreadLocal {
     return ptr;
   }
 
-  mutable ThreadLocalPtr<T,Tag> tlp_;
+  mutable ThreadLocalPtr<T, Tag, AccessMode> tlp_;
   std::function<T*()> constructor_;
 };
 
@@ -139,10 +137,11 @@ class ThreadLocal {
  *       with __declspec(thread)
  */
 
-template<class T, class Tag=void>
+template <class T, class Tag = void, class AccessMode = void>
 class ThreadLocalPtr {
  private:
-  typedef threadlocal_detail::StaticMeta<Tag> StaticMeta;
+  typedef threadlocal_detail::StaticMeta<Tag, AccessMode> StaticMeta;
+
  public:
   constexpr ThreadLocalPtr() : id_() {}
 
@@ -162,7 +161,7 @@ class ThreadLocalPtr {
   }
 
   T* get() const {
-    threadlocal_detail::ElementWrapper& w = StaticMeta::instance().get(&id_);
+    threadlocal_detail::ElementWrapper& w = StaticMeta::get(&id_);
     return static_cast<T*>(w.ptr);
   }
 
@@ -175,14 +174,14 @@ class ThreadLocalPtr {
   }
 
   T* release() {
-    threadlocal_detail::ElementWrapper& w = StaticMeta::instance().get(&id_);
+    threadlocal_detail::ElementWrapper& w = StaticMeta::get(&id_);
 
     return static_cast<T*>(w.release());
   }
 
   void reset(T* newPtr = nullptr) {
     auto guard = makeGuard([&] { delete newPtr; });
-    threadlocal_detail::ElementWrapper& w = StaticMeta::instance().get(&id_);
+    threadlocal_detail::ElementWrapper& w = StaticMeta::get(&id_);
 
     w.dispose(TLPDestructionMode::THIS_THREAD);
     guard.dismiss();
@@ -236,7 +235,7 @@ class ThreadLocalPtr {
         deleter(newPtr, TLPDestructionMode::THIS_THREAD);
       }
     });
-    threadlocal_detail::ElementWrapper& w = StaticMeta::instance().get(&id_);
+    threadlocal_detail::ElementWrapper& w = StaticMeta::get(&id_);
     w.dispose(TLPDestructionMode::THIS_THREAD);
     guard.dismiss();
     w.set(newPtr, deleter);
@@ -246,9 +245,10 @@ class ThreadLocalPtr {
   // Can be used as an iterable container.
   // Use accessAllThreads() to obtain one.
   class Accessor {
-    friend class ThreadLocalPtr<T,Tag>;
+    friend class ThreadLocalPtr<T, Tag, AccessMode>;
 
     threadlocal_detail::StaticMetaBase& meta_;
+    SharedMutex* accessAllThreadsLock_;
     std::mutex* lock_;
     uint32_t id_;
 
@@ -321,10 +321,12 @@ class ThreadLocalPtr {
     Accessor& operator=(const Accessor&) = delete;
 
     Accessor(Accessor&& other) noexcept
-      : meta_(other.meta_),
-        lock_(other.lock_),
-        id_(other.id_) {
+        : meta_(other.meta_),
+          accessAllThreadsLock_(other.accessAllThreadsLock_),
+          lock_(other.lock_),
+          id_(other.id_) {
       other.id_ = 0;
+      other.accessAllThreadsLock_ = nullptr;
       other.lock_ = nullptr;
     }
 
@@ -338,20 +340,23 @@ class ThreadLocalPtr {
       assert(&meta_ == &other.meta_);
       assert(lock_ == nullptr);
       using std::swap;
+      swap(accessAllThreadsLock_, other.accessAllThreadsLock_);
       swap(lock_, other.lock_);
       swap(id_, other.id_);
     }
 
     Accessor()
-      : meta_(threadlocal_detail::StaticMeta<Tag>::instance()),
-        lock_(nullptr),
-        id_(0) {
-    }
+        : meta_(threadlocal_detail::StaticMeta<Tag, AccessMode>::instance()),
+          accessAllThreadsLock_(nullptr),
+          lock_(nullptr),
+          id_(0) {}
 
    private:
     explicit Accessor(uint32_t id)
-      : meta_(threadlocal_detail::StaticMeta<Tag>::instance()),
-        lock_(&meta_.lock_) {
+        : meta_(threadlocal_detail::StaticMeta<Tag, AccessMode>::instance()),
+          accessAllThreadsLock_(&meta_.accessAllThreadsLock_),
+          lock_(&meta_.lock_) {
+      accessAllThreadsLock_->lock();
       lock_->lock();
       id_ = id;
     }
@@ -359,8 +364,11 @@ class ThreadLocalPtr {
     void release() {
       if (lock_) {
         lock_->unlock();
+        DCHECK(accessAllThreadsLock_ != nullptr);
+        accessAllThreadsLock_->unlock();
         id_ = 0;
         lock_ = nullptr;
+        accessAllThreadsLock_ = nullptr;
       }
     }
   };
@@ -385,4 +393,4 @@ class ThreadLocalPtr {
   mutable typename StaticMeta::EntryID id_;
 };
 
-}  // namespace folly
+} // namespace folly

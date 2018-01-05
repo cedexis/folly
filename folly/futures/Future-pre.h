@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,19 @@ namespace folly {
 
 template <class> class Promise;
 
+template <class T>
+class SemiFuture;
+
+template <typename T>
+struct isSemiFuture : std::false_type {
+  using Inner = typename Unit::Lift<T>::type;
+};
+
+template <typename T>
+struct isSemiFuture<SemiFuture<T>> : std::true_type {
+  typedef T Inner;
+};
+
 template <typename T>
 struct isFuture : std::false_type {
   using Inner = typename Unit::Lift<T>::type;
@@ -33,11 +46,30 @@ struct isFuture<Future<T>> : std::true_type {
 };
 
 template <typename T>
+struct isFutureOrSemiFuture : std::false_type {
+  using Inner = typename Unit::Lift<T>::type;
+  using Return = Inner;
+};
+
+template <typename T>
+struct isFutureOrSemiFuture<Future<T>> : std::true_type {
+  typedef T Inner;
+  using Return = Future<Inner>;
+};
+
+template <typename T>
+struct isFutureOrSemiFuture<SemiFuture<T>> : std::true_type {
+  typedef T Inner;
+  using Return = SemiFuture<Inner>;
+};
+
+template <typename T>
 struct isTry : std::false_type {};
 
 template <typename T>
 struct isTry<Try<T>> : std::true_type {};
 
+namespace futures {
 namespace detail {
 
 template <class> class Core;
@@ -45,7 +77,7 @@ template <class...> struct CollectAllVariadicContext;
 template <class...> struct CollectVariadicContext;
 template <class> struct CollectContext;
 
-template<typename F, typename... Args>
+template <typename F, typename... Args>
 using resultOf = decltype(std::declval<F>()(std::declval<Args>()...));
 
 template <typename...>
@@ -66,22 +98,21 @@ struct argResult {
   using Result = resultOf<F, Args...>;
 };
 
-template<typename F, typename... Args>
+template <typename F, typename... Args>
 struct callableWith {
-    template<typename T,
-             typename = detail::resultOf<T, Args...>>
+    template <typename T, typename = detail::resultOf<T, Args...>>
     static constexpr std::true_type
-    check(std::nullptr_t) { return std::true_type{}; };
+    check(std::nullptr_t) { return std::true_type{}; }
 
-    template<typename>
+    template <typename>
     static constexpr std::false_type
-    check(...) { return std::false_type{}; };
+    check(...) { return std::false_type{}; }
 
     typedef decltype(check<F>(nullptr)) type;
     static constexpr bool value = type::value;
 };
 
-template<typename T, typename F>
+template <typename T, typename F>
 struct callableResult {
   typedef typename std::conditional<
     callableWith<F>::value,
@@ -96,7 +127,7 @@ struct callableResult {
           callableWith<F, Try<T>&&>::value,
           detail::argResult<true, F, Try<T>&&>,
           detail::argResult<true, F, Try<T>&>>::type>::type>::type>::type Arg;
-  typedef isFuture<typename Arg::Result> ReturnsFuture;
+  typedef isFutureOrSemiFuture<typename Arg::Result> ReturnsFuture;
   typedef Future<typename ReturnsFuture::Inner> Return;
 };
 
@@ -105,7 +136,7 @@ struct Extract : Extract<decltype(&L::operator())> { };
 
 template <typename Class, typename R, typename... Args>
 struct Extract<R(Class::*)(Args...) const> {
-  typedef isFuture<R> ReturnsFuture;
+  typedef isFutureOrSemiFuture<R> ReturnsFuture;
   typedef Future<typename ReturnsFuture::Inner> Return;
   typedef typename ReturnsFuture::Inner RawReturn;
   typedef typename ArgType<Args...>::FirstArg FirstArg;
@@ -113,33 +144,136 @@ struct Extract<R(Class::*)(Args...) const> {
 
 template <typename Class, typename R, typename... Args>
 struct Extract<R(Class::*)(Args...)> {
-  typedef isFuture<R> ReturnsFuture;
+  typedef isFutureOrSemiFuture<R> ReturnsFuture;
   typedef Future<typename ReturnsFuture::Inner> Return;
   typedef typename ReturnsFuture::Inner RawReturn;
   typedef typename ArgType<Args...>::FirstArg FirstArg;
 };
 
-// gcc-4.8 refuses to capture a function reference in a lambda. This can be
-// mitigated by casting them to function pointer types first. The following
-// helper is used in Future.h to achieve that where necessary.
-// When compiling with gcc versions 4.9 and up, as well as clang, we do not
-// need to apply FunctionReferenceToPointer (i.e. T can be used instead of
-// FunctionReferenceToPointer<T>).
-// Applying FunctionReferenceToPointer first, the code works on all tested
-// compiler versions: gcc 4.8 and above, cland 3.5 and above.
-
-template <typename T>
-struct FunctionReferenceToPointer {
-  using type = T;
+template <typename R, typename... Args>
+struct Extract<R (*)(Args...)> {
+  typedef isFutureOrSemiFuture<R> ReturnsFuture;
+  typedef Future<typename ReturnsFuture::Inner> Return;
+  typedef typename ReturnsFuture::Inner RawReturn;
+  typedef typename ArgType<Args...>::FirstArg FirstArg;
 };
 
 template <typename R, typename... Args>
-struct FunctionReferenceToPointer<R (&)(Args...)> {
-  using type = R (*)(Args...);
+struct Extract<R (&)(Args...)> {
+  typedef isFutureOrSemiFuture<R> ReturnsFuture;
+  typedef Future<typename ReturnsFuture::Inner> Return;
+  typedef typename ReturnsFuture::Inner RawReturn;
+  typedef typename ArgType<Args...>::FirstArg FirstArg;
 };
 
-} // detail
+/**
+ * Defer work until executor is actively boosted.
+ *
+ * NOTE: that this executor is a private implementation detail belonging to the
+ * Folly Futures library and not intended to be used elsewhere. It is designed
+ * specifically for the use case of deferring work on a SemiFuture. It is NOT
+ * thread safe. Please do not use for any other purpose without great care.
+ */
+class DeferredExecutor final : public Executor {
+ public:
+  template <typename Class, typename F>
+  struct DeferredWorkWrapper;
+
+  /**
+   * Work wrapper class to capture the keepalive and forward the argument
+   * list to the captured function.
+   */
+  template <typename F, typename R, typename... Args>
+  struct DeferredWorkWrapper<F, R (F::*)(Args...) const> {
+    R operator()(Args... args) {
+      return func(std::forward<Args>(args)...);
+    }
+
+    Executor::KeepAlive a;
+    F func;
+  };
+
+  /**
+   * Construction is private to ensure that creation and deletion are
+   * symmetric
+   */
+  static KeepAlive create() {
+    std::unique_ptr<futures::detail::DeferredExecutor> devb{
+        new futures::detail::DeferredExecutor{}};
+    auto keepAlive = devb->getKeepAliveToken();
+    devb.release();
+    return keepAlive;
+  }
+
+  /// Enqueue a function to executed by this executor. This is not thread-safe.
+  void add(Func func) override {
+    // If we already have a function, wrap and chain. Otherwise assign.
+    if (func_) {
+      func_ = [oldFunc = std::move(func_), func = std::move(func)]() mutable {
+        oldFunc();
+        func();
+      };
+    } else {
+      func_ = std::move(func);
+    }
+  }
+
+  // Boost is like drive for certain types of deferred work
+  // Unlike drive it is safe to run on another executor because it
+  // will only be implemented on deferred-safe executors
+  void boost() {
+    // Ensure that the DeferredExecutor outlives its run operation
+    ++keepAliveCount_;
+    SCOPE_EXIT {
+      releaseAndTryFree();
+    };
+
+    // Drain the executor
+    while (auto func = std::move(func_)) {
+      func();
+    }
+  }
+
+  KeepAlive getKeepAliveToken() override {
+    keepAliveAcquire();
+    return makeKeepAlive();
+  }
+
+  ~DeferredExecutor() = default;
+
+  template <class F>
+  static auto wrap(Executor::KeepAlive keepAlive, F&& func)
+      -> DeferredWorkWrapper<F, decltype(&F::operator())> {
+    return DeferredExecutor::DeferredWorkWrapper<F, decltype(&F::operator())>{
+        std::move(keepAlive), std::forward<F>(func)};
+  }
+
+ protected:
+  void keepAliveAcquire() override {
+    ++keepAliveCount_;
+  }
+
+  void keepAliveRelease() override {
+    releaseAndTryFree();
+  }
+
+  void releaseAndTryFree() {
+    --keepAliveCount_;
+    if (keepAliveCount_ == 0) {
+      delete this;
+    }
+  }
+
+ private:
+  Func func_;
+  ssize_t keepAliveCount_{0};
+
+  DeferredExecutor() = default;
+};
+
+} // namespace detail
+} // namespace futures
 
 class Timekeeper;
 
-} // namespace
+} // namespace folly

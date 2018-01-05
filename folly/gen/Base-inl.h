@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,11 +18,14 @@
 #error This file may only be included from folly/gen/Base.h
 #endif
 
-// Ignore shadowing warnings within this file, so includers can use -Wshadow.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wshadow"
+#include <folly/Portability.h>
 
-namespace folly { namespace gen {
+// Ignore shadowing warnings within this file, so includers can use -Wshadow.
+FOLLY_PUSH_WARNING
+FOLLY_GCC_DISABLE_WARNING("-Wshadow")
+
+namespace folly {
+namespace gen {
 
 /**
  * ArgumentReference - For determining ideal argument type to receive a value.
@@ -357,8 +360,7 @@ class InfiniteImpl {
  **/
 template <class Value>
 struct GeneratorBuilder {
-  template <class Source,
-            class Yield = detail::Yield<Value, Source>>
+  template <class Source, class Yield = detail::Yield<Value, Source>>
   Yield operator+(Source&& source) {
     return Yield(std::forward<Source>(source));
   }
@@ -468,7 +470,7 @@ class SingleCopy : public GenImpl<const Value&, SingleCopy<Value>> {
  *
  * This type is usually used through the 'map' or 'mapped' helper function:
  *
- *   auto squares = seq(1, 10) | map(square) | asVector;
+ *   auto squares = seq(1, 10) | map(square) | as<std::vector>();
  */
 template <class Predicate>
 class Map : public Operator<Map<Predicate>> {
@@ -479,10 +481,11 @@ class Map : public Operator<Map<Predicate>> {
 
   explicit Map(Predicate pred) : pred_(std::move(pred)) {}
 
-  template <class Value,
-            class Source,
-            class Result = typename ArgumentReference<
-                typename std::result_of<Predicate(Value)>::type>::type>
+  template <
+      class Value,
+      class Source,
+      class Result = typename ArgumentReference<
+          typename std::result_of<Predicate(Value)>::type>::type>
   class Generator : public GenImpl<Result, Generator<Value, Source, Result>> {
     Source source_;
     Predicate pred_;
@@ -507,16 +510,12 @@ class Map : public Operator<Map<Predicate>> {
     static constexpr bool infinite = Source::infinite;
   };
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(GenImpl<Value, Source>&& source) const {
     return Gen(std::move(source.self()), pred_);
   }
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(const GenImpl<Value, Source>& source) const {
     return Gen(source.self(), pred_);
   }
@@ -580,16 +579,12 @@ class Filter : public Operator<Filter<Predicate>> {
     static constexpr bool infinite = Source::infinite;
   };
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(GenImpl<Value, Source>&& source) const {
     return Gen(std::move(source.self()), pred_);
   }
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(const GenImpl<Value, Source>& source) const {
     return Gen(source.self(), pred_);
   }
@@ -602,7 +597,7 @@ class Filter : public Operator<Filter<Predicate>> {
  *
  *   auto best = from(sortedItems)
  *             | until([](Item& item) { return item.score > 100; })
- *             | asVector;
+ *             | as<std::vector>();
  */
 template <class Predicate>
 class Until : public Operator<Until<Predicate>> {
@@ -641,16 +636,12 @@ class Until : public Operator<Until<Predicate>> {
     static constexpr bool infinite = false;
   };
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(GenImpl<Value, Source>&& source) const {
     return Gen(std::move(source.self()), pred_);
   }
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(const GenImpl<Value, Source>& source) const {
     return Gen(source.self(), pred_);
   }
@@ -701,18 +692,73 @@ class Take : public Operator<Take> {
     static constexpr bool infinite = false;
   };
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(GenImpl<Value, Source>&& source) const {
     return Gen(std::move(source.self()), count_);
   }
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(const GenImpl<Value, Source>& source) const {
     return Gen(source.self(), count_);
+  }
+};
+
+/**
+ * Visit - For calling a function on each item before passing it down the
+ * pipeline.
+ *
+ * This type is usually used through the 'visit' helper function:
+ *
+ *   auto printedValues = seq(1) | visit(debugPrint);
+ *   // nothing printed yet
+ *   auto results = take(10) | as<std::vector>();
+ *   // results now populated, 10 values printed
+ */
+template <class Visitor>
+class Visit : public Operator<Visit<Visitor>> {
+  Visitor visitor_;
+
+ public:
+  Visit() = default;
+
+  explicit Visit(Visitor visitor) : visitor_(std::move(visitor)) {}
+
+  template <class Value, class Source>
+  class Generator : public GenImpl<Value, Generator<Value, Source>> {
+    Source source_;
+    Visitor visitor_;
+
+   public:
+    explicit Generator(Source source, const Visitor& visitor)
+        : source_(std::move(source)), visitor_(visitor) {}
+
+    template <class Body>
+    void foreach(Body&& body) const {
+      source_.foreach([&](Value value) {
+        visitor_(value); // not forwarding to avoid accidental moves
+        body(std::forward<Value>(value));
+      });
+    }
+
+    template <class Handler>
+    bool apply(Handler&& handler) const {
+      return source_.apply([&](Value value) {
+        visitor_(value); // not forwarding to avoid accidental moves
+        return handler(std::forward<Value>(value));
+      });
+    }
+
+    static constexpr bool infinite = Source::infinite;
+  };
+
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
+  Gen compose(GenImpl<Value, Source>&& source) const {
+    return Gen(std::move(source.self()), visitor_);
+  }
+
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
+  Gen compose(const GenImpl<Value, Source>& source) const {
+    return Gen(source.self(), visitor_);
   }
 };
 
@@ -772,16 +818,12 @@ class Stride : public Operator<Stride> {
     static constexpr bool infinite = Source::infinite;
   };
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(GenImpl<Value, Source>&& source) const {
     return Gen(std::move(source.self()), stride_);
   }
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(const GenImpl<Value, Source>& source) const {
     return Gen(source.self(), stride_);
   }
@@ -800,10 +842,11 @@ class Sample : public Operator<Sample<Random>> {
   explicit Sample(size_t count, Random rng)
       : count_(count), rng_(std::move(rng)) {}
 
-  template <class Value,
-            class Source,
-            class Rand,
-            class StorageType = typename std::decay<Value>::type>
+  template <
+      class Value,
+      class Source,
+      class Rand,
+      class StorageType = typename std::decay<Value>::type>
   class Generator
       : public GenImpl<StorageType&&,
                        Generator<Value, Source, Rand, StorageType>> {
@@ -857,16 +900,18 @@ class Sample : public Operator<Sample<Random>> {
     static constexpr bool infinite = false;
   };
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source, Random>>
+  template <
+      class Source,
+      class Value,
+      class Gen = Generator<Value, Source, Random>>
   Gen compose(GenImpl<Value, Source>&& source) const {
     return Gen(std::move(source.self()), count_, rng_);
   }
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source, Random>>
+  template <
+      class Source,
+      class Value,
+      class Gen = Generator<Value, Source, Random>>
   Gen compose(const GenImpl<Value, Source>& source) const {
     return Gen(source.self(), count_, rng_);
   }
@@ -931,16 +976,12 @@ class Skip : public Operator<Skip> {
     static constexpr bool infinite = Source::infinite;
   };
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(GenImpl<Value, Source>&& source) const {
     return Gen(std::move(source.self()), count_);
   }
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(const GenImpl<Value, Source>& source) const {
     return Gen(source.self(), count_);
   }
@@ -972,10 +1013,11 @@ class Order : public Operator<Order<Selector, Comparer>> {
   Order(Selector selector, Comparer comparer)
       : selector_(std::move(selector)), comparer_(std::move(comparer)) {}
 
-  template <class Value,
-            class Source,
-            class StorageType = typename std::decay<Value>::type,
-            class Result = typename std::result_of<Selector(Value)>::type>
+  template <
+      class Value,
+      class Source,
+      class StorageType = typename std::decay<Value>::type,
+      class Result = typename std::result_of<Selector(Value)>::type>
   class Generator
       : public GenImpl<StorageType&&,
                        Generator<Value, Source, StorageType, Result>> {
@@ -1038,16 +1080,12 @@ class Order : public Operator<Order<Selector, Comparer>> {
     static constexpr bool infinite = false;
   };
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(GenImpl<Value, Source>&& source) const {
     return Gen(std::move(source.self()), selector_, comparer_);
   }
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(const GenImpl<Value, Source>& source) const {
     return Gen(source.self(), selector_, comparer_);
   }
@@ -1077,11 +1115,12 @@ class GroupBy : public Operator<GroupBy<Selector>> {
 
   explicit GroupBy(Selector selector) : selector_(std::move(selector)) {}
 
-  template <class Value,
-            class Source,
-            class ValueDecayed = typename std::decay<Value>::type,
-            class Key = typename std::result_of<Selector(Value)>::type,
-            class KeyDecayed = typename std::decay<Key>::type>
+  template <
+      class Value,
+      class Source,
+      class ValueDecayed = typename std::decay<Value>::type,
+      class Key = typename std::result_of<Selector(Value)>::type,
+      class KeyDecayed = typename std::decay<Key>::type>
   class Generator
       : public GenImpl<
             Group<KeyDecayed, ValueDecayed>&&,
@@ -1118,16 +1157,12 @@ class GroupBy : public Operator<GroupBy<Selector>> {
     static constexpr bool infinite = false;
   };
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(GenImpl<Value, Source>&& source) const {
     return Gen(std::move(source.self()), selector_);
   }
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(const GenImpl<Value, Source>& source) const {
     return Gen(source.self(), selector_);
   }
@@ -1225,16 +1260,12 @@ class Distinct : public Operator<Distinct<Selector>> {
     static constexpr bool infinite = Source::infinite;
   };
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(GenImpl<Value, Source>&& source) const {
     return Gen(std::move(source.self()), selector_);
   }
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(const GenImpl<Value, Source>& source) const {
     return Gen(source.self(), selector_);
   }
@@ -1251,9 +1282,10 @@ class Composer {
  public:
   explicit Composer(Operators op) : op_(std::move(op)) {}
 
-  template <class Source,
-            class Ret = decltype(
-                std::declval<Operators>().compose(std::declval<Source>()))>
+  template <
+      class Source,
+      class Ret =
+          decltype(std::declval<Operators>().compose(std::declval<Source>()))>
   Ret operator()(Source&& source) const {
     return op_.compose(std::forward<Source>(source));
   }
@@ -1282,10 +1314,11 @@ class Batch : public Operator<Batch> {
     }
   }
 
-  template <class Value,
-            class Source,
-            class StorageType = typename std::decay<Value>::type,
-            class VectorType = std::vector<StorageType>>
+  template <
+      class Value,
+      class Source,
+      class StorageType = typename std::decay<Value>::type,
+      class VectorType = std::vector<StorageType>>
   class Generator
       : public GenImpl<VectorType&,
                        Generator<Value, Source, StorageType, VectorType>> {
@@ -1322,18 +1355,111 @@ class Batch : public Operator<Batch> {
     static constexpr bool infinite = Source::infinite;
   };
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(GenImpl<Value, Source>&& source) const {
     return Gen(std::move(source.self()), batchSize_);
   }
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(const GenImpl<Value, Source>& source) const {
     return Gen(source.self(), batchSize_);
+  }
+};
+
+/**
+ * Window - For overlapping the lifetimes of pipeline values, especially with
+ * Futures.
+ *
+ * This type is usually used through the 'window' helper function:
+ *
+ *   auto responses
+ *     = byLine(STDIN)
+ *     | map(makeRequestFuture)
+ *     | window(1000)
+ *     | map(waitFuture)
+ *     | as<vector>();
+ */
+class Window : public Operator<Window> {
+  size_t windowSize_;
+
+ public:
+  explicit Window(size_t windowSize) : windowSize_(windowSize) {
+    if (windowSize_ == 0) {
+      throw std::invalid_argument("Window size must be non-zero!");
+    }
+  }
+
+  template <
+      class Value,
+      class Source,
+      class StorageType = typename std::decay<Value>::type>
+  class Generator
+      : public GenImpl<StorageType&&, Generator<Value, Source, StorageType>> {
+    Source source_;
+    size_t windowSize_;
+
+   public:
+    explicit Generator(Source source, size_t windowSize)
+        : source_(std::move(source)), windowSize_(windowSize) {}
+
+    template <class Handler>
+    bool apply(Handler&& handler) const {
+      std::vector<StorageType> buffer;
+      buffer.reserve(windowSize_);
+      size_t readIndex = 0;
+      bool shouldContinue = source_.apply([&](Value value) -> bool {
+        if (buffer.size() < windowSize_) {
+          buffer.push_back(std::forward<Value>(value));
+        } else {
+          StorageType& entry = buffer[readIndex++];
+          if (readIndex == windowSize_) {
+            readIndex = 0;
+          }
+          if (!handler(std::move(entry))) {
+            return false;
+          }
+          entry = std::forward<Value>(value);
+        }
+        return true;
+      });
+      if (!shouldContinue) {
+        return false;
+      }
+      if (buffer.size() < windowSize_) {
+        for (StorageType& entry : buffer) {
+          if (!handler(std::move(entry))) {
+            return false;
+          }
+        }
+      } else {
+        for (size_t i = readIndex;;) {
+          StorageType& entry = buffer[i++];
+          if (!handler(std::move(entry))) {
+            return false;
+          }
+          if (i == windowSize_) {
+            i = 0;
+          }
+          if (i == readIndex) {
+            break;
+          }
+        }
+      }
+      return true;
+    }
+
+    // Taking n-tuples of an infinite source is still infinite
+    static constexpr bool infinite = Source::infinite;
+  };
+
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
+  Gen compose(GenImpl<Value, Source>&& source) const {
+    return Gen(std::move(source.self()), windowSize_);
+  }
+
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
+  Gen compose(const GenImpl<Value, Source>& source) const {
+    return Gen(source.self(), windowSize_);
   }
 };
 
@@ -1357,9 +1483,10 @@ class Concat : public Operator<Concat> {
  public:
   Concat() = default;
 
-  template <class Inner,
-            class Source,
-            class InnerValue = typename std::decay<Inner>::type::ValueType>
+  template <
+      class Inner,
+      class Source,
+      class InnerValue = typename std::decay<Inner>::type::ValueType>
   class Generator
       : public GenImpl<InnerValue, Generator<Inner, Source, InnerValue>> {
     Source source_;
@@ -1390,16 +1517,12 @@ class Concat : public Operator<Concat> {
         Source::infinite || std::decay<Inner>::type::infinite;
   };
 
-  template <class Value,
-            class Source,
-            class Gen = Generator<Value, Source>>
+  template <class Value, class Source, class Gen = Generator<Value, Source>>
   Gen compose(GenImpl<Value, Source>&& source) const {
     return Gen(std::move(source.self()));
   }
 
-  template <class Value,
-            class Source,
-            class Gen = Generator<Value, Source>>
+  template <class Value, class Source, class Gen = Generator<Value, Source>>
   Gen compose(const GenImpl<Value, Source>& source) const {
     return Gen(source.self());
   }
@@ -1421,9 +1544,10 @@ class RangeConcat : public Operator<RangeConcat> {
  public:
   RangeConcat() = default;
 
-  template <class Range,
-            class Source,
-            class InnerValue = typename ValueTypeOfRange<Range>::RefType>
+  template <
+      class Range,
+      class Source,
+      class InnerValue = typename ValueTypeOfRange<Range>::RefType>
   class Generator
       : public GenImpl<InnerValue, Generator<Range, Source, InnerValue>> {
     Source source_;
@@ -1457,16 +1581,12 @@ class RangeConcat : public Operator<RangeConcat> {
     static constexpr bool infinite = Source::infinite;
   };
 
-  template <class Value,
-            class Source,
-            class Gen = Generator<Value, Source>>
+  template <class Value, class Source, class Gen = Generator<Value, Source>>
   Gen compose(GenImpl<Value, Source>&& source) const {
     return Gen(std::move(source.self()));
   }
 
-  template <class Value,
-            class Source,
-            class Gen = Generator<Value, Source>>
+  template <class Value, class Source, class Gen = Generator<Value, Source>>
   Gen compose(const GenImpl<Value, Source>& source) const {
     return Gen(source.self());
   }
@@ -1527,16 +1647,12 @@ class GuardImpl : public Operator<GuardImpl<Exception, ErrorHandler>> {
     static constexpr bool infinite = Source::infinite;
   };
 
-  template <class Value,
-            class Source,
-            class Gen = Generator<Value, Source>>
+  template <class Value, class Source, class Gen = Generator<Value, Source>>
   Gen compose(GenImpl<Value, Source>&& source) const {
     return Gen(std::move(source.self()), handler_);
   }
 
-  template <class Value,
-            class Source,
-            class Gen = Generator<Value, Source>>
+  template <class Value, class Source, class Gen = Generator<Value, Source>>
   Gen compose(const GenImpl<Value, Source>& source) const {
     return Gen(source.self(), handler_);
   }
@@ -1554,9 +1670,10 @@ class Dereference : public Operator<Dereference> {
  public:
   Dereference() = default;
 
-  template <class Value,
-            class Source,
-            class Result = decltype(*std::declval<Value>())>
+  template <
+      class Value,
+      class Source,
+      class Result = decltype(*std::declval<Value>())>
   class Generator : public GenImpl<Result, Generator<Value, Source, Result>> {
     Source source_;
 
@@ -1567,7 +1684,7 @@ class Dereference : public Operator<Dereference> {
     void foreach(Body&& body) const {
       source_.foreach([&](Value value) {
         if (value) {
-          return body(*value);
+          return body(*std::forward<Value>(value));
         }
       });
     }
@@ -1576,7 +1693,7 @@ class Dereference : public Operator<Dereference> {
     bool apply(Handler&& handler) const {
       return source_.apply([&](Value value) -> bool {
         if (value) {
-          return handler(*value);
+          return handler(*std::forward<Value>(value));
         }
         return true;
       });
@@ -1586,16 +1703,12 @@ class Dereference : public Operator<Dereference> {
     static constexpr bool infinite = Source::infinite;
   };
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(GenImpl<Value, Source>&& source) const {
     return Gen(std::move(source.self()));
   }
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(const GenImpl<Value, Source>& source) const {
     return Gen(source.self());
   }
@@ -1613,9 +1726,10 @@ class Indirect : public Operator<Indirect> {
  public:
   Indirect() = default;
 
-  template <class Value,
-            class Source,
-            class Result = typename std::remove_reference<Value>::type*>
+  template <
+      class Value,
+      class Source,
+      class Result = typename std::remove_reference<Value>::type*>
   class Generator : public GenImpl<Result, Generator<Value, Source, Result>> {
     Source source_;
     static_assert(!std::is_rvalue_reference<Value>::value,
@@ -1627,14 +1741,14 @@ class Indirect : public Operator<Indirect> {
     template <class Body>
     void foreach(Body&& body) const {
       source_.foreach([&](Value value) {
-        return body(&value);
+        return body(&std::forward<Value>(value));
       });
     }
 
     template <class Handler>
     bool apply(Handler&& handler) const {
       return source_.apply([&](Value value) -> bool {
-        return handler(&value);
+        return handler(&std::forward<Value>(value));
       });
     }
 
@@ -1642,16 +1756,12 @@ class Indirect : public Operator<Indirect> {
     static constexpr bool infinite = Source::infinite;
   };
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(GenImpl<Value, Source>&& source) const {
     return Gen(std::move(source.self()));
   }
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(const GenImpl<Value, Source>& source) const {
     return Gen(source.self());
   }
@@ -1719,16 +1829,12 @@ class Cycle : public Operator<Cycle<forever>> {
     static constexpr bool infinite = forever || Source::infinite;
   };
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(GenImpl<Value, Source>&& source) const {
     return Gen(std::move(source.self()), limit_);
   }
 
-  template <class Source,
-            class Value,
-            class Gen = Generator<Value, Source>>
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
   Gen compose(const GenImpl<Value, Source>& source) const {
     return Gen(source.self(), limit_);
   }
@@ -1789,9 +1895,10 @@ class First : public Operator<First> {
  public:
   First() = default;
 
-  template <class Source,
-            class Value,
-            class StorageType = typename std::decay<Value>::type>
+  template <
+      class Source,
+      class Value,
+      class StorageType = typename std::decay<Value>::type>
   Optional<StorageType> compose(const GenImpl<Value, Source>& source) const {
     Optional<StorageType> accum;
     source | [&](Value v) -> bool {
@@ -1859,15 +1966,16 @@ class Reduce : public Operator<Reduce<Reducer>> {
   Reduce() = default;
   explicit Reduce(Reducer reducer) : reducer_(std::move(reducer)) {}
 
-  template <class Source,
-            class Value,
-            class StorageType = typename std::decay<Value>::type>
+  template <
+      class Source,
+      class Value,
+      class StorageType = typename std::decay<Value>::type>
   Optional<StorageType> compose(const GenImpl<Value, Source>& source) const {
     static_assert(!Source::infinite, "Cannot reduce infinite source");
     Optional<StorageType> accum;
     source | [&](Value v) {
-      if (accum.hasValue()) {
-        accum = reducer_(std::move(accum.value()), std::forward<Value>(v));
+      if (auto target = accum.get_pointer()) {
+        *target = reducer_(std::move(*target), std::forward<Value>(v));
       } else {
         accum = std::forward<Value>(v);
       }
@@ -1907,9 +2015,10 @@ class Sum : public Operator<Sum> {
  public:
   Sum() = default;
 
-  template <class Source,
-            class Value,
-            class StorageType = typename std::decay<Value>::type>
+  template <
+      class Source,
+      class Value,
+      class StorageType = typename std::decay<Value>::type>
   StorageType compose(const GenImpl<Value, Source>& source) const {
     static_assert(!Source::infinite, "Cannot sum infinite source");
     return foldl(StorageType(0),
@@ -1934,9 +2043,10 @@ class Contains : public Operator<Contains<Needle>> {
  public:
   explicit Contains(Needle needle) : needle_(std::move(needle)) {}
 
-  template <class Source,
-            class Value,
-            class StorageType = typename std::decay<Value>::type>
+  template <
+      class Source,
+      class Value,
+      class StorageType = typename std::decay<Value>::type>
   bool compose(const GenImpl<Value, Source>& source) const {
     static_assert(!Source::infinite,
                   "Calling contains on an infinite source might cause "
@@ -1964,6 +2074,11 @@ class Min : public Operator<Min<Selector, Comparer>> {
   Selector selector_;
   Comparer comparer_;
 
+  template <typename T>
+  const T& asConst(const T& t) const {
+    return t;
+  }
+
  public:
   Min() = default;
 
@@ -1972,11 +2087,12 @@ class Min : public Operator<Min<Selector, Comparer>> {
   Min(Selector selector, Comparer comparer)
       : selector_(std::move(selector)), comparer_(std::move(comparer)) {}
 
-  template <class Value,
-            class Source,
-            class StorageType = typename std::decay<Value>::type,
-            class Key = typename std::decay<
-                typename std::result_of<Selector(Value)>::type>::type>
+  template <
+      class Value,
+      class Source,
+      class StorageType = typename std::decay<Value>::type,
+      class Key = typename std::decay<
+          typename std::result_of<Selector(Value)>::type>::type>
   Optional<StorageType> compose(const GenImpl<Value, Source>& source) const {
     static_assert(!Source::infinite,
                   "Calling min or max on an infinite source will cause "
@@ -1984,11 +2100,14 @@ class Min : public Operator<Min<Selector, Comparer>> {
     Optional<StorageType> min;
     Optional<Key> minKey;
     source | [&](Value v) {
-      Key key = selector_(std::forward<Value>(v));
-      if (!minKey.hasValue() || comparer_(key, minKey.value())) {
-        minKey = key;
-        min = std::forward<Value>(v);
+      Key key = selector_(asConst(v)); // so that selector_ cannot mutate v
+      if (auto lastKey = minKey.get_pointer()) {
+        if (!comparer_(key, *lastKey)) {
+          return;
+        }
       }
+      minKey = std::move(key);
+      min = std::forward<Value>(v);
     };
     return min;
   }
@@ -2036,9 +2155,10 @@ class Collect : public Operator<Collect<Collection>> {
  public:
   Collect() = default;
 
-  template <class Value,
-            class Source,
-            class StorageType = typename std::decay<Value>::type>
+  template <
+      class Value,
+      class Source,
+      class StorageType = typename std::decay<Value>::type>
   Collection compose(const GenImpl<Value, Source>& source) const {
     static_assert(!Source::infinite,
                   "Cannot convert infinite source to object with as.");
@@ -2065,16 +2185,18 @@ class Collect : public Operator<Collect<Collection>> {
  *
  *   set<string> uniqueNames = from(names) | as<set>();
  */
-template <template <class, class> class Container,
-          template <class> class Allocator>
+template <
+    template <class, class> class Container,
+    template <class> class Allocator>
 class CollectTemplate : public Operator<CollectTemplate<Container, Allocator>> {
  public:
   CollectTemplate() = default;
 
-  template <class Value,
-            class Source,
-            class StorageType = typename std::decay<Value>::type,
-            class Collection = Container<StorageType, Allocator<StorageType>>>
+  template <
+      class Value,
+      class Source,
+      class StorageType = typename std::decay<Value>::type,
+      class Collection = Container<StorageType, Allocator<StorageType>>>
   Collection compose(const GenImpl<Value, Source>& source) const {
     static_assert(!Source::infinite,
                   "Cannot convert infinite source to object with as.");
@@ -2135,11 +2257,12 @@ const T& operator|(const Optional<T>& opt, const UnwrapOr<T>& fallback) {
 }
 
 // Mixed type unwrapping always returns values, moving where possible
-template <class T,
-          class U,
-          class R = typename std::enable_if<
-              !std::is_same<T, U>::value,
-              typename std::common_type<T, U>::type>::type>
+template <
+    class T,
+    class U,
+    class R = typename std::enable_if<
+        !std::is_same<T, U>::value,
+        typename std::common_type<T, U>::type>::type>
 R operator|(Optional<T>&& opt, UnwrapOr<U>&& fallback) {
   if (T* p = opt.get_pointer()) {
     return std::move(*p);
@@ -2147,11 +2270,12 @@ R operator|(Optional<T>&& opt, UnwrapOr<U>&& fallback) {
   return std::move(fallback.value());
 }
 
-template <class T,
-          class U,
-          class R = typename std::enable_if<
-              !std::is_same<T, U>::value,
-              typename std::common_type<T, U>::type>::type>
+template <
+    class T,
+    class U,
+    class R = typename std::enable_if<
+        !std::is_same<T, U>::value,
+        typename std::common_type<T, U>::type>::type>
 R operator|(const Optional<T>& opt, UnwrapOr<U>&& fallback) {
   if (const T* p = opt.get_pointer()) {
     return *p;
@@ -2159,11 +2283,12 @@ R operator|(const Optional<T>& opt, UnwrapOr<U>&& fallback) {
   return std::move(fallback.value());
 }
 
-template <class T,
-          class U,
-          class R = typename std::enable_if<
-              !std::is_same<T, U>::value,
-              typename std::common_type<T, U>::type>::type>
+template <
+    class T,
+    class U,
+    class R = typename std::enable_if<
+        !std::is_same<T, U>::value,
+        typename std::common_type<T, U>::type>::type>
 R operator|(Optional<T>&& opt, const UnwrapOr<U>& fallback) {
   if (T* p = opt.get_pointer()) {
     return std::move(*p);
@@ -2171,11 +2296,12 @@ R operator|(Optional<T>&& opt, const UnwrapOr<U>& fallback) {
   return fallback.value();
 }
 
-template <class T,
-          class U,
-          class R = typename std::enable_if<
-              !std::is_same<T, U>::value,
-              typename std::common_type<T, U>::type>::type>
+template <
+    class T,
+    class U,
+    class R = typename std::enable_if<
+        !std::is_same<T, U>::value,
+        typename std::common_type<T, U>::type>::type>
 R operator|(const Optional<T>& opt, const UnwrapOr<U>& fallback) {
   if (const T* p = opt.get_pointer()) {
     return *p;
@@ -2206,7 +2332,7 @@ const T& operator|(const Optional<T>& opt, const Unwrap&) {
   return opt.value();
 }
 
-} //::detail
+} // namespace detail
 
 /**
  * VirtualGen<T> - For wrapping template types in simple polymorphic wrapper.
@@ -2228,15 +2354,15 @@ class VirtualGen : public GenImpl<Value, VirtualGen<Value>> {
    public:
     explicit WrapperImpl(Wrapped wrapped) : wrapped_(std::move(wrapped)) {}
 
-    virtual bool apply(const std::function<bool(Value)>& handler) const {
+    bool apply(const std::function<bool(Value)>& handler) const override {
       return wrapped_.apply(handler);
     }
 
-    virtual void foreach(const std::function<void(Value)>& body) const {
+    void foreach(const std::function<void(Value)>& body) const override {
       wrapped_.foreach(body);
     }
 
-    virtual std::unique_ptr<const WrapperBase> clone() const {
+    std::unique_ptr<const WrapperBase> clone() const override {
       return std::unique_ptr<const WrapperBase>(new WrapperImpl(wrapped_));
     }
   };
@@ -2329,6 +2455,11 @@ inline detail::Batch batch(size_t batchSize) {
   return detail::Batch(batchSize);
 }
 
-}} // folly::gen
+inline detail::Window window(size_t windowSize) {
+  return detail::Window(windowSize);
+}
 
-#pragma GCC diagnostic pop
+} // namespace gen
+} // namespace folly
+
+FOLLY_POP_WARNING

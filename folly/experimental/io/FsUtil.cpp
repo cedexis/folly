@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@
 #include <folly/experimental/io/FsUtil.h>
 
 #include <folly/Exception.h>
-#include <folly/portability/Unistd.h>
 
 namespace bsys = ::boost::system;
 
@@ -41,7 +40,7 @@ bool skipPrefix(const path& pth, const path& prefix, path::const_iterator& it) {
   }
   return true;
 }
-}  // namespace
+} // namespace
 
 bool starts_with(const path& pth, const path& prefix) {
   path::const_iterator it;
@@ -53,7 +52,8 @@ path remove_prefix(const path& pth, const path& prefix) {
   if (!skipPrefix(pth, prefix, it)) {
     throw filesystem_error(
         "Path does not start with prefix",
-        pth, prefix,
+        pth,
+        prefix,
         bsys::errc::make_error_code(bsys::errc::invalid_argument));
   }
 
@@ -73,5 +73,5 @@ path executable_path() {
   return read_symlink("/proc/self/exe");
 }
 
-}  // namespace fs
-}  // namespace folly
+} // namespace fs
+} // namespace folly

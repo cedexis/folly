@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,11 +22,11 @@
  */
 #pragma once
 
+#include <boost/thread.hpp>
 #include <folly/LockTraits.h>
 
 #if FOLLY_LOCK_TRAITS_HAVE_TIMED_MUTEXES
 
-#include <boost/thread.hpp>
 
 namespace folly {
 
@@ -37,14 +37,14 @@ boost::chrono::duration<Rep, boost::ratio<Num, Denom>> toBoostDuration(
     const std::chrono::duration<Rep, std::ratio<Num, Denom>>& d) {
   return boost::chrono::duration<Rep, boost::ratio<Num, Denom>>(d.count());
 }
-}
+} // namespace detail
 
 /**
  * LockTraits specialization for boost::shared_mutex
  */
 template <>
 struct LockTraits<boost::shared_mutex>
-    : public folly::detail::LockTraitsSharedBase<boost::shared_mutex> {
+    : public LockTraitsBase<boost::shared_mutex> {
   static constexpr bool is_shared = true;
   static constexpr bool is_timed = true;
 
@@ -68,7 +68,7 @@ struct LockTraits<boost::shared_mutex>
  */
 template <>
 struct LockTraits<boost::timed_mutex>
-    : public folly::detail::LockTraitsUniqueBase<boost::timed_mutex> {
+    : public LockTraitsBase<boost::timed_mutex> {
   static constexpr bool is_shared = false;
   static constexpr bool is_timed = true;
 
@@ -85,7 +85,7 @@ struct LockTraits<boost::timed_mutex>
  */
 template <>
 struct LockTraits<boost::recursive_timed_mutex>
-    : public folly::detail::LockTraitsUniqueBase<boost::recursive_timed_mutex> {
+    : public LockTraitsBase<boost::recursive_timed_mutex> {
   static constexpr bool is_shared = false;
   static constexpr bool is_timed = true;
 
@@ -96,6 +96,6 @@ struct LockTraits<boost::recursive_timed_mutex>
     return mutex.try_lock_for(detail::toBoostDuration(timeout));
   }
 };
-} // folly
+} // namespace folly
 
 #endif // FOLLY_LOCK_TRAITS_HAVE_TIMED_MUTEXES

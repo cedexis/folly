@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,24 +15,26 @@
  */
 
 #include <folly/detail/Futex.h>
+#include <boost/intrusive/list.hpp>
+#include <folly/Indestructible.h>
+#include <folly/ScopeGuard.h>
+#include <folly/hash/Hash.h>
+#include <folly/portability/SysSyscall.h>
 #include <stdint.h>
 #include <string.h>
+#include <array>
+#include <cerrno>
 #include <condition_variable>
 #include <mutex>
-#include <boost/intrusive/list.hpp>
-#include <folly/CallOnce.h>
-#include <folly/Hash.h>
-#include <folly/ScopeGuard.h>
 
 #ifdef __linux__
-# include <errno.h>
-# include <linux/futex.h>
-# include <sys/syscall.h>
+#include <linux/futex.h>
 #endif
 
 using namespace std::chrono;
 
-namespace folly { namespace detail {
+namespace folly {
+namespace detail {
 
 namespace {
 
@@ -186,22 +188,19 @@ struct EmulatedFutexBucket {
   std::mutex mutex_;
   boost::intrusive::list<EmulatedFutexWaitNode> waiters_;
 
-  static const size_t kNumBuckets = 4096;
-  static EmulatedFutexBucket* gBuckets;
-  static folly::once_flag gBucketInit;
+  static constexpr size_t const kNumBuckets = kIsMobile ? 256 : 4096;
 
   static EmulatedFutexBucket& bucketFor(void* addr) {
-    folly::call_once(gBucketInit, [](){
-      gBuckets = new EmulatedFutexBucket[kNumBuckets];
-    });
-    uint64_t mixedBits = folly::hash::twang_mix64(
-        reinterpret_cast<uintptr_t>(addr));
-    return gBuckets[mixedBits % kNumBuckets];
+    // Statically allocating this lets us use this in allocation-sensitive
+    // contexts. This relies on the assumption that std::mutex won't dynamically
+    // allocate memory, which we assume to be the case on Linux and iOS.
+    static Indestructible<std::array<EmulatedFutexBucket, kNumBuckets>>
+        gBuckets;
+    uint64_t mixedBits =
+        folly::hash::twang_mix64(reinterpret_cast<uintptr_t>(addr));
+    return (*gBuckets)[mixedBits % kNumBuckets];
   }
 };
-
-EmulatedFutexBucket* EmulatedFutexBucket::gBuckets;
-folly::once_flag EmulatedFutexBucket::gBucketInit;
 
 int emulatedFutexWake(void* addr, int count, uint32_t waitMask) {
   auto& bucket = EmulatedFutexBucket::bucketFor(addr);
@@ -226,21 +225,25 @@ int emulatedFutexWake(void* addr, int count, uint32_t waitMask) {
   return numAwoken;
 }
 
+template <typename F>
 FutexResult emulatedFutexWaitImpl(
-        void* addr,
-        uint32_t expected,
-        time_point<system_clock>* absSystemTime,
-        time_point<steady_clock>* absSteadyTime,
-        uint32_t waitMask) {
+    F* futex,
+    uint32_t expected,
+    time_point<system_clock>* absSystemTime,
+    time_point<steady_clock>* absSteadyTime,
+    uint32_t waitMask) {
+  static_assert(
+      std::is_same<F, Futex<std::atomic>>::value ||
+          std::is_same<F, Futex<EmulatedFutexAtomic>>::value,
+      "Type F must be either Futex<std::atomic> or Futex<EmulatedFutexAtomic>");
+  void* addr = static_cast<void*>(futex);
   auto& bucket = EmulatedFutexBucket::bucketFor(addr);
   EmulatedFutexWaitNode node(addr, waitMask);
 
   {
     std::unique_lock<std::mutex> bucketLock(bucket.mutex_);
 
-    uint32_t actual;
-    memcpy(&actual, addr, sizeof(uint32_t));
-    if (actual != expected) {
+    if (futex->load(std::memory_order_relaxed) != expected) {
       return FutexResult::VALUE_CHANGED;
     }
 
@@ -272,8 +275,7 @@ FutexResult emulatedFutexWaitImpl(
   return FutexResult::AWOKEN;
 }
 
-} // anon namespace
-
+} // namespace
 
 /////////////////////////////////
 // Futex<> specializations
@@ -320,4 +322,5 @@ Futex<EmulatedFutexAtomic>::futexWaitImpl(
       this, expected, absSystemTime, absSteadyTime, waitMask);
 }
 
-}} // namespace folly::detail
+} // namespace detail
+} // namespace folly

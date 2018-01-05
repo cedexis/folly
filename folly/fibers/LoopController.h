@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -42,6 +42,12 @@ class LoopController {
   virtual void schedule() = 0;
 
   /**
+   * Run FiberManager loopUntilNoReadyImpl(). May have additional logic specific
+   * to a LoopController.
+   */
+  virtual void runLoop() = 0;
+
+  /**
    * Same as schedule(), but safe to call from any thread.
    * Runs func and only schedules if func returned true.
    */
@@ -58,5 +64,5 @@ class LoopController {
    */
   virtual void timedSchedule(std::function<void()> func, TimePoint time) = 0;
 };
-}
-} // folly::fibers
+} // namespace fibers
+} // namespace folly

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,15 +19,53 @@
 /* These definitions are in a separate file so that they
  * may be included from C- as well as C++-based projects. */
 
+/**
+ * Portable version check.
+ */
+#ifndef __GNUC_PREREQ
+# if defined __GNUC__ && defined __GNUC_MINOR__
+/* nolint */
+#  define __GNUC_PREREQ(maj, min) ((__GNUC__ << 16) + __GNUC_MINOR__ >= \
+                                   ((maj) << 16) + (min))
+# else
+/* nolint */
+#  define __GNUC_PREREQ(maj, min) 0
+# endif
+#endif
+
+// portable version check for clang
+#ifndef __CLANG_PREREQ
+# if defined __clang__ && defined __clang_major__ && defined __clang_minor__
+/* nolint */
+#  define __CLANG_PREREQ(maj, min) \
+    ((__clang_major__ << 16) + __clang_minor__ >= ((maj) << 16) + (min))
+# else
+/* nolint */
+#  define __CLANG_PREREQ(maj, min) 0
+# endif
+#endif
+
+#if defined(__has_builtin)
+#define FOLLY_HAS_BUILTIN(...) __has_builtin(__VA_ARGS__)
+#else
+#define FOLLY_HAS_BUILTIN(...) 0
+#endif
+
+#if defined(__has_feature)
+#define FOLLY_HAS_FEATURE(...) __has_feature(__VA_ARGS__)
+#else
+#define FOLLY_HAS_FEATURE(...) 0
+#endif
+
+#if defined(__has_include)
+#define FOLLY_HAS_INCLUDE(...) __has_include(__VA_ARGS__)
+#else
+#define FOLLY_HAS_INCLUDE(...) 0
+#endif
+
 /* Define a convenience macro to test when address sanitizer is being used
  * across the different compilers (e.g. clang, gcc) */
-#if defined(__clang__)
-# if __has_feature(address_sanitizer)
-#  define FOLLY_SANITIZE_ADDRESS 1
-# endif
-#elif defined (__GNUC__) && \
-      (((__GNUC__ == 4) && (__GNUC_MINOR__ >= 8)) || (__GNUC__ >= 5)) && \
-      __SANITIZE_ADDRESS__
+#if FOLLY_HAS_FEATURE(address_sanitizer) || __SANITIZE_ADDRESS__
 # define FOLLY_SANITIZE_ADDRESS 1
 #endif
 
@@ -57,12 +95,17 @@
 
 /* Define a convenience macro to test when thread sanitizer is being used
  * across the different compilers (e.g. clang, gcc) */
-#if defined(__clang__)
-# if __has_feature(thread_sanitizer)
-#  define FOLLY_SANITIZE_THREAD 1
-# endif
-#elif defined(__GNUC__) && __SANITIZE_THREAD__
+#if FOLLY_HAS_FEATURE(thread_sanitizer) || __SANITIZE_THREAD__
 # define FOLLY_SANITIZE_THREAD 1
+#endif
+
+/**
+ * Define a convenience macro to test when ASAN, UBSAN or TSAN sanitizer are
+ * being used
+ */
+#if defined(FOLLY_SANITIZE_ADDRESS) || defined(FOLLY_SANITIZE_THREAD) || \
+    defined(UNDEFINED_SANITIZER)
+#define FOLLY_SANITIZE 1
 #endif
 
 /**
@@ -76,7 +119,48 @@
  * used as folly whitelists some functions.
  */
 #if UNDEFINED_SANITIZER
-# define UBSAN_DISABLE(x) __attribute__((no_sanitize(x)))
+#define FOLLY_DISABLE_UNDEFINED_BEHAVIOR_SANITIZER(...) \
+  __attribute__((no_sanitize(__VA_ARGS__)))
 #else
-# define UBSAN_DISABLE(x)
+#define FOLLY_DISABLE_UNDEFINED_BEHAVIOR_SANITIZER(...)
 #endif // UNDEFINED_SANITIZER
+
+/**
+ * Macro for marking functions as having public visibility.
+ */
+#if defined(__GNUC__)
+# if __GNUC_PREREQ(4, 9)
+#  define FOLLY_EXPORT [[gnu::visibility("default")]]
+# else
+#  define FOLLY_EXPORT __attribute__((__visibility__("default")))
+# endif
+#else
+# define FOLLY_EXPORT
+#endif
+
+// noinline
+#ifdef _MSC_VER
+# define FOLLY_NOINLINE __declspec(noinline)
+#elif defined(__clang__) || defined(__GNUC__)
+# define FOLLY_NOINLINE __attribute__((__noinline__))
+#else
+# define FOLLY_NOINLINE
+#endif
+
+// always inline
+#ifdef _MSC_VER
+# define FOLLY_ALWAYS_INLINE __forceinline
+#elif defined(__clang__) || defined(__GNUC__)
+# define FOLLY_ALWAYS_INLINE inline __attribute__((__always_inline__))
+#else
+# define FOLLY_ALWAYS_INLINE inline
+#endif
+
+// attribute hidden
+#if _MSC_VER
+#define FOLLY_ATTR_VISIBILITY_HIDDEN
+#elif defined(__clang__) || defined(__GNUC__)
+#define FOLLY_ATTR_VISIBILITY_HIDDEN __attribute__((__visibility__("hidden")))
+#else
+#define FOLLY_ATTR_VISIBILITY_HIDDEN
+#endif

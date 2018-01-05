@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,13 +14,16 @@
  * limitations under the License.
  */
 
-#include <glog/logging.h>
-#include <gtest/gtest.h>
-#include <iostream>
 #include <array>
+#include <iostream>
+#include <memory>
 #include <vector>
+
+#include <glog/logging.h>
+
 #include <folly/gen/Base.h>
 #include <folly/gen/Parallel.h>
+#include <folly/portability/GTest.h>
 
 using namespace folly;
 using namespace folly::gen;
@@ -48,9 +51,9 @@ static auto isPrime = [](int n) {
 };
 
 struct {
-  template<class T>
+  template <class T>
   std::unique_ptr<T> operator()(T t) const {
-    return std::unique_ptr<T>(new T(std::move(t)));
+    return std::make_unique<T>(std::move(t));
   }
 } makeUnique;
 

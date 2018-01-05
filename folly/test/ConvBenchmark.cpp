@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2011-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,7 +19,8 @@
 #include <boost/lexical_cast.hpp>
 
 #include <folly/Benchmark.h>
-#include <folly/Foreach.h>
+#include <folly/CppAttributes.h>
+#include <folly/container/Foreach.h>
 
 #include <array>
 #include <limits>
@@ -243,8 +244,8 @@ __int128 int128Neg[] = {
 };
 
 #endif
-}
-}
+} // namespace conv_bench_detail
+} // namespace folly
 
 using namespace folly::conv_bench_detail;
 
@@ -254,7 +255,7 @@ template <typename T>
 void checkArrayIndex(const T& array, size_t index) {
   DCHECK_LT(index, sizeof(array) / sizeof(array[0]));
 }
-}
+} // namespace
 
 ////////////////////////////////////////////////////////////////////////////////
 // Benchmarks for ASCII to int conversion
@@ -277,10 +278,12 @@ static int64_t handwrittenAtoi(const char* start, const char* end) {
   switch (*start) {
     case '-':
       positive = false;
+      FOLLY_FALLTHROUGH;
     case '+':
       ++start;
+      FOLLY_FALLTHROUGH;
     default:
-      ;
+      break;
   }
 
   while (start < end && *start >= '0' && *start <= '9') {
@@ -317,17 +320,7 @@ void follyAtoiMeasure(unsigned int n, unsigned int digits) {
 void clibAtoiMeasure(unsigned int n, unsigned int digits) {
   auto p = pc1.subpiece(pc1.size() - digits, digits);
   assert(*p.end() == 0);
-  static_assert(sizeof(long) == 8, "64-bit long assumed");
-  FOR_EACH_RANGE(i, 0, n) { doNotOptimizeAway(atol(p.begin())); }
-}
-
-void clibStrtoulMeasure(unsigned int n, unsigned int digits) {
-  auto p = pc1.subpiece(pc1.size() - digits, digits);
-  assert(*p.end() == 0);
-  char* endptr;
-  FOR_EACH_RANGE(i, 0, n) {
-    doNotOptimizeAway(strtoul(p.begin(), &endptr, 10));
-  }
+  FOR_EACH_RANGE(i, 0, n) { doNotOptimizeAway(atoll(p.begin())); }
 }
 
 void lexicalCastMeasure(unsigned int n, unsigned int digits) {
@@ -518,8 +511,8 @@ char reallyShort[] = "meh";
 std::string stdString = "std::strings are very nice";
 float fValue = 1.2355f;
 double dValue = 345345345.435;
-}
-}
+} // namespace conv_bench_detail
+} // namespace folly
 
 BENCHMARK(preallocateTestNoFloat, n) {
   for (size_t i = 0; i < n; ++i) {
@@ -593,8 +586,8 @@ uint64_t u64s[] = {
     static_cast<uint64_t>(1) << 50,
     static_cast<uint64_t>(1) << 63,
 };
-}
-}
+} // namespace conv_bench_detail
+} // namespace folly
 
 BENCHMARK(preallocateTestInt8, n) {
   for (size_t i = 0; i < n; ++i) {
@@ -682,7 +675,7 @@ unsigned __int128 u128s[] = {
     static_cast<unsigned __int128>(1) << 100,
     static_cast<unsigned __int128>(1) << 127,
 };
-}
+} // namespace
 
 BENCHMARK(preallocateTestInt128, n) {
   for (size_t i = 0; i < n; ++i) {
@@ -922,6 +915,16 @@ inline void stringToTypeClassic(const char* str, uint32_t n) {
 }
 
 template <typename T>
+inline void stringToTypeOptional(const char* str, uint32_t n) {
+  for (uint32_t i = 0; i < n; ++i) {
+    auto val = tryTo<T>(str);
+    if (val.hasValue()) {
+      doNotOptimizeAway(val.value());
+    }
+  }
+}
+
+template <typename T>
 inline void ptrPairToIntClassic(StringPiece sp, uint32_t n) {
   for (uint32_t i = 0; i < n; ++i) {
     try {
@@ -931,6 +934,16 @@ inline void ptrPairToIntClassic(StringPiece sp, uint32_t n) {
       doNotOptimizeAway(e.what());
     }
     doNotOptimizeAway(i);
+  }
+}
+
+template <typename T>
+inline void ptrPairToIntOptional(StringPiece sp, uint32_t n) {
+  for (uint32_t i = 0; i < n; ++i) {
+    auto val = tryTo<T>(sp.begin(), sp.end());
+    if (val.hasValue()) {
+      doNotOptimizeAway(val.value());
+    }
   }
 }
 
@@ -945,6 +958,24 @@ inline size_t arithToArithClassic(const U* in, uint32_t numItems) {
         doNotOptimizeAway(val);
       } catch (const std::exception& e) {
         doNotOptimizeAway(e.what());
+      }
+      doNotOptimizeAway(j);
+    }
+    doNotOptimizeAway(i);
+  }
+
+  return kArithNumIter * numItems;
+}
+
+template <typename T, typename U>
+inline size_t arithToArithOptional(const U* in, uint32_t numItems) {
+  for (uint32_t i = 0; i < kArithNumIter; ++i) {
+    for (uint32_t j = 0; j < numItems; ++j) {
+      auto val = tryTo<T>(*in);
+      doNotOptimizeAway(val.hasValue());
+      if (val.hasValue()) {
+        auto v2 = val.value();
+        doNotOptimizeAway(v2);
       }
       doNotOptimizeAway(j);
     }
@@ -981,8 +1012,8 @@ std::array<double, 4> double2FloatGood{{1.0, 1.25, 2.5, 1000.0}};
 std::array<double, 4> double2FloatBad{{1e100, 1e101, 1e102, 1e103}};
 std::array<double, 4> double2IntGood{{1.0, 10.0, 100.0, 1000.0}};
 std::array<double, 4> double2IntBad{{1e100, 1.25, 2.5, 100.00001}};
-}
-}
+} // namespace conv_bench_detail
+} // namespace folly
 
 #define STRING_TO_TYPE_BENCHMARK(type, name, pass, fail) \
   BENCHMARK(stringTo##name##Classic, n) {                \
@@ -990,6 +1021,12 @@ std::array<double, 4> double2IntBad{{1e100, 1.25, 2.5, 100.00001}};
   }                                                      \
   BENCHMARK(stringTo##name##ClassicError, n) {           \
     stringToTypeClassic<type>(fail, n);                  \
+  }                                                      \
+  BENCHMARK(stringTo##name##Optional, n) {               \
+    stringToTypeOptional<type>(pass, n);                 \
+  }                                                      \
+  BENCHMARK(stringTo##name##OptionalError, n) {          \
+    stringToTypeOptional<type>(fail, n);                 \
   }
 
 #define PTR_PAIR_TO_INT_BENCHMARK(type, name, pass, fail) \
@@ -998,14 +1035,26 @@ std::array<double, 4> double2IntBad{{1e100, 1.25, 2.5, 100.00001}};
   }                                                       \
   BENCHMARK(ptrPairTo##name##ClassicError, n) {           \
     ptrPairToIntClassic<type>(fail, n);                   \
+  }                                                       \
+  BENCHMARK(ptrPairTo##name##Optional, n) {               \
+    ptrPairToIntOptional<type>(pass, n);                  \
+  }                                                       \
+  BENCHMARK(ptrPairTo##name##OptionalError, n) {          \
+    ptrPairToIntOptional<type>(fail, n);                  \
   }
 
-#define ARITH_TO_ARITH_BENCHMARK(type, name, pass, fail)        \
-  BENCHMARK_MULTI(name##Classic) {                              \
-    return arithToArithClassic<type>(pass.data(), pass.size()); \
-  }                                                             \
-  BENCHMARK_MULTI(name##ClassicError) {                         \
-    return arithToArithClassic<type>(fail.data(), fail.size()); \
+#define ARITH_TO_ARITH_BENCHMARK(type, name, pass, fail)         \
+  BENCHMARK_MULTI(name##Classic) {                               \
+    return arithToArithClassic<type>(pass.data(), pass.size());  \
+  }                                                              \
+  BENCHMARK_MULTI(name##ClassicError) {                          \
+    return arithToArithClassic<type>(fail.data(), fail.size());  \
+  }                                                              \
+  BENCHMARK_MULTI(name##Optional) {                              \
+    return arithToArithOptional<type>(pass.data(), pass.size()); \
+  }                                                              \
+  BENCHMARK_MULTI(name##OptionalError) {                         \
+    return arithToArithOptional<type>(fail.data(), fail.size()); \
   }
 
 #define INT_TO_ARITH_BENCHMARK(type, name, pass, fail) \

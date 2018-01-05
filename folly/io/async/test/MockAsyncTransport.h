@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,10 +15,9 @@
  */
 #pragma once
 
-#include <gmock/gmock.h>
-
 #include <folly/Memory.h>
 #include <folly/io/async/AsyncTransport.h>
+#include <folly/portability/GMock.h>
 
 namespace folly { namespace test {
 
@@ -78,15 +77,15 @@ class MockReadCallback: public AsyncTransportWrapper::ReadCallback {
   GMOCK_METHOD1_(, noexcept, , readDataAvailable, void(size_t));
   GMOCK_METHOD0_(, noexcept, , isBufferMovable, bool());
   GMOCK_METHOD1_(, noexcept, ,
-      readBufferAvailableInternal, void(std::shared_ptr<folly::IOBuf>));
+      readBufferAvailableInternal,
+      void(std::unique_ptr<folly::IOBuf>&));
   GMOCK_METHOD0_(, noexcept, , readEOF, void());
   GMOCK_METHOD1_(, noexcept, , readErr,
                  void(const AsyncSocketException&));
 
   void readBufferAvailable(std::unique_ptr<folly::IOBuf> readBuf)
     noexcept override {
-    readBufferAvailableInternal(
-        folly::to_shared_ptr(std::move(readBuf)));
+    readBufferAvailableInternal(readBuf);
   }
 };
 
@@ -97,4 +96,5 @@ class MockWriteCallback: public AsyncTransportWrapper::WriteCallback {
                  void(size_t, const AsyncSocketException&));
 };
 
-}}
+} // namespace test
+} // namespace folly

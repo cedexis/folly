@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,9 +17,8 @@
 #include <algorithm>
 #include <thread>
 
-#include <gtest/gtest.h>
-
 #include <folly/AtomicLinkedList.h>
+#include <folly/portability/GTest.h>
 
 class TestIntrusiveObject {
  public:
@@ -75,6 +74,23 @@ TEST(AtomicIntrusiveLinkedList, Basic) {
   TestIntrusiveObject::List movedList = std::move(list);
 }
 
+TEST(AtomicIntrusiveLinkedList, ReverseSweep) {
+  TestIntrusiveObject a(1), b(2), c(3);
+  TestIntrusiveObject::List list;
+  list.insertHead(&a);
+  list.insertHead(&b);
+  list.insertHead(&c);
+  size_t next_expected_id = 3;
+  list.reverseSweep([&](TestIntrusiveObject* obj) {
+    EXPECT_EQ(next_expected_id--, obj->id());
+  });
+  EXPECT_TRUE(list.empty());
+  // Test that we can still insert
+  list.insertHead(&a);
+  EXPECT_FALSE(list.empty());
+  list.reverseSweep([](TestIntrusiveObject*) {});
+}
+
 TEST(AtomicIntrusiveLinkedList, Move) {
   TestIntrusiveObject a(1), b(2);
 
@@ -105,8 +121,8 @@ TEST(AtomicIntrusiveLinkedList, Move) {
 }
 
 TEST(AtomicIntrusiveLinkedList, Stress) {
-  constexpr size_t kNumThreads = 32;
-  constexpr size_t kNumElements = 100000;
+  static constexpr size_t kNumThreads = 32;
+  static constexpr size_t kNumElements = 100000;
 
   std::vector<TestIntrusiveObject> elements;
   for (size_t i = 0; i < kNumThreads * kNumElements; ++i) {
@@ -117,12 +133,11 @@ TEST(AtomicIntrusiveLinkedList, Stress) {
 
   std::vector<std::thread> threads;
   for (size_t threadId = 0; threadId < kNumThreads; ++threadId) {
-    threads.emplace_back(
-        [threadId, kNumThreads, kNumElements, &list, &elements]() {
-          for (size_t id = 0; id < kNumElements; ++id) {
-            list.insertHead(&elements[threadId + kNumThreads * id]);
-          }
-        });
+    threads.emplace_back([threadId, &list, &elements] {
+      for (size_t id = 0; id < kNumElements; ++id) {
+        list.insertHead(&elements[threadId + kNumThreads * id]);
+      }
+    });
   }
 
   std::vector<size_t> ids;
@@ -153,7 +168,8 @@ TEST(AtomicIntrusiveLinkedList, Stress) {
 
 class TestObject {
  public:
-  TestObject(size_t id__, std::shared_ptr<void> ptr) : id_(id__), ptr_(ptr) {}
+  TestObject(size_t id__, const std::shared_ptr<void>& ptr)
+      : id_(id__), ptr_(ptr) {}
 
   size_t id() {
     return id_;

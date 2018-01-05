@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,11 +14,10 @@
  * limitations under the License.
  */
 
-#include <gtest/gtest.h>
-
 #include <folly/futures/detail/FSM.h>
+#include <folly/portability/GTest.h>
 
-using namespace folly::detail;
+using namespace folly::futures::detail;
 
 enum class State { A, B };
 
@@ -40,12 +39,16 @@ TEST(FSM, example) {
   };
 
   // keep retrying until success (like a cas)
-  while (!tryTransition()) ;
+  while (!tryTransition()) {
+    ;
+  }
   EXPECT_EQ(State::B, fsm.getState());
   EXPECT_EQ(1, count);
   EXPECT_EQ(0, unprotectedCount);
 
-  while (!tryTransition()) ;
+  while (!tryTransition()) {
+    ;
+  }
   EXPECT_EQ(State::A, fsm.getState());
   EXPECT_EQ(0, count);
   EXPECT_EQ(-1, unprotectedCount);

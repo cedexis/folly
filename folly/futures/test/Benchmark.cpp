@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,13 +15,13 @@
  */
 
 #include <folly/Benchmark.h>
-#include <folly/Baton.h>
+#include <folly/executors/InlineExecutor.h>
 #include <folly/futures/Future.h>
-#include <folly/futures/InlineExecutor.h>
 #include <folly/futures/Promise.h>
 #include <folly/portability/GFlags.h>
+#include <folly/portability/Semaphore.h>
+#include <folly/synchronization/Baton.h>
 
-#include <semaphore.h>
 #include <vector>
 
 using namespace folly;
@@ -40,7 +40,7 @@ void someThens(size_t n) {
   }
 }
 
-} // anonymous namespace
+} // namespace
 
 BENCHMARK(constantFuture) {
   makeFuture(42);
@@ -94,18 +94,23 @@ BENCHMARK(no_contention) {
 
   BENCHMARK_SUSPEND {
     folly::Baton<> b1, b2;
-    for (auto& p : promises)
+    for (auto& p : promises) {
       futures.push_back(p.getFuture());
+    }
 
     consumer = std::thread([&]{
       b1.post();
-      for (auto& f : futures) f.then(incr<int>);
+      for (auto& f : futures) {
+        f.then(incr<int>);
+      }
     });
     consumer.join();
 
     producer = std::thread([&]{
       b2.post();
-      for (auto& p : promises) p.setValue(42);
+      for (auto& p : promises) {
+        p.setValue(42);
+      }
     });
 
     b1.wait();
@@ -125,8 +130,9 @@ BENCHMARK_RELATIVE(contention) {
 
   BENCHMARK_SUSPEND {
     folly::Baton<> b1, b2;
-    for (auto& p : promises)
+    for (auto& p : promises) {
       futures.push_back(p.getFuture());
+    }
 
     consumer = std::thread([&]{
       b1.post();
@@ -288,6 +294,44 @@ BENCHMARK_RELATIVE(throwWrappedAndCatchContended) {
 
 BENCHMARK_RELATIVE(throwWrappedAndCatchWrappedContended) {
   contend(throwWrappedAndCatchWrappedImpl);
+}
+
+BENCHMARK_DRAW_LINE();
+
+namespace {
+struct Bulky {
+  explicit Bulky(std::string message) : message_(message) {}
+  std::string message() & {
+    return message_;
+  }
+  std::string&& message() && {
+    return std::move(message_);
+  }
+
+ private:
+  std::string message_;
+  std::array<int, 1024> ints_;
+};
+} // anonymous namespace
+
+BENCHMARK(lvalue_get) {
+  BenchmarkSuspender suspender;
+  Optional<Future<Bulky>> future;
+  future = makeFuture(Bulky("Hello"));
+  suspender.dismissing([&] {
+    std::string message = future.value().get().message();
+    doNotOptimizeAway(message);
+  });
+}
+
+BENCHMARK_RELATIVE(rvalue_get) {
+  BenchmarkSuspender suspender;
+  Optional<Future<Bulky>> future;
+  future = makeFuture(Bulky("Hello"));
+  suspender.dismissing([&] {
+    std::string message = std::move(future.value()).get().message();
+    doNotOptimizeAway(message);
+  });
 }
 
 InlineExecutor exe;

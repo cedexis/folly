@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,12 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <atomic>
+
 #include <glog/logging.h>
 
 #include <folly/Benchmark.h>
-#include <folly/Foreach.h>
 #include <folly/String.h>
+#include <folly/container/Foreach.h>
 #include <folly/gen/Base.h>
 #include <folly/gen/String.h>
 
@@ -61,7 +63,7 @@ void initStringResplitterBenchmark() {
 
 size_t len(folly::StringPiece s) { return s.size(); }
 
-}  // namespace
+} // namespace
 
 BENCHMARK(StringResplitter_Big, iters) {
   size_t s = 0;
@@ -171,7 +173,6 @@ BENCHMARK_RELATIVE(StringUnsplit_Old_ReusedBuffer, iters) {
 
 BENCHMARK_RELATIVE(StringUnsplit_Gen, iters) {
   size_t s = 0;
-  StringPiece line(kLine);
   while (iters--) {
     fbstring joined = from(testStrVector) | unsplit(',');
     s += joined.size();

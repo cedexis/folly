@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,15 +16,15 @@
 
 #pragma once
 
-#include <folly/io/IOBuf.h>
-#include <folly/ScopeGuard.h>
-#include <folly/io/async/AsyncSocketException.h>
-#include <folly/io/async/AsyncSocketBase.h>
-#include <folly/io/async/EventHandler.h>
-#include <folly/io/async/EventBase.h>
-#include <folly/SocketAddress.h>
-
 #include <memory>
+
+#include <folly/ScopeGuard.h>
+#include <folly/SocketAddress.h>
+#include <folly/io/IOBuf.h>
+#include <folly/io/async/AsyncSocketBase.h>
+#include <folly/io/async/AsyncSocketException.h>
+#include <folly/io/async/EventBase.h>
+#include <folly/io/async/EventHandler.h>
 
 namespace folly {
 
@@ -82,7 +82,7 @@ class AsyncUDPSocket : public EventHandler {
    * given eventbase
    */
   explicit AsyncUDPSocket(EventBase* evb);
-  ~AsyncUDPSocket();
+  ~AsyncUDPSocket() override;
 
   /**
    * Returns the address server is listening on
@@ -158,12 +158,24 @@ class AsyncUDPSocket : public EventHandler {
     reuseAddr_ = reuseAddr;
   }
 
+  EventBase* getEventBase() const {
+    return eventBase_;
+  }
+
+ protected:
+  virtual ssize_t sendmsg(int socket, const struct msghdr* message, int flags) {
+    return ::sendmsg(socket, message, flags);
+  }
+
+  // Non-null only when we are reading
+  ReadCallback* readCallback_;
+
  private:
   AsyncUDPSocket(const AsyncUDPSocket&) = delete;
   AsyncUDPSocket& operator=(const AsyncUDPSocket&) = delete;
 
   // EventHandler
-  void handlerReady(uint16_t events) noexcept;
+  void handlerReady(uint16_t events) noexcept override;
 
   void handleRead() noexcept;
   bool updateRegistration() noexcept;
@@ -177,11 +189,8 @@ class AsyncUDPSocket : public EventHandler {
   // Temp space to receive client address
   folly::SocketAddress clientAddress_;
 
-  // Non-null only when we are reading
-  ReadCallback* readCallback_;
-
   bool reuseAddr_{true};
   bool reusePort_{false};
 };
 
-} // Namespace
+} // namespace folly

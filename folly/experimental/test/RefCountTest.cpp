@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,11 +15,10 @@
  */
 #include <thread>
 
-#include <folly/Baton.h>
 #include <folly/experimental/RCURefCount.h>
 #include <folly/experimental/TLRefCount.h>
-
-#include <gtest/gtest.h>
+#include <folly/portability/GTest.h>
+#include <folly/synchronization/Baton.h>
 
 namespace folly {
 
@@ -37,29 +36,29 @@ void basicTest() {
   std::vector<std::thread> ts;
   folly::Baton<> threadBatons[numThreads];
   for (size_t t = 0; t < numThreads; ++t) {
-    ts.emplace_back([&count, &b, &got0, numIters, t, &threadBatons]() {
-        for (size_t i = 0; i < numIters; ++i) {
-          auto ret = ++count;
+    ts.emplace_back([&count, &b, &got0, t, &threadBatons] {
+      for (size_t i = 0; i < numIters; ++i) {
+        auto ret = ++count;
 
-          EXPECT_TRUE(ret > 1);
-          if (i == 0) {
-            threadBatons[t].post();
-          }
+        EXPECT_TRUE(ret > 1);
+        if (i == 0) {
+          threadBatons[t].post();
         }
+      }
 
-        if (t == 0) {
-          b.post();
+      if (t == 0) {
+        b.post();
+      }
+
+      for (size_t i = 0; i < numIters; ++i) {
+        auto ret = --count;
+
+        if (ret == 0) {
+          ++got0;
+          EXPECT_EQ(numIters - 1, i);
         }
-
-        for (size_t i = 0; i < numIters; ++i) {
-          auto ret = --count;
-
-          if (ret == 0) {
-            ++got0;
-            EXPECT_EQ(numIters - 1, i);
-          }
-        }
-      });
+      }
+    });
   }
 
   for (size_t t = 0; t < numThreads; ++t) {
@@ -84,10 +83,8 @@ void basicTest() {
 }
 
 template <typename RefCount>
-void stressTest() {
-  constexpr size_t kItersCount = 10000;
-
-  for (size_t i = 0; i < kItersCount; ++i) {
+void stressTest(size_t itersCount) {
+  for (size_t i = 0; i < itersCount; ++i) {
     RefCount count;
     std::mutex mutex;
     int a{1};
@@ -126,10 +123,12 @@ TEST(TLRefCount, Basic) {
 }
 
 TEST(RCURefCount, Stress) {
-  stressTest<TLRefCount>();
+  stressTest<RCURefCount>(100000);
 }
 
 TEST(TLRefCount, Stress) {
-  stressTest<TLRefCount>();
+  // This is absurdly slow, so we can't
+  // do it that many times.
+  stressTest<TLRefCount>(500);
 }
-}
+} // namespace folly

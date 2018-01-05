@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <cassert>
 #include <mutex>
 #include <typeindex>
 #include <unordered_map>
@@ -83,5 +84,5 @@ template <typename T, typename Tag>
 inline T* createGlobal() {
   return createGlobal<T, Tag>([]() { return new T(); });
 }
-}
-}
+} // namespace detail
+} // namespace folly

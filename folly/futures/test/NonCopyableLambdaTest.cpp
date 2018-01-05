@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,9 +14,8 @@
  * limitations under the License.
  */
 
-#include <gtest/gtest.h>
-
 #include <folly/futures/Future.h>
+#include <folly/portability/GTest.h>
 
 using namespace folly;
 
@@ -25,7 +24,7 @@ TEST(NonCopyableLambda, basic) {
   Future<int> future = promise.getFuture();
 
   Future<Unit>().then(std::bind(
-      [](Promise<int>& promise) mutable { promise.setValue(123); },
+      [](Promise<int>& p2) mutable { p2.setValue(123); },
       std::move(promise)));
 
   // The previous statement can be simplified in C++14:
@@ -39,14 +38,14 @@ TEST(NonCopyableLambda, basic) {
 
 TEST(NonCopyableLambda, unique_ptr) {
   Promise<Unit> promise;
-  auto int_ptr = folly::make_unique<int>(1);
+  auto int_ptr = std::make_unique<int>(1);
 
   EXPECT_EQ(*int_ptr, 1);
 
   auto future = promise.getFuture().then(std::bind(
-      [](std::unique_ptr<int>& int_ptr) mutable {
-        ++*int_ptr;
-        return std::move(int_ptr);
+      [](std::unique_ptr<int>& p) mutable {
+        ++*p;
+        return std::move(p);
       },
       std::move(int_ptr)));
 

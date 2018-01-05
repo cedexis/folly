@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,8 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+#include <folly/portability/Config.h>
+
+#ifdef FOLLY_USE_SYMBOLIZER
 #include <folly/Singleton.h>
-#include <folly/experimental/symbolizer/Symbolizer.h>
+#include <folly/experimental/symbolizer/Symbolizer.h> // @manual
 
 namespace folly {
 
@@ -52,6 +56,6 @@ SetStackTraceGetter setStackTraceGetter;
 #else
 SetStackTraceGetter __attribute__((__init_priority__(101))) setStackTraceGetter;
 #endif
-}
-
-}
+} // namespace
+} // namespace folly
+#endif

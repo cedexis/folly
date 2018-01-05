@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,20 +16,21 @@
 
 #pragma once
 
-#include <assert.h>
+#include <cassert>
 #include <cstdarg>
-#include <stdexcept>
-#include <string.h>
-#include <type_traits>
+#include <cstring>
 #include <memory>
+#include <stdexcept>
+#include <type_traits>
 
-#include <folly/Bits.h>
-#include <folly/io/IOBuf.h>
-#include <folly/io/IOBufQueue.h>
 #include <folly/Likely.h>
 #include <folly/Memory.h>
 #include <folly/Portability.h>
 #include <folly/Range.h>
+#include <folly/io/IOBuf.h>
+#include <folly/io/IOBufQueue.h>
+#include <folly/lang/Bits.h>
+#include <folly/portability/BitsFunctexcept.h>
 
 /**
  * Cursor class for fast iteration over IOBuf chains.
@@ -38,7 +39,7 @@
  *
  * RWPrivateCursor - Read-write access, assumes private access to IOBuf chain
  * RWUnshareCursor - Read-write access, calls unshare on write (COW)
- * Appender        - Write access, assumes private access to IOBuf chian
+ * Appender        - Write access, assumes private access to IOBuf chain
  *
  * Note that RW cursors write in the preallocated part of buffers (that is,
  * between the buffer's data() and tail()), while Appenders append to the end
@@ -47,7 +48,8 @@
  * Appender with a buffer chain; for this reason, Appenders assume private
  * access to the buffer (you need to call unshare() yourself if necessary).
  **/
-namespace folly { namespace io {
+namespace folly {
+namespace io {
 
 namespace detail {
 
@@ -152,6 +154,17 @@ class CursorBase {
     return true;
   }
 
+  /**
+   * Advances the cursor to the end of the entire IOBuf chain.
+   */
+  void advanceToEnd() {
+    offset_ = buffer_->prev()->length();
+    if (crtBuf_ != buffer_->prev()) {
+      crtBuf_ = buffer_->prev();
+      static_cast<Derived*>(this)->advanceDone();
+    }
+  }
+
   Derived& operator+=(size_t offset) {
     Derived* p = static_cast<Derived*>(this);
     p->skip(offset);
@@ -160,6 +173,17 @@ class CursorBase {
   Derived operator+(size_t offset) const {
     Derived other(*this);
     other.skip(offset);
+    return other;
+  }
+
+  Derived& operator-=(size_t offset) {
+    Derived* p = static_cast<Derived*>(this);
+    p->retreat(offset);
+    return *p;
+  }
+  Derived operator-(size_t offset) const {
+    Derived other(*this);
+    other.retreat(offset);
     return other;
   }
 
@@ -177,14 +201,36 @@ class CursorBase {
   }
 
   template <class T>
-  typename std::enable_if<std::is_arithmetic<T>::value, T>::type read() {
-    T val;
+  typename std::enable_if<std::is_arithmetic<T>::value, bool>::type tryRead(
+      T& val) {
     if (LIKELY(length() >= sizeof(T))) {
       val = loadUnaligned<T>(data());
       offset_ += sizeof(T);
       advanceBufferIfEmpty();
-    } else {
-      pullSlow(&val, sizeof(T));
+      return true;
+    }
+    return pullAtMostSlow(&val, sizeof(T)) == sizeof(T);
+  }
+
+  template <class T>
+  bool tryReadBE(T& val) {
+    const bool result = tryRead(val);
+    val = Endian::big(val);
+    return result;
+  }
+
+  template <class T>
+  bool tryReadLE(T& val) {
+    const bool result = tryRead(val);
+    val = Endian::little(val);
+    return result;
+  }
+
+  template <class T>
+  T read() {
+    T val{};
+    if (!tryRead(val)) {
+      std::__throw_out_of_range("underflow");
     }
     return val;
   }
@@ -278,6 +324,22 @@ class CursorBase {
     }
   }
 
+  size_t retreatAtMost(size_t len) {
+    if (len <= offset_) {
+      offset_ -= len;
+      return len;
+    }
+    return retreatAtMostSlow(len);
+  }
+
+  void retreat(size_t len) {
+    if (len <= offset_) {
+      offset_ -= len;
+    } else {
+      retreatSlow(len);
+    }
+  }
+
   size_t pullAtMost(void* buf, size_t len) {
     // Fast path: it all fits in one buffer.
     if (LIKELY(length() >= len)) {
@@ -326,13 +388,13 @@ class CursorBase {
 
   void clone(std::unique_ptr<folly::IOBuf>& buf, size_t len) {
     if (UNLIKELY(cloneAtMost(buf, len) != len)) {
-      throw std::out_of_range("underflow");
+      std::__throw_out_of_range("underflow");
     }
   }
 
   void clone(folly::IOBuf& buf, size_t len) {
     if (UNLIKELY(cloneAtMost(buf, len) != len)) {
-      throw std::out_of_range("underflow");
+      std::__throw_out_of_range("underflow");
     }
   }
 
@@ -378,7 +440,7 @@ class CursorBase {
 
   size_t cloneAtMost(std::unique_ptr<folly::IOBuf>& buf, size_t len) {
     if (!buf) {
-      buf = make_unique<folly::IOBuf>();
+      buf = std::make_unique<folly::IOBuf>();
     }
     return cloneAtMost(*buf, len);
   }
@@ -400,13 +462,13 @@ class CursorBase {
       }
 
       if (otherBuf == other.buffer_) {
-        throw std::out_of_range("wrap-around");
+        std::__throw_out_of_range("wrap-around");
       }
 
       len += offset_;
     } else {
       if (offset_ < other.offset_) {
-        throw std::out_of_range("underflow");
+        std::__throw_out_of_range("underflow");
       }
 
       len += offset_ - other.offset_;
@@ -426,7 +488,7 @@ class CursorBase {
       len += curBuf->length();
       curBuf = curBuf->next();
       if (curBuf == buf || curBuf == buffer_) {
-        throw std::out_of_range("wrap-around");
+        std::__throw_out_of_range("wrap-around");
       }
     }
 
@@ -454,6 +516,17 @@ class CursorBase {
     return true;
   }
 
+  bool tryRetreatBuffer() {
+    if (UNLIKELY(crtBuf_ == buffer_)) {
+      offset_ = 0;
+      return false;
+    }
+    crtBuf_ = crtBuf_->prev();
+    offset_ = crtBuf_->length();
+    static_cast<Derived*>(this)->advanceDone();
+    return true;
+  }
+
   void advanceBufferIfEmpty() {
     if (length() == 0) {
       tryAdvanceBuffer();
@@ -468,7 +541,7 @@ class CursorBase {
     for (size_t available; (available = length()) < len; ) {
       str->append(reinterpret_cast<const char*>(data()), available);
       if (UNLIKELY(!tryAdvanceBuffer())) {
-        throw std::out_of_range("string underflow");
+        std::__throw_out_of_range("string underflow");
       }
       len -= available;
     }
@@ -497,7 +570,7 @@ class CursorBase {
 
   void pullSlow(void* buf, size_t len) {
     if (UNLIKELY(pullAtMostSlow(buf, len) != len)) {
-      throw std::out_of_range("underflow");
+      std::__throw_out_of_range("underflow");
     }
   }
 
@@ -517,7 +590,26 @@ class CursorBase {
 
   void skipSlow(size_t len) {
     if (UNLIKELY(skipAtMostSlow(len) != len)) {
-      throw std::out_of_range("underflow");
+      std::__throw_out_of_range("underflow");
+    }
+  }
+
+  size_t retreatAtMostSlow(size_t len) {
+    size_t retreated = 0;
+    for (size_t available; (available = offset_) < len;) {
+      retreated += available;
+      if (UNLIKELY(!tryRetreatBuffer())) {
+        return retreated;
+      }
+      len -= available;
+    }
+    offset_ -= len;
+    return retreated + len;
+  }
+
+  void retreatSlow(size_t len) {
+    if (UNLIKELY(retreatAtMostSlow(len) != len)) {
+      std::__throw_out_of_range("underflow");
     }
   }
 
@@ -527,7 +619,7 @@ class CursorBase {
   BufType* buffer_;
 };
 
-}  // namespace detail
+} // namespace detail
 
 class Cursor : public detail::CursorBase<Cursor, const IOBuf> {
  public:
@@ -567,13 +659,13 @@ class Writable {
   void push(const uint8_t* buf, size_t len) {
     Derived* d = static_cast<Derived*>(this);
     if (d->pushAtMost(buf, len) != len) {
-      throw std::out_of_range("overflow");
+      std::__throw_out_of_range("overflow");
     }
   }
 
   void push(ByteRange buf) {
     if (this->pushAtMost(buf) != buf.size()) {
-      throw std::out_of_range("overflow");
+      std::__throw_out_of_range("overflow");
     }
   }
 
@@ -589,7 +681,7 @@ class Writable {
    */
   void push(Cursor cursor, size_t len) {
     if (this->pushAtMost(cursor, len) != len) {
-      throw std::out_of_range("overflow");
+      std::__throw_out_of_range("overflow");
     }
   }
 
@@ -665,6 +757,14 @@ class RWCursor
 
   using detail::Writable<RWCursor<access>>::pushAtMost;
   size_t pushAtMost(const uint8_t* buf, size_t len) {
+    // We have to explicitly check for an input length of 0.
+    // We support buf being nullptr in this case, but we need to avoid calling
+    // memcpy() with a null source pointer, since that is undefined behavior
+    // even if the length is 0.
+    if (len == 0) {
+      return 0;
+    }
+
     size_t copied = 0;
     for (;;) {
       // Fast path: the current buffer is big enough.
@@ -783,7 +883,7 @@ class Appender : public detail::Writable<Appender> {
     // Waste the rest of the current buffer and allocate a new one.
     // Don't make it too small, either.
     if (growth_ == 0) {
-      throw std::out_of_range("can't grow buffer chain");
+      std::__throw_out_of_range("can't grow buffer chain");
     }
 
     n = std::max(n, growth_);
@@ -793,6 +893,14 @@ class Appender : public detail::Writable<Appender> {
 
   using detail::Writable<Appender>::pushAtMost;
   size_t pushAtMost(const uint8_t* buf, size_t len) {
+    // We have to explicitly check for an input length of 0.
+    // We support buf being nullptr in this case, but we need to avoid calling
+    // memcpy() with a null source pointer, since that is undefined behavior
+    // even if the length is 0.
+    if (len == 0) {
+      return 0;
+    }
+
     size_t copied = 0;
     for (;;) {
       // Fast path: it all fits in one buffer.
@@ -874,55 +982,70 @@ class QueueAppender : public detail::Writable<QueueAppender> {
    * space in the queue, we grow no more than growth bytes at once
    * (unless you call ensure() with a bigger value yourself).
    */
-  QueueAppender(IOBufQueue* queue, uint64_t growth) {
-    reset(queue, growth);
-  }
+  QueueAppender(IOBufQueue* queue, uint64_t growth)
+      : queueCache_(queue), growth_(growth) {}
 
   void reset(IOBufQueue* queue, uint64_t growth) {
-    queue_ = queue;
+    queueCache_.reset(queue);
     growth_ = growth;
   }
 
   uint8_t* writableData() {
-    return static_cast<uint8_t*>(queue_->writableTail());
+    return queueCache_.writableData();
   }
 
-  size_t length() const { return queue_->tailroom(); }
+  size_t length() {
+    return queueCache_.length();
+  }
 
-  void append(size_t n) { queue_->postallocate(n); }
+  void append(size_t n) {
+    queueCache_.append(n);
+  }
 
   // Ensure at least n contiguous; can go above growth_, throws if
   // not enough room.
-  void ensure(uint64_t n) { queue_->preallocate(n, growth_); }
+  void ensure(size_t n) {
+    if (length() < n) {
+      ensureSlow(n);
+    }
+  }
 
   template <class T>
-  typename std::enable_if<std::is_arithmetic<T>::value>::type
-  write(T value) {
+  typename std::enable_if<std::is_arithmetic<T>::value>::type write(T value) {
     // We can't fail.
-    auto p = queue_->preallocate(sizeof(T), growth_);
-    storeUnaligned(p.first, value);
-    queue_->postallocate(sizeof(T));
+    if (length() >= sizeof(T)) {
+      storeUnaligned(queueCache_.writableData(), value);
+      queueCache_.appendUnsafe(sizeof(T));
+    } else {
+      writeSlow<T>(value);
+    }
   }
 
   using detail::Writable<QueueAppender>::pushAtMost;
   size_t pushAtMost(const uint8_t* buf, size_t len) {
-    size_t remaining = len;
+    // Fill the current buffer
+    const size_t copyLength = std::min(len, length());
+    if (copyLength != 0) {
+      memcpy(writableData(), buf, copyLength);
+      queueCache_.appendUnsafe(copyLength);
+      buf += copyLength;
+    }
+    size_t remaining = len - copyLength;
+    // Allocate more buffers as necessary
     while (remaining != 0) {
-      auto p = queue_->preallocate(std::min(remaining, growth_),
-                                   growth_,
-                                   remaining);
+      auto p = queueCache_.queue()->preallocate(
+          std::min(remaining, growth_), growth_, remaining);
       memcpy(p.first, buf, p.second);
-      queue_->postallocate(p.second);
+      queueCache_.queue()->postallocate(p.second);
       buf += p.second;
       remaining -= p.second;
     }
-
     return len;
   }
 
   void insert(std::unique_ptr<folly::IOBuf> buf) {
     if (buf) {
-      queue_->append(std::move(buf), true);
+      queueCache_.queue()->append(std::move(buf), true);
     }
   }
 
@@ -931,10 +1054,26 @@ class QueueAppender : public detail::Writable<QueueAppender> {
   }
 
  private:
-  folly::IOBufQueue* queue_;
-  size_t growth_;
+  folly::IOBufQueue::WritableRangeCache queueCache_{nullptr};
+  size_t growth_{0};
+
+  FOLLY_NOINLINE void ensureSlow(size_t n) {
+    queueCache_.queue()->preallocate(n, growth_);
+    queueCache_.fillCache();
+  }
+
+  template <class T>
+  typename std::enable_if<std::is_arithmetic<T>::value>::type FOLLY_NOINLINE
+  writeSlow(T value) {
+    queueCache_.queue()->preallocate(sizeof(T), growth_);
+    queueCache_.fillCache();
+
+    storeUnaligned(queueCache_.writableData(), value);
+    queueCache_.appendUnsafe(sizeof(T));
+  }
 };
 
-}}  // folly::io
+} // namespace io
+} // namespace folly
 
 #include <folly/io/Cursor-inl.h>

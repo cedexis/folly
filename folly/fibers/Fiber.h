@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 #pragma once
 
 #include <functional>
+#include <thread>
 #include <typeinfo>
 
 #include <folly/AtomicIntrusiveLinkedList.h>
@@ -44,11 +45,9 @@ class FiberManager;
 class Fiber {
  public:
   /**
-   * Sets data for the blocked task
-   *
-   * @param data this data will be returned by await() when task is resumed.
+   * Resume the blocked task
    */
-  void setData(intptr_t data);
+  void resume();
 
   Fiber(const Fiber&) = delete;
   Fiber& operator=(const Fiber&) = delete;
@@ -61,12 +60,7 @@ class Fiber {
    * @return This fiber's stack pointer and stack size.
    */
   std::pair<void*, size_t> getStack() const {
-    void* const stack =
-        std::min<void*>(fcontext_.stackLimit(), fcontext_.stackBase());
-    const size_t size = std::abs<intptr_t>(
-        reinterpret_cast<intptr_t>(fcontext_.stackBase()) -
-        reinterpret_cast<intptr_t>(fcontext_.stackLimit()));
-    return {stack, size};
+    return {fiberStackLimit_, fiberStackSize_};
   }
 
  private:
@@ -96,18 +90,15 @@ class Fiber {
   template <typename F, typename G>
   void setFunctionFinally(F&& func, G&& finally);
 
-  static void fiberFuncHelper(intptr_t fiber);
-  void fiberFunc();
+  [[noreturn]] void fiberFunc();
 
   /**
    * Switch out of fiber context into the main context,
    * performing necessary housekeeping for the new state.
    *
    * @param state New state, must not be RUNNING.
-   *
-   * @return The value passed back from the main context.
    */
-  intptr_t preempt(State state);
+  void preempt(State state);
 
   /**
    * Examines how much of the stack we used at this moment and
@@ -116,8 +107,9 @@ class Fiber {
   void recordStackPosition();
 
   FiberManager& fiberManager_; /**< Associated FiberManager */
-  FContext fcontext_; /**< current task execution context */
-  intptr_t data_; /**< Used to keep some data with the Fiber */
+  size_t fiberStackSize_;
+  unsigned char* fiberStackLimit_;
+  FiberImpl fiberImpl_; /**< underlying fiber implementation */
   std::shared_ptr<RequestContext> rcontext_; /**< current RequestContext */
   folly::Function<void()> func_; /**< task function */
   bool recordStackUsed_{false};
@@ -139,6 +131,7 @@ class Fiber {
   class LocalData {
    public:
     LocalData() {}
+    ~LocalData();
     LocalData(const LocalData& other);
     LocalData& operator=(const LocalData& other);
 
@@ -183,8 +176,14 @@ class Fiber {
                                            queues */
   folly::IntrusiveListHook globalListHook_; /**< list hook for global list */
   std::thread::id threadId_{};
+
+#ifdef FOLLY_SANITIZE_ADDRESS
+  void* asanFakeStack_{nullptr};
+  const void* asanMainStackBase_{nullptr};
+  size_t asanMainStackSize_{0};
+#endif
 };
-}
-}
+} // namespace fibers
+} // namespace folly
 
 #include <folly/fibers/Fiber-inl.h>

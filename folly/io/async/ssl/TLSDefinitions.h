@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,8 +19,6 @@
 #include <folly/io/Cursor.h>
 #include <folly/io/IOBuf.h>
 #include <map>
-#include <openssl/ssl.h>
-#include <openssl/tls1.h>
 #include <vector>
 
 namespace folly {
@@ -53,6 +51,7 @@ enum class TLSExtension : uint16_t {
   ENCRYPT_THEN_MAC = 22,
   EXTENDED_MASTER_SECRET = 23,
   SESSION_TICKET = 35,
+  SUPPORTED_VERSIONS = 43,
   // Facebook-specific, not IANA assigned yet
   TLS_CACHED_INFO_FB = 60001,
   // End Facebook-specific
@@ -86,7 +85,8 @@ struct ClientHelloInfo {
   std::vector<uint8_t> clientHelloCompressionMethods_;
   std::vector<TLSExtension> clientHelloExtensions_;
   std::vector<std::pair<HashAlgorithm, SignatureAlgorithm>> clientHelloSigAlgs_;
+  std::vector<uint16_t> clientHelloSupportedVersions_;
 };
 
-} // ssl
-} // folly
+} // namespace ssl
+} // namespace folly

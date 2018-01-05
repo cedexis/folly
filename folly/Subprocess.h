@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,13 +33,13 @@
  * to complete, returning the exit status.
  *
  * A thread-safe [1] version of popen() (type="r", to read from the child):
- *    Subprocess proc(cmd, Subprocess::pipeStdout());
- *    // read from proc.stdout()
+ *    Subprocess proc(cmd, Subprocess::Options().pipeStdout());
+ *    // read from proc.stdoutFd()
  *    proc.wait();
  *
  * A thread-safe [1] version of popen() (type="w", to write to the child):
- *    Subprocess proc(cmd, Subprocess::pipeStdin());
- *    // write to proc.stdin()
+ *    Subprocess proc(cmd, Subprocess::Options().pipeStdin());
+ *    // write to proc.stdinFd()
  *    proc.wait();
  *
  * If you want to redirect both stdin and stdout to pipes, you can, but note
@@ -93,8 +93,9 @@
 
 #pragma once
 
-#include <sys/types.h>
 #include <signal.h>
+#include <sys/types.h>
+
 #if __APPLE__
 #include <sys/wait.h>
 #else
@@ -102,21 +103,22 @@
 #endif
 
 #include <exception>
-#include <vector>
 #include <string>
+#include <vector>
 
 #include <boost/container/flat_map.hpp>
-#include <boost/operators.hpp>
 
 #include <folly/Exception.h>
 #include <folly/File.h>
 #include <folly/FileUtil.h>
 #include <folly/Function.h>
-#include <folly/gen/String.h>
-#include <folly/io/IOBufQueue.h>
 #include <folly/MapUtil.h>
+#include <folly/Optional.h>
 #include <folly/Portability.h>
 #include <folly/Range.h>
+#include <folly/gen/String.h>
+#include <folly/io/IOBufQueue.h>
+#include <folly/portability/SysResource.h>
 
 namespace folly {
 
@@ -125,7 +127,6 @@ namespace folly {
  */
 class Subprocess;
 class ProcessReturnCode {
-  friend class Subprocess;
  public:
   enum State {
     // Subprocess starts in the constructor, so this state designates only
@@ -133,12 +134,22 @@ class ProcessReturnCode {
     NOT_STARTED,
     RUNNING,
     EXITED,
-    KILLED
+    KILLED,
   };
+
+  static ProcessReturnCode makeNotStarted() {
+    return ProcessReturnCode(RV_NOT_STARTED);
+  }
+
+  static ProcessReturnCode makeRunning() {
+    return ProcessReturnCode(RV_RUNNING);
+  }
+
+  static ProcessReturnCode make(int status);
 
   // Default-initialized for convenience. Subprocess::returnCode() will
   // never produce this value.
-  ProcessReturnCode() : ProcessReturnCode(RV_NOT_STARTED) {}
+  ProcessReturnCode() : rawStatus_(RV_NOT_STARTED) {}
 
   // Trivially copyable
   ProcessReturnCode(const ProcessReturnCode& p) = default;
@@ -208,7 +219,10 @@ class ProcessReturnCode {
 /**
  * Base exception thrown by the Subprocess methods.
  */
-class SubprocessError : public std::exception {};
+class SubprocessError : public std::runtime_error {
+ public:
+  using std::runtime_error::runtime_error;
+};
 
 /**
  * Exception thrown by *Checked methods of Subprocess.
@@ -216,12 +230,10 @@ class SubprocessError : public std::exception {};
 class CalledProcessError : public SubprocessError {
  public:
   explicit CalledProcessError(ProcessReturnCode rc);
-  ~CalledProcessError() throw() = default;
-  const char* what() const throw() override { return what_.c_str(); }
+  ~CalledProcessError() throw() override = default;
   ProcessReturnCode returnCode() const { return returnCode_; }
  private:
   ProcessReturnCode returnCode_;
-  std::string what_;
 };
 
 /**
@@ -230,13 +242,11 @@ class CalledProcessError : public SubprocessError {
 class SubprocessSpawnError : public SubprocessError {
  public:
   SubprocessSpawnError(const char* executable, int errCode, int errnoValue);
-  ~SubprocessSpawnError() throw() = default;
-  const char* what() const throw() override { return what_.c_str(); }
+  ~SubprocessSpawnError() throw() override = default;
   int errnoValue() const { return errnoValue_; }
 
  private:
   int errnoValue_;
-  std::string what_;
 };
 
 /**
@@ -274,7 +284,7 @@ class Subprocess {
    * the close-on-exec flag is set (fcntl FD_CLOEXEC) and inherited
    * otherwise.
    */
-  class Options : private boost::orable<Options> {
+  class Options {
     friend class Subprocess;
    public:
     Options() {}  // E.g. https://gcc.gnu.org/bugzilla/show_bug.cgi?id=58328
@@ -298,19 +308,19 @@ class Subprocess {
     /**
      * Shortcut to change the action for standard input.
      */
-    Options& stdin(int action) { return fd(STDIN_FILENO, action); }
+    Options& stdinFd(int action) { return fd(STDIN_FILENO, action); }
 
     /**
      * Shortcut to change the action for standard output.
      */
-    Options& stdout(int action) { return fd(STDOUT_FILENO, action); }
+    Options& stdoutFd(int action) { return fd(STDOUT_FILENO, action); }
 
     /**
      * Shortcut to change the action for standard error.
      * Note that stderr(1) will redirect the standard error to the same
      * file descriptor as standard output; the equivalent of bash's "2>&1"
      */
-    Options& stderr(int action) { return fd(STDERR_FILENO, action); }
+    Options& stderrFd(int action) { return fd(STDERR_FILENO, action); }
 
     Options& pipeStdin() { return fd(STDIN_FILENO, PIPE_IN); }
     Options& pipeStdout() { return fd(STDOUT_FILENO, PIPE_OUT); }
@@ -352,7 +362,7 @@ class Subprocess {
 
     /**
      * Child will be made a process group leader when it starts. Upside: one
-     * can reliably all its kill non-daemonizing descendants.  Downside: the
+     * can reliably kill all its non-daemonizing descendants.  Downside: the
      * child will not receive Ctrl-C etc during interactive use.
      */
     Options& processGroupLeader() {
@@ -397,10 +407,28 @@ class Subprocess {
       return *this;
     }
 
+#if __linux__
     /**
-     * Helpful way to combine Options.
+     * This is an experimental feature, it is best you don't use it at this
+     * point of time.
+     * Although folly would support cloning with custom flags in some form, this
+     * API might change in the near future. So use the following assuming it is
+     * experimental. (Apr 11, 2017)
+     *
+     * This unlocks Subprocess to support clone flags, many of them need
+     * CAP_SYS_ADMIN permissions. It might also require you to go through the
+     * implementation to understand what happens before, between and after the
+     * fork-and-exec.
+     *
+     * `man 2 clone` would be a starting point for knowing about the available
+     * flags.
      */
-    Options& operator|=(const Options& other);
+    using clone_flags_t = uint64_t;
+    Options& useCloneWithFlags(clone_flags_t cloneFlags) noexcept {
+      cloneFlags_ = cloneFlags;
+      return *this;
+    }
+#endif
 
    private:
     typedef boost::container::flat_map<int, int> FdMap;
@@ -414,11 +442,12 @@ class Subprocess {
     bool processGroupLeader_{false};
     DangerousPostForkPreExecCallback*
       dangerousPostForkPreExecCallback_{nullptr};
+#if __linux__
+    // none means `vfork()` instead of a custom `clone()`
+    // Optional<> is used because value of '0' means do clone without any flags.
+    Optional<clone_flags_t> cloneFlags_;
+#endif
   };
-
-  static Options pipeStdin() { return Options().stdin(PIPE); }
-  static Options pipeStdout() { return Options().stdout(PIPE); }
-  static Options pipeStderr() { return Options().stderr(PIPE); }
 
   // Non-copiable, but movable
   Subprocess(const Subprocess&) = delete;
@@ -456,6 +485,7 @@ class Subprocess {
    * The shell to use is taken from the environment variable $SHELL,
    * or /bin/sh if $SHELL is unset.
    */
+  FOLLY_DEPRECATED("Prefer not running in a shell or use `shellify`.")
   explicit Subprocess(
       const std::string& cmd,
       const Options& options = Options(),
@@ -489,7 +519,7 @@ class Subprocess {
    * e.g. if you wait for the underlying process without going through this
    * Subprocess instance.
    */
-  ProcessReturnCode poll();
+  ProcessReturnCode poll(struct rusage* ru = nullptr);
 
   /**
    * Poll the child's status.  If the process is still running, return false.
@@ -767,9 +797,9 @@ class Subprocess {
   int parentFd(int childFd) const {
     return pipes_[findByChildFd(childFd)].pipe.fd();
   }
-  int stdin() const { return parentFd(0); }
-  int stdout() const { return parentFd(1); }
-  int stderr() const { return parentFd(2); }
+  int stdinFd() const { return parentFd(0); }
+  int stdoutFd() const { return parentFd(1); }
+  int stderrFd() const { return parentFd(2); }
 
   /**
    * The child's pipes are logically separate from the process metadata
@@ -792,9 +822,6 @@ class Subprocess {
   std::vector<ChildPipe> takeOwnershipOfPipes();
 
  private:
-  static const int RV_RUNNING = ProcessReturnCode::RV_RUNNING;
-  static const int RV_NOT_STARTED = ProcessReturnCode::RV_NOT_STARTED;
-
   // spawn() sets up a pipe to read errors from the child,
   // then calls spawnInternal() to do the bulk of the work.  Once
   // spawnInternal() returns it reads the error pipe to see if the child
@@ -830,7 +857,7 @@ class Subprocess {
   size_t findByChildFd(const int childFd) const;
 
   pid_t pid_{-1};
-  ProcessReturnCode returnCode_{RV_NOT_STARTED};
+  ProcessReturnCode returnCode_;
 
   /**
    * Represents a pipe between this process, and the child process (or its
@@ -861,17 +888,4 @@ class Subprocess {
   std::vector<Pipe> pipes_;
 };
 
-inline Subprocess::Options& Subprocess::Options::operator|=(
-    const Subprocess::Options& other) {
-  if (this == &other) return *this;
-  // Replace
-  for (auto& p : other.fdActions_) {
-    fdActions_[p.first] = p.second;
-  }
-  closeOtherFds_ |= other.closeOtherFds_;
-  usePath_ |= other.usePath_;
-  processGroupLeader_ |= other.processGroupLeader_;
-  return *this;
-}
-
-}  // namespace folly
+} // namespace folly

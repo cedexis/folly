@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,10 +24,11 @@
 #include <string>
 
 #include <glog/logging.h>
-#include <gtest/gtest.h>
 
 #include <folly/Range.h>
+#include <folly/hash/Hash.h>
 #include <folly/portability/GFlags.h>
+#include <folly/portability/GTest.h>
 
 using folly::StringKeyedMap;
 using folly::StringKeyedSetBase;
@@ -105,27 +106,32 @@ struct MemoryLeakCheckerAllocator {
     return alloc_ == other.alloc_;
   }
 
-private:
+ private:
   Alloc alloc_;
 };
 
-typedef MemoryLeakCheckerAllocator<std::allocator<char>> KeyLeakChecker;
-typedef MemoryLeakCheckerAllocator<
-  std::allocator<std::pair<const StringPiece, int>>> ValueLeakChecker;
+using KeyValuePairLeakChecker = MemoryLeakCheckerAllocator<
+    std::allocator<std::pair<const StringPiece, int>>>;
+using ValueLeakChecker =
+    MemoryLeakCheckerAllocator<std::allocator<StringPiece>>;
 
-typedef StringKeyedUnorderedMap<int, folly::StringPieceHash,
-                                std::equal_to<StringPiece>, ValueLeakChecker>
-  LeakCheckedUnorderedMap;
+typedef StringKeyedUnorderedMap<
+    int,
+    folly::Hash,
+    std::equal_to<StringPiece>,
+    KeyValuePairLeakChecker>
+    LeakCheckedUnorderedMap;
 
-typedef StringKeyedSetBase<std::less<StringPiece>, ValueLeakChecker> LeakCheckedSet;
+typedef StringKeyedSetBase<std::less<StringPiece>, ValueLeakChecker>
+    LeakCheckedSet;
 
-typedef StringKeyedMap<int, std::less<StringPiece>,
-                       ValueLeakChecker> LeakCheckedMap;
+typedef StringKeyedMap<int, std::less<StringPiece>, KeyValuePairLeakChecker>
+    LeakCheckedMap;
 
 using LeakCheckedUnorderedSet = BasicStringKeyedUnorderedSet<
-  folly::StringPieceHash,
-  std::equal_to<folly::StringPiece>,
-  ValueLeakChecker>;
+    folly::Hash,
+    std::equal_to<folly::StringPiece>,
+    ValueLeakChecker>;
 
 TEST(StringKeyedUnorderedMapTest, sanity) {
   LeakCheckedUnorderedMap map;
@@ -239,8 +245,8 @@ TEST(StringKeyedSetTest, sanity) {
 
   EXPECT_EQ(set.size(), 1);
 
-  for (auto it : set) {
-    EXPECT_EQ(it, "lo");
+  for (auto entry : set) {
+    EXPECT_EQ(entry, "lo");
   }
 }
 
@@ -319,8 +325,8 @@ TEST(StringKeyedUnorderedSetTest, sanity) {
 
   EXPECT_EQ(set.size(), 1);
 
-  for (auto it : set) {
-    EXPECT_EQ(it, "lo");
+  for (auto entry : set) {
+    EXPECT_EQ(entry, "lo");
   }
 }
 
@@ -350,7 +356,8 @@ TEST(StringKeyedUnorderedSetTest, constructors) {
   EXPECT_TRUE(s3.empty());
   EXPECT_TRUE(s6 == s5);
 
-  LeakCheckedUnorderedSet s7(std::move(s6), s6.get_allocator());
+  auto s6_allocator = s6.get_allocator();
+  LeakCheckedUnorderedSet s7(std::move(s6), s6_allocator);
   EXPECT_TRUE(s6.empty());
   EXPECT_TRUE(s7 == s5);
 
@@ -374,8 +381,8 @@ TEST(StringKeyedUnorderedSetTest, constructors) {
   EXPECT_EQ(set2.size(), 2);
 
   set2.erase("lo");
-  for (auto it : set2) {
-    EXPECT_EQ(it, "hello");
+  for (auto entry : set2) {
+    EXPECT_EQ(entry, "hello");
   }
 
   set2.clear();
@@ -446,8 +453,8 @@ TEST(StringKeyedMapTest, sanity) {
 
   EXPECT_EQ(map.size(), 1);
 
-  for (auto& it : map) {
-    EXPECT_EQ(it.first, "lo");
+  for (auto& entry : map) {
+    EXPECT_EQ(entry.first, "lo");
   }
 }
 
@@ -461,8 +468,8 @@ TEST(StringKeyedMapTest, constructors) {
   EXPECT_EQ(map2.size(), 2);
 
   map2.erase("lo");
-  for (auto& it : map2) {
-    EXPECT_EQ(it.first, "hello");
+  for (auto& entry : map2) {
+    EXPECT_EQ(entry.first, "hello");
   }
 
   map2.clear();

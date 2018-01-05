@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -73,7 +73,9 @@ TESTFUN(clause_23_3_6_1_11) {
   EXPECT_EQ(v.size(), lst.size() / 2);
   j = 0;
   FOR_EACH (i, lst) {
-    if (j == v.size()) break;
+    if (j == v.size()) {
+      break;
+    }
     EXPECT_EQ(v[j], *i);
     j++;
   }
@@ -121,7 +123,6 @@ TESTFUN(clause_23_3_6_2_9) {
   FOR_EACH (i, v) {
     EXPECT_EQ(*i, VECTOR::value_type());
   }
-  auto const n2 = random(0U, 10000U);
   FOR_EACH (i, v) {
     EXPECT_EQ(*i, VECTOR::value_type());
   }
@@ -374,7 +375,9 @@ void BENCHFUN(erase)(int iters, int /* size */) {
   auto const obj1 = randomObject<VECTOR::value_type>();
   VECTOR v(random(0U, 100U), obj1);
   FOR_EACH_RANGE (i, 0, iters) {
-    if (v.empty()) continue;
+    if (v.empty()) {
+      continue;
+    }
     v.erase(v.begin());
   }
 }

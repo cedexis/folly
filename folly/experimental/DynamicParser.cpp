@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,7 +23,6 @@
  *
  */
 #include <folly/experimental/DynamicParser.h>
-#include <folly/CppAttributes.h>
 
 #include <folly/Optional.h>
 
@@ -43,7 +42,7 @@ folly::dynamic& insertAtKey(
     "Unsupported key type ", key.typeName(), " of ", detail::toPseudoJson(key)
   );
 }
-}  // anonymous namespace
+} // namespace
 
 void DynamicParser::reportError(
     const folly::dynamic* lookup_k,
@@ -97,7 +96,6 @@ void DynamicParser::reportError(
       break;  // Continue parsing
     case OnError::THROW:
       stack_.throwErrors();  // Package releaseErrors() into an exception.
-      LOG(FATAL) << "Not reached";  // silence lint false positive
     default:
       LOG(FATAL) << "Bad onError_: " << static_cast<int>(onError_);
   }
@@ -108,7 +106,7 @@ void DynamicParser::ParserStack::Pop::operator()() noexcept {
   stackPtr_->value_ = value_;
   if (stackPtr_->unmaterializedSubErrorKeys_.empty()) {
     // There should be the current error, and the root.
-    CHECK_GE(stackPtr_->subErrors_.size(), 2)
+    CHECK_GE(stackPtr_->subErrors_.size(), 2u)
       << "Internal bug: out of suberrors";
     stackPtr_->subErrors_.pop_back();
   } else {
@@ -169,7 +167,7 @@ folly::dynamic DynamicParser::ParserStack::releaseErrors() {
   return releaseErrorsImpl();
 }
 
-void DynamicParser::ParserStack::throwErrors() {
+[[noreturn]] void DynamicParser::ParserStack::throwErrors() {
   throw DynamicParserParseError(releaseErrorsImpl());
 }
 
@@ -189,6 +187,6 @@ std::string toPseudoJson(const folly::dynamic& d) {
   ss << d;
   return ss.str();
 }
-}  // namespace detail
+} // namespace detail
 
-}  // namespace folly
+} // namespace folly

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,12 +14,18 @@
  * limitations under the License.
  */
 
+#ifndef __STDC_FORMAT_MACROS
+#define __STDC_FORMAT_MACROS 1
+#endif
+
 #include <folly/String.h>
 
-#include <boost/regex.hpp>
-#include <gtest/gtest.h>
+#include <cinttypes>
 
-#include <folly/Array.h>
+#include <boost/regex.hpp>
+
+#include <folly/container/Array.h>
+#include <folly/portability/GTest.h>
 
 using namespace folly;
 using namespace std;
@@ -218,7 +224,7 @@ void expectPrintable(StringPiece s) {
     EXPECT_GE(127, c);
   }
 }
-}  // namespace
+} // namespace
 
 TEST(Escape, uriEscapeAllCombinations) {
   char c[3];
@@ -246,7 +252,7 @@ bool isHex(int v) {
           (v >= 'A' && v <= 'F') ||
           (v >= 'a' && v <= 'f'));
 }
-}  // namespace
+} // namespace
 
 TEST(Escape, uriUnescapePercentDecoding) {
   char c[4] = {'%', '\0', '\0', '\0'};
@@ -277,7 +283,7 @@ double pow2(int exponent) {
   return double(int64_t(1) << exponent);
 }
 
-}  // namespace
+} // namespace
 struct PrettyTestCase{
   std::string prettyString;
   double realValue;
@@ -414,7 +420,7 @@ TEST(PrettyToDouble, Basic) {
     try{
       recoveredX = prettyToDouble(testString, formatType);
     } catch (const std::range_error& ex) {
-      EXPECT_TRUE(false) << testCase.prettyString << " -> " << ex.what();
+      ADD_FAILURE() << testCase.prettyString << " -> " << ex.what();
     }
     double relativeError = fabs(x) < 1e-5 ? (x-recoveredX) :
                                             (x - recoveredX) / x;
@@ -431,8 +437,8 @@ TEST(PrettyToDouble, Basic) {
         try{
           recoveredX = prettyToDouble(prettyPrint(x, formatType, addSpace),
                                              formatType);
-        } catch (std::range_error &ex){
-          EXPECT_TRUE(false);
+        } catch (std::range_error&) {
+          ADD_FAILURE();
         }
         double relativeError = (x - recoveredX) / x;
         EXPECT_NEAR(0, relativeError, 1e-3);
@@ -487,7 +493,7 @@ TEST(System, errnoStr) {
 
 namespace {
 
-template<template<class,class> class VectorType>
+template <template <class, class> class VectorType>
 void splitTest() {
   VectorType<string,std::allocator<string> > parts;
 
@@ -636,7 +642,7 @@ void splitTest() {
   EXPECT_EQ(parts[3], "");
 }
 
-template<template<class,class> class VectorType>
+template <template <class, class> class VectorType>
 void piecesTest() {
   VectorType<StringPiece,std::allocator<StringPiece> > pieces;
   VectorType<StringPiece,std::allocator<StringPiece> > pieces2;
@@ -783,7 +789,7 @@ void piecesTest() {
   EXPECT_EQ(blah.size(), 6);
 }
 
-}
+} // namespace
 
 TEST(Split, split_vector) {
   splitTest<std::vector>();
@@ -921,16 +927,29 @@ enum class Color {
   Blue,
 };
 
-void parseTo(folly::StringPiece in, Color& out) {
+enum class ColorErrorCode { INVALID_COLOR };
+
+struct ColorError : std::runtime_error {
+  using std::runtime_error::runtime_error;
+};
+
+ColorError makeConversionError(ColorErrorCode, StringPiece sp) {
+  return ColorError("Invalid my::Color representation : " + sp.str());
+}
+
+Expected<StringPiece, ColorErrorCode> parseTo(
+    StringPiece in,
+    Color& out) noexcept {
   if (in == "R") {
     out = Color::Red;
   } else if (in == "B") {
     out = Color::Blue;
   } else {
-    throw runtime_error("");
+    return makeUnexpected(ColorErrorCode::INVALID_COLOR);
   }
+  return StringPiece(in.end(), in.end());
 }
-}
+} // namespace my
 
 TEST(Split, fixed_convert_custom) {
   my::Color c1, c2;
@@ -938,6 +957,8 @@ TEST(Split, fixed_convert_custom) {
   EXPECT_TRUE(folly::split(',', "R,B", c1, c2));
   EXPECT_EQ(c1, my::Color::Red);
   EXPECT_EQ(c2, my::Color::Blue);
+
+  EXPECT_THROW(folly::split(',', "B,G", c1, c2), my::ColorError);
 }
 
 TEST(String, join) {
@@ -1026,6 +1047,10 @@ TEST(String, backslashify) {
   EXPECT_EQ("abc\\r", backslashify(string("abc\r")));
   EXPECT_EQ("abc\\x0d", backslashify(string("abc\r"), true));
   EXPECT_EQ("\\0\\0", backslashify(string(2, '\0')));
+
+  StringPiece input1 = "abc\r";
+  std::string output1 = backslashify(input1);
+  EXPECT_EQ("abc\\r", output1);
 }
 
 TEST(String, humanify) {
@@ -1082,11 +1107,12 @@ char* copyWithSameAlignment(char* dst, const char* src, size_t length) {
 void testToLowerAscii(Range<const char*> src) {
   // Allocate extra space so we can make copies that start at the
   // same alignment (byte, word, quadword, etc) as the source buffer.
-  char controlBuf[src.size() + 7];
-  char* control = copyWithSameAlignment(controlBuf, src.begin(), src.size());
+  auto controlBuf = std::vector<char>(src.size() + 7);
+  char* control =
+      copyWithSameAlignment(controlBuf.data(), src.begin(), src.size());
 
-  char testBuf[src.size() + 7];
-  char* test = copyWithSameAlignment(testBuf, src.begin(), src.size());
+  auto testBuf = std::vector<char>(src.size() + 7);
+  char* test = copyWithSameAlignment(testBuf.data(), src.begin(), src.size());
 
   for (size_t i = 0; i < src.size(); i++) {
     control[i] = tolower(control[i]);
@@ -1097,7 +1123,7 @@ void testToLowerAscii(Range<const char*> src) {
   }
 }
 
-} // anon namespace
+} // namespace
 
 TEST(String, toLowerAsciiAligned) {
   static const size_t kSize = 256;

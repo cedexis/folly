@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,10 +18,12 @@
 
 #include <folly/Function.h>
 #include <folly/Range.h>
+#include <folly/hash/Hash.h>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace folly {
@@ -42,7 +44,9 @@ namespace folly {
  *
  *
  * Note: the class uses only one thread - if you want to use more than one
- *       thread use multiple FunctionScheduler objects
+ *       thread, either use multiple FunctionScheduler objects, or check out
+ *       ThreadedRepeatingFunctionRunner.h for a much simpler contract of
+ *       "run each function periodically in its own thread".
  *
  * start() schedules the functions, while shutdown() terminates further
  * scheduling.
@@ -111,6 +115,14 @@ class FunctionScheduler {
       std::chrono::milliseconds startDelay = std::chrono::milliseconds(0));
 
   /**
+   * Adds a new function to the FunctionScheduler to run only once.
+   */
+  void addFunctionOnce(
+      Function<void()>&& cb,
+      StringPiece nameID = StringPiece(),
+      std::chrono::milliseconds startDelay = std::chrono::milliseconds(0));
+
+  /**
     * Add a new function to the FunctionScheduler with the time
     * interval being distributed uniformly within the given interval
     * [minInterval, maxInterval].
@@ -149,11 +161,13 @@ class FunctionScheduler {
    * Returns false if no function exists with the specified name.
    */
   bool cancelFunction(StringPiece nameID);
+  bool cancelFunctionAndWait(StringPiece nameID);
 
   /**
    * All functions registered will be canceled.
    */
   void cancelAllFunctions();
+  void cancelAllFunctionsAndWait();
 
   /**
    * Resets the specified function's timer.
@@ -177,8 +191,9 @@ class FunctionScheduler {
    * Stops the FunctionScheduler.
    *
    * It may be restarted later by calling start() again.
+   * Returns false if the scheduler was not running.
    */
-  void shutdown();
+  bool shutdown();
 
   /**
    * Set the name of the worker thread.
@@ -193,18 +208,22 @@ class FunctionScheduler {
     std::string name;
     std::chrono::milliseconds startDelay;
     std::string intervalDescr;
+    bool runOnce;
 
-    RepeatFunc(Function<void()>&& cback,
-               IntervalDistributionFunc&& intervalFn,
-               const std::string& nameID,
-               const std::string& intervalDistDescription,
-               std::chrono::milliseconds delay)
+    RepeatFunc(
+        Function<void()>&& cback,
+        IntervalDistributionFunc&& intervalFn,
+        const std::string& nameID,
+        const std::string& intervalDistDescription,
+        std::chrono::milliseconds delay,
+        bool once)
         : cb(std::move(cback)),
           intervalFunc(std::move(intervalFn)),
           nextRunTime(),
           name(nameID),
           startDelay(delay),
-          intervalDescr(intervalDistDescription) {}
+          intervalDescr(intervalDistDescription),
+          runOnce(once) {}
 
     std::chrono::steady_clock::time_point getNextRunTime() const {
       return nextRunTime;
@@ -224,20 +243,35 @@ class FunctionScheduler {
   };
 
   struct RunTimeOrder {
-    bool operator()(const RepeatFunc& f1, const RepeatFunc& f2) const {
-      return f1.getNextRunTime() > f2.getNextRunTime();
+    bool operator()(const std::unique_ptr<RepeatFunc>& f1, const std::unique_ptr<RepeatFunc>& f2) const {
+      return f1->getNextRunTime() > f2->getNextRunTime();
     }
   };
 
-  typedef std::vector<RepeatFunc> FunctionHeap;
+  typedef std::vector<std::unique_ptr<RepeatFunc>> FunctionHeap;
+  typedef std::unordered_map<StringPiece, RepeatFunc*, Hash> FunctionMap;
 
   void run();
   void runOneFunction(std::unique_lock<std::mutex>& lock,
                       std::chrono::steady_clock::time_point now);
   void cancelFunction(const std::unique_lock<std::mutex>& lock,
-                      FunctionHeap::iterator it);
+                      RepeatFunc* it);
   void addFunctionToHeap(const std::unique_lock<std::mutex>& lock,
-                         RepeatFunc&& func);
+                         std::unique_ptr<RepeatFunc> func);
+
+  void addFunctionInternal(
+      Function<void()>&& cb,
+      IntervalDistributionFunc&& intervalFunc,
+      const std::string& nameID,
+      const std::string& intervalDescr,
+      std::chrono::milliseconds startDelay,
+      bool runOnce);
+
+  // Return true if the current function is being canceled
+  bool cancelAllFunctionsWithLock(std::unique_lock<std::mutex>& lock);
+  bool cancelFunctionWithLock(
+      std::unique_lock<std::mutex>& lock,
+      StringPiece nameID);
 
   std::thread thread_;
 
@@ -248,6 +282,7 @@ class FunctionScheduler {
   // The functions to run.
   // This is a heap, ordered by next run time.
   FunctionHeap functions_;
+  FunctionMap functionsMap_;
   RunTimeOrder fnCmp_;
 
   // The function currently being invoked by the running thread.
@@ -260,6 +295,7 @@ class FunctionScheduler {
 
   std::string threadName_;
   bool steady_{false};
+  bool cancellingCurrentFunction_{false};
 };
 
-}
+} // namespace folly

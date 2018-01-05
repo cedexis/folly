@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -144,7 +144,7 @@ class StackCache {
     // Use a read lock for reading.
     SYNCHRONIZED_CONST(pages, protectedPages()) {
       for (const auto& page : pages) {
-        intptr_t pageEnd = page + pagesize();
+        intptr_t pageEnd = intptr_t(page + pagesize());
         if (page <= addr && addr < pageEnd) {
           return true;
         }
@@ -164,7 +164,7 @@ class StackCache {
   std::vector<std::pair<unsigned char*, bool>> freeList_;
 
   static size_t pagesize() {
-    static const size_t pagesize = sysconf(_SC_PAGESIZE);
+    static const size_t pagesize = size_t(sysconf(_SC_PAGESIZE));
     return pagesize;
   }
 
@@ -230,7 +230,7 @@ void installSignalHandler() {
     sigaction(SIGSEGV, &sa, &oldSigsegvAction);
   });
 }
-}
+} // namespace
 
 #endif
 
@@ -245,7 +245,7 @@ class CacheManager {
     std::lock_guard<folly::SpinLock> lg(lock_);
     if (inUse_ < kMaxInUse) {
       ++inUse_;
-      return folly::make_unique<StackCacheEntry>(stackSize);
+      return std::make_unique<StackCacheEntry>(stackSize);
     }
 
     return nullptr;
@@ -277,7 +277,7 @@ class CacheManager {
 class StackCacheEntry {
  public:
   explicit StackCacheEntry(size_t stackSize)
-      : stackCache_(folly::make_unique<StackCache>(stackSize)) {}
+      : stackCache_(std::make_unique<StackCache>(stackSize)) {}
 
   StackCache& cache() const noexcept {
     return *stackCache_;
@@ -319,5 +319,5 @@ void GuardPageAllocator::deallocate(unsigned char* limit, size_t size) {
     fallbackAllocator_.deallocate(limit, size);
   }
 }
-}
-} // folly::fibers
+} // namespace fibers
+} // namespace folly

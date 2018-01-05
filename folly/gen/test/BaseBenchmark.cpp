@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,7 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <atomic>
+
 #include <glog/logging.h>
 
 #include <folly/Benchmark.h>
@@ -44,8 +46,6 @@ static vector<fbstring> strings =
   | as<vector>();
 
 auto square = [](int x) { return x * x; };
-auto add = [](int a, int b) { return a + b; };
-auto multiply = [](int a, int b) { return a * b; };
 
 BENCHMARK(Sum_Basic_NoGen, iters) {
   int limit = testSize.load();
@@ -140,11 +140,11 @@ BENCHMARK_DRAW_LINE()
 BENCHMARK(Fib_Sum_NoGen, iters) {
   int s = 0;
   while (iters--) {
-    auto fib = [](int limit) -> vector<int> {
+    auto fib = [](size_t limit) -> vector<int> {
       vector<int> ret;
       int a = 0;
       int b = 1;
-      for (int i = 0; i * 2 < limit; ++i) {
+      for (size_t i = 0; i < limit; i += 2) {
         ret.push_back(a += b);
         ret.push_back(b += a);
       }
@@ -168,13 +168,32 @@ BENCHMARK_RELATIVE(Fib_Sum_Gen, iters) {
         yield(b += a);
       }
     };
+    // Early stopping implemented with exceptions.
     s += fib | take(testSize.load()) | sum;
   }
   folly::doNotOptimizeAway(s);
 }
 
+BENCHMARK_RELATIVE(Fib_Sum_Gen_Limit, iters) {
+  int s = 0;
+  while (iters--) {
+    size_t limit = testSize.load();
+    auto fib = GENERATOR(int) {
+      int a = 0;
+      int b = 1;
+      for (size_t i = 0; i < limit; i += 2) {
+        yield(a += b);
+        yield(b += a);
+      }
+    };
+    // No early stopping.
+    s += fib | sum;
+  }
+  folly::doNotOptimizeAway(s);
+}
+
 struct FibYielder {
-  template<class Yield>
+  template <class Yield>
   void operator()(Yield&& yield) const {
     int a = 0;
     int b = 1;

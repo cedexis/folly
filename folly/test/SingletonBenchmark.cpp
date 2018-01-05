@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,8 @@
 #include <folly/Benchmark.h>
 #include <folly/Memory.h>
 #include <folly/portability/GFlags.h>
+
+FOLLY_GCC_DISABLE_WARNING("-Wdeprecated-declarations")
 
 using namespace folly;
 

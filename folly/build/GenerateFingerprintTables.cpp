@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,14 +18,14 @@
 #define __STDC_FORMAT_MACROS 1
 #endif
 
-#include <cstdio>
 #include <cinttypes>
+#include <cstdio>
 
 #include <string>
 
 #include <glog/logging.h>
 
-#include <folly/Format.h>
+#include <folly/Portability.h>
 #include <folly/portability/GFlags.h>
 
 #include <folly/detail/FingerprintPolynomial.h>
@@ -71,9 +71,9 @@ void computeTables(FILE* file, const FingerprintPolynomial<DEG>& poly) {
   // where k is the number of bits in the fingerprint (and deg(P)) and
   // Q(X) = q7*X^7 + q6*X^6 + ... + q1*X + q0 is a degree-7 polyonomial
   // whose coefficients are the bits of q.
-  for (int x = 0; x < 256; x++) {
+  for (uint16_t x = 0; x < 256; x++) {
     FingerprintPolynomial<DEG> t;
-    t.setHigh8Bits(x);
+    t.setHigh8Bits(uint8_t(x));
     for (int i = 0; i < 8; i++) {
       t.mulXkmod(8, poly);
       t.write(&(table[i][x][0]));
@@ -89,7 +89,7 @@ void computeTables(FILE* file, const FingerprintPolynomial<DEG>& poly) {
       "const uint64_t FingerprintTable<%d>::poly[%d] = {",
       DEG+1, FingerprintPolynomial<DEG>::size()));
   for (int j = 0; j < FingerprintPolynomial<DEG>::size(); j++) {
-    CHECK_ERR(fprintf(file, "%s%" PRIu64 "LU", j ? ", " : "", poly_val[j]));
+    CHECK_ERR(fprintf(file, "%s%" PRIu64 "LLU", j ? ", " : "", poly_val[j]));
   }
   CHECK_ERR(fprintf(file, "};\n\n"));
 
@@ -106,8 +106,8 @@ void computeTables(FILE* file, const FingerprintPolynomial<DEG>& poly) {
     for (int x = 0; x < 256; x++) {
       CHECK_ERR(fprintf(file, "    {"));
       for (int j = 0; j < FingerprintPolynomial<DEG>::size(); j++) {
-        CHECK_ERR(fprintf(
-          file, "%s%" PRIu64 "LU", (j ? ", " : ""), table[i][x][j]));
+        CHECK_ERR(
+            fprintf(file, "%s%" PRIu64 "LLU", (j ? ", " : ""), table[i][x][j]));
       }
       CHECK_ERR(fprintf(file, "},\n"));
     }
@@ -116,14 +116,13 @@ void computeTables(FILE* file, const FingerprintPolynomial<DEG>& poly) {
   CHECK_ERR(fprintf(file, "\n};\n\n"));
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char *argv[]) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
   google::InitGoogleLogging(argv[0]);
 
-  std::string name = folly::format("{}/{}", FLAGS_install_dir,
-                                   "FingerprintTables.cpp").str();
+  std::string name = FLAGS_install_dir + "/" + "FingerprintTables.cpp";
   FILE* file = fopen(name.c_str(), "w");
   PCHECK(file);
 

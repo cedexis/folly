@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,32 +15,32 @@
  */
 #pragma once
 
+#include <folly/fibers/FiberManagerInternal.h>
 #include <folly/fibers/LoopController.h>
-#include <folly/io/async/EventBase.h>
+#include <folly/io/async/VirtualEventBase.h>
 #include <atomic>
 #include <memory>
 
 namespace folly {
-class EventBase;
-}
-
-namespace folly {
 namespace fibers {
-
-class FiberManager;
 
 class EventBaseLoopController : public LoopController {
  public:
   explicit EventBaseLoopController();
-  ~EventBaseLoopController();
+  ~EventBaseLoopController() override;
 
   /**
    * Attach EventBase after LoopController was created.
    */
-  void attachEventBase(folly::EventBase& eventBase);
+  void attachEventBase(EventBase& eventBase);
+  void attachEventBase(VirtualEventBase& eventBase);
 
-  folly::EventBase* getEventBase() {
+  VirtualEventBase* getEventBase() {
     return eventBase_;
+  }
+
+  void setLoopRunner(InlineFunctionRunner* loopRunner) {
+    loopRunner_ = loopRunner;
   }
 
  private:
@@ -60,7 +60,7 @@ class EventBaseLoopController : public LoopController {
   class DestructionCallback : public folly::EventBase::LoopCallback {
    public:
     DestructionCallback() : alive_(new int(42)) {}
-    ~DestructionCallback() {
+    ~DestructionCallback() override {
       reset();
     }
 
@@ -87,25 +87,27 @@ class EventBaseLoopController : public LoopController {
   };
 
   bool awaitingScheduling_{false};
-  folly::EventBase* eventBase_{nullptr};
+  VirtualEventBase* eventBase_{nullptr};
+  Executor::KeepAlive eventBaseKeepAlive_;
   ControllerCallback callback_;
   DestructionCallback destructionCallback_;
   FiberManager* fm_{nullptr};
   std::atomic<bool> eventBaseAttached_{false};
   std::weak_ptr<void> aliveWeak_;
+  InlineFunctionRunner* loopRunner_{nullptr};
 
   /* LoopController interface */
 
   void setFiberManager(FiberManager* fm) override;
   void schedule() override;
   void cancel() override;
-  void runLoop();
+  void runLoop() override;
   void scheduleThreadSafe(std::function<bool()> func) override;
   void timedSchedule(std::function<void()> func, TimePoint time) override;
 
   friend class FiberManager;
 };
-}
-} // folly::fibers
+} // namespace fibers
+} // namespace folly
 
 #include "EventBaseLoopController-inl.h"

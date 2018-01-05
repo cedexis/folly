@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -52,7 +52,7 @@ struct ExtractFirstMemfn<Ret (T::*)(First, Args...) const> {
   typedef First type;
 };
 
-} // detail
+} // namespace detail
 
 /** Default - use boost */
 template <typename F, typename Enable = void>
@@ -67,5 +67,5 @@ struct FirstArgOf<F, typename std::enable_if<std::is_class<F>::value>::type> {
   typedef
       typename detail::ExtractFirstMemfn<decltype(&F::operator())>::type type;
 };
-}
-} // folly::fibers
+} // namespace fibers
+} // namespace folly

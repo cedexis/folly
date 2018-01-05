@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,9 @@
  */
 
 #include <glog/logging.h>
-#include <gtest/gtest.h>
+
 #include <iosfwd>
+#include <memory>
 #include <random>
 #include <set>
 #include <vector>
@@ -24,9 +25,11 @@
 #include <folly/FBVector.h>
 #include <folly/MapUtil.h>
 #include <folly/Memory.h>
+#include <folly/String.h>
 #include <folly/dynamic.h>
-#include <folly/gen/Base.h>
 #include <folly/experimental/TestUtil.h>
+#include <folly/gen/Base.h>
+#include <folly/portability/GTest.h>
 
 using namespace folly::gen;
 using namespace folly;
@@ -46,12 +49,12 @@ EXPECT_SAME(int&, typename ArgumentReference<int&>::type);
 EXPECT_SAME(const int&, typename ArgumentReference<const int&>::type);
 EXPECT_SAME(const int&, typename ArgumentReference<const int>::type);
 
-template<typename T>
+template <typename T>
 ostream& operator<<(ostream& os, const set<T>& values) {
   return os << from(values);
 }
 
-template<typename T>
+template <typename T>
 ostream& operator<<(ostream& os, const vector<T>& values) {
   os << "[";
   for (auto& value : values) {
@@ -69,7 +72,7 @@ auto multiply = [](int a, int b) { return a * b; };
 
 auto product = foldl(1, multiply);
 
-template<typename A, typename B>
+template <typename A, typename B>
 ostream& operator<<(ostream& os, const pair<A, B>& pair) {
   return os << "(" << pair.first << ", " << pair.second << ")";
 }
@@ -473,7 +476,35 @@ TEST(Gen, Until) {
       | as<vector<int>>();
     EXPECT_EQ(expected, actual);
   }
-  */
+    */
+}
+
+TEST(Gen, Visit) {
+  auto increment = [](int& i) { ++i; };
+  auto clone = map([](int i) { return i; });
+  { // apply()
+    auto expected = 10;
+    auto actual = seq(0) | clone | visit(increment) | take(4) | sum;
+    EXPECT_EQ(expected, actual);
+  }
+  { // foreach()
+    auto expected = 10;
+    auto actual = seq(0, 3) | clone | visit(increment) | sum;
+    EXPECT_EQ(expected, actual);
+  }
+  { // tee-like
+    std::vector<int> x2, x4;
+    std::vector<int> expected2{0, 1, 4, 9};
+    std::vector<int> expected4{0, 1, 16, 81};
+
+    auto tee = [](std::vector<int>& container) {
+      return visit([&](int value) { container.push_back(value); });
+    };
+    EXPECT_EQ(
+        98, seq(0, 3) | map(square) | tee(x2) | map(square) | tee(x4) | sum);
+    EXPECT_EQ(expected2, x2);
+    EXPECT_EQ(expected4, x4);
+  }
 }
 
 TEST(Gen, Composed) {
@@ -574,13 +605,13 @@ TEST(Gen, DistinctBy) {   //  0  1  4  9  6  5  6  9  4  1  0
 
 TEST(Gen, DistinctMove) {   //  0  1  4  9  6  5  6  9  4  1  0
   auto expected = vector<int>{0, 1, 2, 3, 4, 5};
-  auto actual =
-      seq(0, 100)
-    | mapped([](int i) { return std::unique_ptr<int>(new int(i)); })
+  auto actual = seq(0, 100) |
+      mapped([](int i) { return std::make_unique<int>(i); })
       // see comment below about selector parameters for Distinct
-    | distinctBy([](const std::unique_ptr<int>& pi) { return *pi * *pi % 10; })
-    | mapped([](std::unique_ptr<int> pi) { return *pi; })
-    | as<vector>();
+      | distinctBy([](const std::unique_ptr<int>& pi) {
+                  return *pi * *pi % 10;
+                }) |
+      mapped([](std::unique_ptr<int> pi) { return *pi; }) | as<vector>();
 
   // NOTE(tjackson): the following line intentionally doesn't work:
   //  | distinctBy([](std::unique_ptr<int> pi) { return *pi * *pi % 10; })
@@ -662,7 +693,7 @@ TEST(Gen, FromRValue) {
     // reference of a std::vector when it is used as the 'other' for an rvalue
     // constructor.  Use fbvector because we're sure its size will be zero in
     // this case.
-    fbvector<int> v({1,2,3,4});
+    fbvector<int> v({1, 2, 3, 4});
     auto q1 = from(v);
     EXPECT_EQ(v.size(), 4);  // ensure that the lvalue version was called!
     auto expected = 1 * 2 * 3 * 4;
@@ -674,11 +705,11 @@ TEST(Gen, FromRValue) {
   }
   {
     auto expected = 7;
-    auto q = from([] {return vector<int>({3,7,5}); }());
+    auto q = from([] { return vector<int>({3, 7, 5}); }());
     EXPECT_EQ(expected, q | max);
   }
   {
-    for (auto size: {5, 1024, 16384, 1<<20}) {
+    for (auto size : {5, 1024, 16384, 1 << 20}) {
       auto q1 = from(vector<int>(size, 2));
       auto q2 = from(vector<int>(size, 3));
       // If the rvalue specialization is broken/gone, then the compiler will
@@ -847,10 +878,12 @@ TEST(Gen, MapYielders) {
            | map([](int n) {
                return GENERATOR(int) {
                  int i;
-                 for (i = 1; i < n; ++i)
+                 for (i = 1; i < n; ++i) {
                    yield(i);
-                 for (; i >= 1; --i)
+                 }
+                 for (; i >= 1; --i) {
                    yield(i);
+                 }
                };
              })
            | concat;
@@ -885,11 +918,10 @@ TEST(Gen, CustomType) {
 }
 
 TEST(Gen, NoNeedlessCopies) {
-  auto gen = seq(1, 5)
-           | map([](int x) { return unique_ptr<int>(new int(x)); })
-           | map([](unique_ptr<int> p) { return p; })
-           | map([](unique_ptr<int>&& p) { return std::move(p); })
-           | map([](const unique_ptr<int>& p) { return *p; });
+  auto gen = seq(1, 5) | map([](int x) { return std::make_unique<int>(x); }) |
+      map([](unique_ptr<int> p) { return p; }) |
+      map([](unique_ptr<int>&& p) { return std::move(p); }) |
+      map([](const unique_ptr<int>& p) { return *p; });
   EXPECT_EQ(15, gen | sum);
   EXPECT_EQ(6, gen | take(3) | sum);
 }
@@ -916,7 +948,7 @@ class TestIntSeq : public GenImpl<int, TestIntSeq> {
   TestIntSeq& operator=(const TestIntSeq&) = delete;
 };
 
-}  // namespace
+} // namespace
 
 TEST(Gen, NoGeneratorCopies) {
   EXPECT_EQ(15, TestIntSeq() | sum);
@@ -1000,9 +1032,13 @@ TEST(Gen, CopyCount) {
 TEST(Gen, Dynamic) {
   dynamic array1 = dynamic::array(1, 2);
   EXPECT_EQ(dynamic(3), from(array1) | sum);
-  dynamic array2 = {{1}, {1, 2}};
+  dynamic array2 = folly::dynamic::array(
+      folly::dynamic::array(1), folly::dynamic::array(1, 2));
   EXPECT_EQ(dynamic(4), from(array2) | rconcat | sum);
-  dynamic array3 = {{{1}}, {{1}, {1, 2}}};
+  dynamic array3 = folly::dynamic::array(
+      folly::dynamic::array(folly::dynamic::array(1)),
+      folly::dynamic::array(
+          folly::dynamic::array(1), folly::dynamic::array(1, 2)));
   EXPECT_EQ(dynamic(5), from(array3) | rconcat | rconcat | sum);
 }
 
@@ -1113,6 +1149,45 @@ TEST(Gen, Dereference) {
   }
 }
 
+namespace {
+struct DereferenceWrapper {
+  string data;
+  string& operator*() & {
+    return data;
+  }
+  string&& operator*() && {
+    return std::move(data);
+  }
+  explicit operator bool() {
+    return true;
+  }
+};
+bool operator==(const DereferenceWrapper& a, const DereferenceWrapper& b) {
+  return a.data == b.data;
+}
+void PrintTo(const DereferenceWrapper& a, std::ostream* o) {
+  *o << "Wrapper{\"" << cEscape<string>(a.data) << "\"}";
+}
+} // namespace
+
+TEST(Gen, DereferenceWithLValueRef) {
+  auto original = vector<DereferenceWrapper>{{"foo"}, {"bar"}};
+  auto copy = original;
+  auto expected = vector<string>{"foo", "bar"};
+  auto actual = from(original) | dereference | as<vector>();
+  EXPECT_EQ(expected, actual);
+  EXPECT_EQ(copy, original);
+}
+
+TEST(Gen, DereferenceWithRValueRef) {
+  auto original = vector<DereferenceWrapper>{{"foo"}, {"bar"}};
+  auto empty = vector<DereferenceWrapper>{{}, {}};
+  auto expected = vector<string>{"foo", "bar"};
+  auto actual = from(original) | move | dereference | as<vector>();
+  EXPECT_EQ(expected, actual);
+  EXPECT_EQ(empty, original);
+}
+
 TEST(Gen, Indirect) {
   vector<int> vs{1};
   EXPECT_EQ(&vs[0], from(vs) | indirect | first | unwrap);
@@ -1161,19 +1236,42 @@ TEST(Gen, Batch) {
 
 TEST(Gen, BatchMove) {
   auto expected = vector<vector<int>>{ {0, 1}, {2, 3}, {4} };
-  auto actual =
-      seq(0, 4)
-    | mapped([](int i) { return std::unique_ptr<int>(new int(i)); })
-    | batch(2)
-    | mapped([](std::vector<std::unique_ptr<int>>& pVector) {
-        std::vector<int> iVector;
-        for (const auto& p : pVector) {
-          iVector.push_back(*p);
-        };
-        return iVector;
-      })
-    | as<vector>();
+  auto actual = seq(0, 4) |
+      mapped([](int i) { return std::make_unique<int>(i); }) | batch(2) |
+      mapped([](std::vector<std::unique_ptr<int>>& pVector) {
+                  std::vector<int> iVector;
+                  for (const auto& p : pVector) {
+                    iVector.push_back(*p);
+                  };
+                  return iVector;
+                }) |
+      as<vector>();
   EXPECT_EQ(expected, actual);
+}
+
+TEST(Gen, Window) {
+  auto expected = seq(0, 10) | as<std::vector>();
+  for (size_t windowSize = 1; windowSize <= 20; ++windowSize) {
+    // no early stop
+    auto actual = seq(0, 10) |
+        mapped([](int i) { return std::make_unique<int>(i); }) | window(4) |
+        dereference | as<std::vector>();
+    EXPECT_EQ(expected, actual) << windowSize;
+  }
+  for (size_t windowSize = 1; windowSize <= 20; ++windowSize) {
+    // pre-window take
+    auto actual = seq(0) |
+        mapped([](int i) { return std::make_unique<int>(i); }) | take(11) |
+        window(4) | dereference | as<std::vector>();
+    EXPECT_EQ(expected, actual) << windowSize;
+  }
+  for (size_t windowSize = 1; windowSize <= 20; ++windowSize) {
+    // post-window take
+    auto actual = seq(0) |
+        mapped([](int i) { return std::make_unique<int>(i); }) | window(4) |
+        take(11) | dereference | as<std::vector>();
+    EXPECT_EQ(expected, actual) << windowSize;
+  }
 }
 
 TEST(Gen, Just) {
@@ -1229,29 +1327,29 @@ TEST(Gen, Unwrap) {
   EXPECT_EQ(4, o | unwrap);
   EXPECT_THROW(e | unwrap, OptionalEmptyException);
 
-  auto oup = folly::make_optional(folly::make_unique<int>(5));
+  auto oup = folly::make_optional(std::make_unique<int>(5));
   // optional has a value, and that value is non-null
-  EXPECT_TRUE(oup | unwrap);
+  EXPECT_TRUE(bool(oup | unwrap));
   EXPECT_EQ(5, *(oup | unwrap));
   EXPECT_TRUE(oup.hasValue()); // still has a pointer (null or not)
-  EXPECT_TRUE(oup.value()); // that value isn't null
+  EXPECT_TRUE(bool(oup.value())); // that value isn't null
 
-  auto moved1 = std::move(oup) | unwrapOr(folly::make_unique<int>(6));
+  auto moved1 = std::move(oup) | unwrapOr(std::make_unique<int>(6));
   // oup still has a value, but now it's now nullptr since the pointer was moved
   // into moved1
   EXPECT_TRUE(oup.hasValue());
   EXPECT_FALSE(oup.value());
-  EXPECT_TRUE(moved1);
+  EXPECT_TRUE(bool(moved1));
   EXPECT_EQ(5, *moved1);
 
-  auto moved2 = std::move(oup) | unwrapOr(folly::make_unique<int>(7));
+  auto moved2 = std::move(oup) | unwrapOr(std::make_unique<int>(7));
   // oup's still-valid nullptr value wins here, the pointer to 7 doesn't apply
   EXPECT_FALSE(moved2);
 
   oup.clear();
-  auto moved3 = std::move(oup) | unwrapOr(folly::make_unique<int>(8));
+  auto moved3 = std::move(oup) | unwrapOr(std::make_unique<int>(8));
   // oup is empty now, so the unwrapOr comes into play.
-  EXPECT_TRUE(moved3);
+  EXPECT_TRUE(bool(moved3));
   EXPECT_EQ(8, *moved3);
 
   {
@@ -1287,17 +1385,17 @@ TEST(Gen, Unwrap) {
 
   {
     auto opt = folly::make_optional(std::make_shared<int>(8));
-    auto fallback = unwrapOr(folly::make_unique<int>(9));
+    auto fallback = unwrapOr(std::make_unique<int>(9));
     // fallback must be std::move'd to be used
     EXPECT_EQ(8, *(opt | std::move(fallback)));
-    EXPECT_TRUE(opt.value()); // shared_ptr copied out, not moved
-    EXPECT_TRUE(opt); // value still present
-    EXPECT_TRUE(fallback.value()); // fallback value not needed
+    EXPECT_TRUE(bool(opt.value())); // shared_ptr copied out, not moved
+    EXPECT_TRUE(bool(opt)); // value still present
+    EXPECT_TRUE(bool(fallback.value())); // fallback value not needed
 
     EXPECT_EQ(8, *(std::move(opt) | std::move(fallback)));
     EXPECT_FALSE(opt.value()); // shared_ptr moved out
-    EXPECT_TRUE(opt); // gutted value still present
-    EXPECT_TRUE(fallback.value()); // fallback value not needed
+    EXPECT_TRUE(bool(opt)); // gutted value still present
+    EXPECT_TRUE(bool(fallback.value())); // fallback value not needed
 
     opt.clear();
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,10 +22,10 @@
 #include <vector>
 
 #include <glog/logging.h>
-#include <gtest/gtest.h>
 
 #include <folly/Benchmark.h>
 #include <folly/Random.h>
+#include <folly/portability/GTest.h>
 
 DEFINE_int32(random_seed, folly::randomNumberSeed(), "random seed");
 
@@ -96,6 +96,17 @@ TEST(Varint, Simple) {
              {0xff, 0xff, 0xff, 0xff, 0x0f});
   testVarint(static_cast<uint64_t>(-1),
              {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01});
+}
+
+void testVarintFail(std::initializer_list<uint8_t> bytes) {
+  size_t n = bytes.size();
+  ByteRange data(&*bytes.begin(), n);
+  auto ret = tryDecodeVarint(data);
+  EXPECT_FALSE(ret.hasValue());
+}
+
+TEST(Varint, Fail) {
+  testVarintFail({0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff});
 }
 
 TEST(ZigZag, Simple) {
@@ -183,9 +194,9 @@ BENCHMARK(VarintDecoding, iters) {
   }
 }
 
-}  // namespace
-
-}}  // namespaces
+} // namespace
+} // namespace test
+} // namespace folly
 
 int main(int argc, char *argv[]) {
   testing::InitGoogleTest(&argc, argv);

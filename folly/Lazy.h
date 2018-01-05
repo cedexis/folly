@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,8 @@
 
 #pragma once
 
-#include <utility>
 #include <type_traits>
+#include <utility>
 
 #include <folly/Optional.h>
 
@@ -86,7 +86,7 @@ namespace folly {
 
 namespace detail {
 
-template<class Func>
+template <class Func>
 struct Lazy {
   typedef typename std::result_of<Func()>::type result_type;
 
@@ -107,20 +107,22 @@ struct Lazy {
   }
 
   result_type& operator()() {
-    if (!value_) value_ = func_();
+    if (!value_) {
+      value_ = func_();
+    }
     return *value_;
   }
 
-private:
+ private:
   Optional<result_type> value_;
   Func func_;
 };
 
-}
+} // namespace detail
 
 //////////////////////////////////////////////////////////////////////
 
-template<class Func>
+template <class Func>
 detail::Lazy<typename std::remove_reference<Func>::type>
 lazy(Func&& fun) {
   return detail::Lazy<typename std::remove_reference<Func>::type>(
@@ -130,4 +132,4 @@ lazy(Func&& fun) {
 
 //////////////////////////////////////////////////////////////////////
 
-}
+} // namespace folly

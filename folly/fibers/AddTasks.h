@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,9 +19,9 @@
 #include <vector>
 
 #include <folly/Optional.h>
-#include <folly/fibers/FiberManager.h>
-#include <folly/fibers/Promise.h>
 #include <folly/Try.h>
+#include <folly/fibers/FiberManagerInternal.h>
+#include <folly/fibers/Promise.h>
 
 namespace folly {
 namespace fibers {
@@ -128,7 +128,7 @@ class TaskIterator {
 
   folly::Try<T> awaitNextResult();
 };
-}
-}
+} // namespace fibers
+} // namespace folly
 
 #include <folly/fibers/AddTasks-inl.h>

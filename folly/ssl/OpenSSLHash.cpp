@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,14 +21,15 @@
 namespace folly {
 namespace ssl {
 
-void OpenSSLHash::check_out_size_throw(size_t size, MutableByteRange out) {
+[[noreturn]] void OpenSSLHash::check_out_size_throw(
+    size_t size,
+    MutableByteRange out) {
   throw std::invalid_argument(folly::sformat(
       "expected out of size {} but was of size {}", size, out.size()));
 }
 
-void OpenSSLHash::check_libssl_result_throw() {
+[[noreturn]] void OpenSSLHash::check_libssl_result_throw() {
   throw std::runtime_error("openssl crypto function failed");
 }
-
-}
-}
+} // namespace ssl
+} // namespace folly

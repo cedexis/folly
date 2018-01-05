@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -36,6 +36,18 @@ AsyncSignalHandler::~AsyncSignalHandler() {
        ++it) {
     event_del(&it->second);
   }
+}
+
+void AsyncSignalHandler::attachEventBase(EventBase* eventBase) {
+  assert(eventBase_ == nullptr);
+  assert(signalEvents_.empty());
+  eventBase_ = eventBase;
+}
+
+void AsyncSignalHandler::detachEventBase() {
+  assert(eventBase_ != nullptr);
+  assert(signalEvents_.empty());
+  eventBase_ = nullptr;
 }
 
 void AsyncSignalHandler::registerSignalHandler(int signum) {
@@ -84,7 +96,7 @@ void AsyncSignalHandler::libeventCallback(libevent_fd_t signum,
                                           short /* events */,
                                           void* arg) {
   AsyncSignalHandler* handler = static_cast<AsyncSignalHandler*>(arg);
-  handler->signalReceived(signum);
+  handler->signalReceived(int(signum));
 }
 
-} // folly
+} // namespace folly

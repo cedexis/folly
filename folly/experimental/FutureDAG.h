@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,7 +35,11 @@ class FutureDAG : public std::enable_shared_from_this<FutureDAG> {
   }
 
   void remove(Handle a) {
-    if (nodes.size() > a && nodes[a].hasDependents) {
+    if (a >= nodes.size()) {
+      return;
+    }
+
+    if (nodes[a].hasDependents) {
       for (auto& node : nodes) {
         auto& deps = node.dependencies;
         deps.erase(
@@ -47,6 +51,7 @@ class FutureDAG : public std::enable_shared_from_this<FutureDAG> {
         }
       }
     }
+
     nodes.erase(nodes.begin() + a);
   }
 
@@ -65,7 +70,6 @@ class FutureDAG : public std::enable_shared_from_this<FutureDAG> {
       }
     }
 
-    // Faster to just create a new vector with the element in it?
     nodes.erase(nodes.begin(), nodes.begin() + source_node);
     nodes.erase(nodes.begin() + 1, nodes.end());
     nodes[0].hasDependents = false;
@@ -130,10 +134,9 @@ class FutureDAG : public std::enable_shared_from_this<FutureDAG> {
     }
 
     nodes[sourceHandle].promise.setValue();
-    auto that = shared_from_this();
-    return nodes[sinkHandle].promise.getFuture().ensure([that] {}).then(
-        [this, sourceHandle, sinkHandle]() {
-          clean_state(sourceHandle, sinkHandle);
+    return nodes[sinkHandle].promise.getFuture().then(
+        [that = shared_from_this(), sourceHandle, sinkHandle]() {
+          that->clean_state(sourceHandle, sinkHandle);
         });
   }
 
@@ -197,4 +200,28 @@ class FutureDAG : public std::enable_shared_from_this<FutureDAG> {
   std::vector<Node> nodes;
 };
 
-} // folly
+// Polymorphic functor implementation
+template <typename T>
+class FutureDAGFunctor {
+ public:
+  std::shared_ptr<FutureDAG> dag = FutureDAG::create();
+  T state;
+  std::vector<T> dep_states;
+  T result() {
+    return state;
+  }
+  // execReset() runs DAG & clears all nodes except for source
+  void execReset() {
+    this->dag->go().get();
+    this->dag->reset();
+  }
+  void exec() {
+    this->dag->go().get();
+  }
+  virtual void operator()(){}
+  explicit FutureDAGFunctor(T init_val) : state(init_val) {}
+  FutureDAGFunctor() : state() {}
+  virtual ~FutureDAGFunctor(){}
+};
+
+} // namespace folly

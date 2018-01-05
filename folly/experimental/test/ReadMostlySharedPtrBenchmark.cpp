@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,20 +25,23 @@
 #include <folly/experimental/RCURefCount.h>
 #include <folly/portability/GFlags.h>
 
-template <template<typename> class MainPtr,
-          template<typename> class WeakPtr,
-          size_t threadCount>
+template <
+    template <typename> class MainPtr,
+    template <typename> class WeakPtr,
+    size_t threadCount>
 void benchmark(size_t n) {
-  MainPtr<int> mainPtr(folly::make_unique<int>(42));
+  MainPtr<int> mainPtr(std::make_unique<int>(42));
 
   std::vector<std::thread> ts;
 
   for (size_t t = 0; t < threadCount; ++t) {
     ts.emplace_back([&]() {
         WeakPtr<int> weakPtr(mainPtr);
+        // Prevent the compiler from hoisting code out of the loop.
+        auto op = [&]() FOLLY_NOINLINE { weakPtr.lock(); };
 
         for (size_t i = 0; i < n; ++i) {
-          weakPtr.lock();
+          op();
         }
       });
   }

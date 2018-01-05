@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,15 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#pragma once
 
-#include <folly/io/async/AsyncTransport.h>
-#include <folly/io/async/EventHandler.h>
-#include <folly/io/async/DelayedDestruction.h>
-#include <folly/io/IOBufQueue.h>
+#pragma once
 
 #include <list>
 #include <system_error>
+
+#include <folly/io/IOBufQueue.h>
+#include <folly/io/async/AsyncTransport.h>
+#include <folly/io/async/DelayedDestruction.h>
+#include <folly/io/async/EventHandler.h>
 
 namespace folly {
 
@@ -77,7 +78,7 @@ class AsyncPipeReader : public EventHandler,
   }
 
  private:
-  ~AsyncPipeReader();
+  ~AsyncPipeReader() override;
 
   void handlerReady(uint16_t events) noexcept override;
   void failRead(const AsyncSocketException& ex);
@@ -173,9 +174,9 @@ class AsyncPipeWriter : public EventHandler,
   bool closeOnEmpty_{false};
   std::function<void(int)> closeCb_;
 
-  ~AsyncPipeWriter() {
+  ~AsyncPipeWriter() override {
     closeNow();
   }
 };
 
-} // folly
+} // namespace folly

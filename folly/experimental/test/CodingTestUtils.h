@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,10 +21,12 @@
 #include <limits>
 #include <random>
 #include <string>
-#include <vector>
 #include <unordered_set>
+#include <vector>
+
 #include <glog/logging.h>
-#include <gtest/gtest.h>
+
+#include <folly/portability/GTest.h>
 
 namespace folly { namespace compression {
 
@@ -349,7 +351,9 @@ void bmJump(const List& list, const std::vector<uint32_t>& data,
 
   Reader reader(list);
   for (size_t i = 0, j = 0; i < iters; ++i, ++j) {
-    if (j == order.size()) j = 0;
+    if (j == order.size()) {
+      j = 0;
+    }
     reader.jump(order[j]);
     folly::doNotOptimizeAway(reader.value());
   }
@@ -363,10 +367,13 @@ void bmJumpTo(const List& list, const std::vector<uint32_t>& data,
 
   Reader reader(list);
   for (size_t i = 0, j = 0; i < iters; ++i, ++j) {
-    if (j == order.size()) j = 0;
+    if (j == order.size()) {
+      j = 0;
+    }
     reader.jumpTo(data[order[j]]);
     folly::doNotOptimizeAway(reader.value());
   }
 }
 
-}}  // namespaces
+} // namespace compression
+} // namespace folly

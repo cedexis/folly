@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@
 
 #include <folly/portability/Config.h>
 
-#if defined(FOLLY_HAVE_LIBGFLAGS) && (FOLLY_HAVE_LIBGFLAGS == 0)
+#if !FOLLY_HAVE_LIBGFLAGS
 // glog/logging.h is dependent on this implementation detail
 // being defined otherwise it undefines all of this -_-....
 //
@@ -58,6 +58,11 @@
   FOLLY_DEFINE_FLAG(unsigned long long, U64, _name, _default)
 #define DEFINE_string(_name, _default, _description) \
   FOLLY_DEFINE_FLAG(std::string, S, _name, _default)
+
+namespace google {
+class FlagSaver {};
+}
+
 #else
 #include <gflags/gflags.h>
 #endif

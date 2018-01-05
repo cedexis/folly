@@ -1,23 +1,19 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2004-present Facebook, Inc.
  *
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements. See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership. The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License. You may obtain a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
+
 #pragma once
 
 #include <folly/io/async/TimeoutManager.h>
@@ -25,7 +21,6 @@
 #include <folly/portability/Event.h>
 
 #include <boost/noncopyable.hpp>
-#include <event.h>
 #include <memory>
 #include <utility>
 
@@ -253,7 +248,7 @@ struct async_timeout_wrapper:
     callback_(std::forward<UCallback>(callback))
   {}
 
-  void timeoutExpired() noexcept {
+  void timeoutExpired() noexcept override {
     static_assert(
       noexcept(std::declval<TCallback>()()),
       "callback must be declared noexcept, e.g.: `[]() noexcept {}`"
@@ -261,11 +256,11 @@ struct async_timeout_wrapper:
     callback_();
   }
 
-private:
+ private:
   TCallback callback_;
 };
 
-} // namespace detail {
+} // namespace detail
 
 template <typename TCallback>
 std::unique_ptr<AsyncTimeout> AsyncTimeout::make(
@@ -291,4 +286,4 @@ std::unique_ptr<AsyncTimeout> AsyncTimeout::schedule(
   return wrapper;
 }
 
-} // folly
+} // namespace folly

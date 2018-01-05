@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,9 @@
 #pragma once
 
 #include <folly/io/async/TimeoutManager.h>
+#include <folly/portability/GMock.h>
+
 #include <chrono>
-#include <gmock/gmock.h>
 
 namespace folly {
 namespace test {

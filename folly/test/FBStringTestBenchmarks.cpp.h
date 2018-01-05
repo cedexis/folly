@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -60,9 +60,11 @@ void BENCHFUN(ctorFromArray)(size_t iters, size_t arg) {
 BENCHMARK_PARAM(BENCHFUN(ctorFromArray), 32768);
 
 void BENCHFUN(ctorFromTwoPointers)(size_t iters, size_t arg) {
-  static STRING s;
+  /* library-local */ static STRING s;
   BENCHMARK_SUSPEND {
-    if (s.size() < arg) s.resize(arg);
+    if (s.size() < arg) {
+      s.resize(arg);
+    }
   }
   FOR_EACH_RANGE (i, 0, iters) {
     STRING s1(s.begin(), s.end());

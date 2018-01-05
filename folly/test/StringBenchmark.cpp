@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,8 +17,8 @@
 #include <folly/String.h>
 
 #include <boost/algorithm/string.hpp>
-#include <cstdarg>
 #include <folly/Benchmark.h>
+#include <folly/Random.h>
 #include <random>
 
 using namespace folly;
@@ -102,6 +102,10 @@ fbstring uriUnescapedString;
 const size_t kURIBmStringLength = 256;
 const uint32_t kURIPassThroughPercentage = 50;
 
+fbstring hexlifyInput;
+fbstring hexlifyOutput;
+const size_t kHexlifyLength = 1024;
+
 void initBenchmark() {
   std::mt19937 rnd;
 
@@ -145,6 +149,11 @@ void initBenchmark() {
   }
 
   uribmEscapedString = uriEscape<fbstring>(uribmString);
+
+  // hexlify
+  hexlifyInput.resize(kHexlifyLength);
+  Random::secureRandom(&hexlifyInput[0], kHexlifyLength);
+  folly::hexlify(hexlifyInput, hexlifyOutput);
 }
 
 BENCHMARK(BM_cEscape, iters) {
@@ -173,6 +182,18 @@ BENCHMARK(BM_uriUnescape, iters) {
     uriUnescapedString = uriUnescape<fbstring>(uribmEscapedString);
     doNotOptimizeAway(uriUnescapedString.size());
   }
+}
+
+BENCHMARK(BM_unhexlify, iters) {
+  // iters/sec = bytes output per sec
+  std::string unhexed;
+  folly::StringPiece hex = hexlifyOutput;
+  for (; iters >= hex.size(); iters -= hex.size()) {
+    folly::unhexlify(hex, unhexed);
+  }
+  iters -= iters % 2; // round down to an even number of chars
+  hex = hex.subpiece(0, iters);
+  folly::unhexlify(hex, unhexed);
 }
 
 } // namespace

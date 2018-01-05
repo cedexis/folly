@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,19 +16,21 @@
 
 #include <folly/experimental/TestUtil.h>
 
-#include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 
 #include <boost/regex.hpp>
-#include <folly/Conv.h>
+
 #include <folly/Exception.h>
 #include <folly/File.h>
 #include <folly/FileUtil.h>
 #include <folly/Memory.h>
 #include <folly/String.h>
-#include <folly/portability/Environment.h>
 #include <folly/portability/Fcntl.h>
-#include <folly/portability/Unistd.h>
+
+#ifdef _WIN32
+#include <crtdbg.h> // @manual
+#endif
 
 namespace folly {
 namespace test {
@@ -48,7 +50,7 @@ fs::path generateUniquePath(fs::path path, StringPiece namePrefix) {
   return path;
 }
 
-}  // namespace
+} // namespace
 
 TemporaryFile::TemporaryFile(StringPiece namePrefix,
                              fs::path dir,
@@ -72,16 +74,23 @@ TemporaryFile::TemporaryFile(StringPiece namePrefix,
   }
 }
 
+void TemporaryFile::close() {
+  if (::close(fd_) == -1) {
+    PLOG(ERROR) << "close failed";
+  }
+  fd_ = -1;
+}
+
 const fs::path& TemporaryFile::path() const {
   CHECK(scope_ != Scope::UNLINK_IMMEDIATELY);
   DCHECK(!path_.empty());
   return path_;
 }
 
-TemporaryFile::~TemporaryFile() {
+void TemporaryFile::reset() {
   if (fd_ != -1 && closeOnDestruction_) {
-    if (close(fd_) == -1) {
-      PLOG(ERROR) << "close failed";
+    if (::close(fd_) == -1) {
+      PLOG(ERROR) << "close failed (fd = " << fd_ << "): ";
     }
   }
 
@@ -96,12 +105,16 @@ TemporaryFile::~TemporaryFile() {
   }
 }
 
+TemporaryFile::~TemporaryFile() {
+  reset();
+}
+
 TemporaryDirectory::TemporaryDirectory(
     StringPiece namePrefix,
     fs::path dir,
     Scope scope)
     : scope_(scope),
-      path_(folly::make_unique<fs::path>(
+      path_(std::make_unique<fs::path>(
           generateUniquePath(std::move(dir), namePrefix))) {
   fs::create_directory(path());
 }
@@ -116,17 +129,44 @@ TemporaryDirectory::~TemporaryDirectory() {
   }
 }
 
-ChangeToTempDir::ChangeToTempDir() : initialPath_(fs::current_path()) {
-  std::string p = dir_.path().string();
-  ::chdir(p.c_str());
+ChangeToTempDir::ChangeToTempDir() {
+  orig_ = fs::current_path();
+  fs::current_path(path());
 }
 
 ChangeToTempDir::~ChangeToTempDir() {
-  std::string p = initialPath_.string();
-  ::chdir(p.c_str());
+  if (!orig_.empty()) {
+    fs::current_path(orig_);
+  }
 }
 
 namespace detail {
+
+SavedState disableInvalidParameters() {
+#ifdef _WIN32
+  SavedState ret;
+  ret.previousThreadLocalHandler = _set_thread_local_invalid_parameter_handler(
+      [](const wchar_t*,
+         const wchar_t*,
+         const wchar_t*,
+         unsigned int,
+         uintptr_t) {});
+  ret.previousCrtReportMode = _CrtSetReportMode(_CRT_ASSERT, 0);
+  return ret;
+#else
+  return SavedState();
+#endif
+}
+
+#ifdef _WIN32
+void enableInvalidParameters(SavedState state) {
+  _set_thread_local_invalid_parameter_handler(
+      (_invalid_parameter_handler)state.previousThreadLocalHandler);
+  _CrtSetReportMode(_CRT_ASSERT, state.previousCrtReportMode);
+}
+#else
+void enableInvalidParameters(SavedState) {}
+#endif
 
 bool hasPCREPatternMatch(StringPiece pattern, StringPiece target) {
   return boost::regex_match(
@@ -140,7 +180,7 @@ bool hasNoPCREPatternMatch(StringPiece pattern, StringPiece target) {
   return !hasPCREPatternMatch(pattern, target);
 }
 
-}  // namespace detail
+} // namespace detail
 
 CaptureFD::CaptureFD(int fd, ChunkCob chunk_cob)
     : chunkCob_(std::move(chunk_cob)), fd_(fd), readOffset_(0) {
@@ -178,44 +218,14 @@ std::string CaptureFD::readIncremental() {
   std::string filename = file_.path().string();
   // Yes, I know that I could just keep the file open instead. So sue me.
   folly::File f(openNoInt(filename.c_str(), O_RDONLY), true);
-  auto size = lseek(f.fd(), 0, SEEK_END) - readOffset_;
+  auto size = size_t(lseek(f.fd(), 0, SEEK_END) - readOffset_);
   std::unique_ptr<char[]> buf(new char[size]);
   auto bytes_read = folly::preadFull(f.fd(), buf.get(), size, readOffset_);
-  PCHECK(size == bytes_read);
-  readOffset_ += size;
+  PCHECK(ssize_t(size) == bytes_read);
+  readOffset_ += off_t(size);
   chunkCob_(StringPiece(buf.get(), buf.get() + size));
   return std::string(buf.get(), size);
 }
 
-static std::map<std::string, std::string> getEnvVarMap() {
-  std::map<std::string, std::string> data;
-  for (auto it = environ; *it != nullptr; ++it) {
-    std::string key, value;
-    split("=", *it, key, value);
-    if (key.empty()) {
-      continue;
-    }
-    CHECK(!data.count(key)) << "already contains: " << key;
-    data.emplace(move(key), move(value));
-  }
-  return data;
-}
-
-EnvVarSaver::EnvVarSaver() {
-  saved_ = getEnvVarMap();
-}
-
-EnvVarSaver::~EnvVarSaver() {
-  for (const auto& kvp : getEnvVarMap()) {
-    if (saved_.count(kvp.first)) {
-      continue;
-    }
-    PCHECK(0 == unsetenv(kvp.first.c_str()));
-  }
-  for (const auto& kvp : saved_) {
-    PCHECK(0 == setenv(kvp.first.c_str(), kvp.second.c_str(), (int)true));
-  }
-}
-
-}  // namespace test
-}  // namespace folly
+} // namespace test
+} // namespace folly

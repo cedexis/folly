@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -94,7 +94,7 @@ class DelayedDestruction : public DelayedDestructionBase {
    * shared_ptr using a DelayedDestruction::Destructor as the second argument
    * to the shared_ptr constructor.
    */
-  virtual ~DelayedDestruction() = default;
+  ~DelayedDestruction() override = default;
 
   DelayedDestruction()
     : destroyPending_(false) {
@@ -119,4 +119,4 @@ class DelayedDestruction : public DelayedDestructionBase {
     delete this;
   }
 };
-} // folly
+} // namespace folly

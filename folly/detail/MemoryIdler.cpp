@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,15 +17,17 @@
 #include <folly/detail/MemoryIdler.h>
 
 #include <folly/Logging.h>
-#include <folly/Malloc.h>
 #include <folly/Portability.h>
 #include <folly/ScopeGuard.h>
-#include <folly/detail/CacheLocality.h>
+#include <folly/concurrency/CacheLocality.h>
+#include <folly/memory/MallctlHelper.h>
+#include <folly/memory/Malloc.h>
+#include <folly/portability/PThread.h>
 #include <folly/portability/SysMman.h>
 #include <folly/portability/Unistd.h>
+#include <folly/synchronization/CallOnce.h>
 
 #include <limits.h>
-#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 #include <utility>
@@ -35,36 +37,18 @@ namespace folly { namespace detail {
 AtomicStruct<std::chrono::steady_clock::duration>
 MemoryIdler::defaultIdleTimeout(std::chrono::seconds(5));
 
-
-// Calls mallctl, optionally reading a value of type <T> if out is
-// non-null.  Logs on error.
-template <typename T>
-static int mallctlRead(const char* cmd, T* out) {
-  size_t outLen = sizeof(T);
-  int err = mallctl(cmd,
-                    out, out ? &outLen : nullptr,
-                    nullptr, 0);
-  if (err != 0) {
-    FB_LOG_EVERY_MS(WARNING, 10000)
-      << "mallctl " << cmd << ": " << strerror(err) << " (" << err << ")";
-  }
-  return err;
-}
-
-static int mallctlCall(const char* cmd) {
-  // Use <unsigned> rather than <void> to avoid sizeof(void).
-  return mallctlRead<unsigned>(cmd, nullptr);
-}
-
 void MemoryIdler::flushLocalMallocCaches() {
-  if (usingJEMalloc()) {
-    if (!mallctl || !mallctlnametomib || !mallctlbymib) {
-      FB_LOG_EVERY_MS(ERROR, 10000) << "mallctl* weak link failed";
-      return;
-    }
+  if (!usingJEMalloc()) {
+    return;
+  }
+  if (!mallctl || !mallctlnametomib || !mallctlbymib) {
+    FB_LOG_EVERY_MS(ERROR, 10000) << "mallctl* weak link failed";
+    return;
+  }
 
-    // "tcache.flush" was renamed to "thread.tcache.flush" in jemalloc 3
-    mallctlCall("thread.tcache.flush");
+  try {
+    // Not using mallctlCall as this will fail if tcache is disabled.
+    mallctl("thread.tcache.flush", nullptr, nullptr, nullptr, 0);
 
     // By default jemalloc has 4 arenas per cpu, and then assigns each
     // thread to one of those arenas.  This means that in any service
@@ -80,13 +64,16 @@ void MemoryIdler::flushLocalMallocCaches() {
     unsigned arenaForCurrent;
     size_t mib[3];
     size_t miblen = 3;
-    if (mallctlRead<unsigned>("opt.narenas", &narenas) == 0 &&
-        narenas > 2 * CacheLocality::system().numCpus &&
-        mallctlRead<unsigned>("thread.arena", &arenaForCurrent) == 0 &&
+
+    mallctlRead("opt.narenas", &narenas);
+    mallctlRead("thread.arena", &arenaForCurrent);
+    if (narenas > 2 * CacheLocality::system().numCpus &&
         mallctlnametomib("arena.0.purge", mib, &miblen) == 0) {
-      mib[1] = size_t(arenaForCurrent);
+      mib[1] = static_cast<size_t>(arenaForCurrent);
       mallctlbymib(mib, miblen, nullptr, nullptr, nullptr, 0);
     }
+  } catch (const std::runtime_error& ex) {
+    FB_LOG_EVERY_MS(WARNING, 10000) << ex.what();
   }
 }
 
@@ -95,7 +82,7 @@ void MemoryIdler::flushLocalMallocCaches() {
 // and arithmetic (and bug compatibility) are not portable.  The set of
 // platforms could be increased if it was useful.
 #if (FOLLY_X64 || FOLLY_PPC64) && defined(_GNU_SOURCE) && \
-    defined(__linux__) && !FOLLY_MOBILE
+    defined(__linux__) && !FOLLY_MOBILE && !FOLLY_SANITIZE_ADDRESS
 
 static FOLLY_TLS uintptr_t tls_stackLimit;
 static FOLLY_TLS size_t tls_stackSize;
@@ -106,13 +93,22 @@ static size_t pageSize() {
 }
 
 static void fetchStackLimits() {
+  int err;
   pthread_attr_t attr;
-  pthread_getattr_np(pthread_self(), &attr);
+  if ((err = pthread_getattr_np(pthread_self(), &attr))) {
+    // some restricted environments can't access /proc
+    static folly::once_flag flag;
+    folly::call_once(flag, [err]() {
+      LOG(WARNING) << "pthread_getaddr_np failed errno=" << err;
+    });
+
+    tls_stackSize = 1;
+    return;
+  }
   SCOPE_EXIT { pthread_attr_destroy(&attr); };
 
   void* addr;
   size_t rawSize;
-  int err;
   if ((err = pthread_attr_getstack(&attr, &addr, &rawSize))) {
     // unexpected, but it is better to continue in prod than do nothing
     FB_LOG_EVERY_MS(ERROR, 10000) << "pthread_attr_getstack error " << err;
@@ -132,7 +128,7 @@ static void fetchStackLimits() {
   assert(rawSize > guardSize);
 
   // stack goes down, so guard page adds to the base addr
-  tls_stackLimit = uintptr_t(addr) + guardSize;
+  tls_stackLimit = reinterpret_cast<uintptr_t>(addr) + guardSize;
   tls_stackSize = rawSize - guardSize;
 
   assert((tls_stackLimit & (pageSize() - 1)) == 0);
@@ -140,7 +136,7 @@ static void fetchStackLimits() {
 
 FOLLY_NOINLINE static uintptr_t getStackPtr() {
   char marker;
-  auto rv = uintptr_t(&marker);
+  auto rv = reinterpret_cast<uintptr_t>(&marker);
   return rv;
 }
 
@@ -148,7 +144,7 @@ void MemoryIdler::unmapUnusedStack(size_t retain) {
   if (tls_stackSize == 0) {
     fetchStackLimits();
   }
-  if (tls_stackSize <= std::max(size_t(1), retain)) {
+  if (tls_stackSize <= std::max(static_cast<size_t>(1), retain)) {
     // covers both missing stack info, and impossibly large retain
     return;
   }
@@ -177,9 +173,9 @@ void MemoryIdler::unmapUnusedStack(size_t retain) {
 
 #else
 
-void MemoryIdler::unmapUnusedStack(size_t retain) {
-}
+void MemoryIdler::unmapUnusedStack(size_t /* retain */) {}
 
 #endif
 
-}}
+} // namespace detail
+} // namespace folly

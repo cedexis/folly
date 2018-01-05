@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,12 +17,13 @@
 #include <folly/Demangle.h>
 
 #include <algorithm>
-#include <string.h>
+#include <cstring>
 
-#include <folly/Malloc.h>
+#include <folly/memory/Malloc.h>
+#include <folly/portability/Config.h>
 
 #if FOLLY_HAVE_CPLUS_DEMANGLE_V3_CALLBACK
-# include <cxxabi.h>
+#include <cxxabi.h>
 
 // From libiberty
 //
@@ -60,6 +61,18 @@ namespace folly {
 #if FOLLY_HAVE_CPLUS_DEMANGLE_V3_CALLBACK
 
 fbstring demangle(const char* name) {
+#ifdef FOLLY_DEMANGLE_MAX_SYMBOL_SIZE
+  // GCC's __cxa_demangle() uses on-stack data structures for the
+  // parser state which are linear in the number of components of the
+  // symbol. For extremely long symbols, this can cause a stack
+  // overflow. We set an arbitrary symbol length limit above which we
+  // just return the mangled name.
+  size_t mangledLen = strlen(name);
+  if (mangledLen > FOLLY_DEMANGLE_MAX_SYMBOL_SIZE) {
+    return fbstring(name, mangledLen);
+  }
+#endif
+
   int status;
   size_t len = 0;
   // malloc() memory for the demangled type name
@@ -89,9 +102,21 @@ void demangleCallback(const char* str, size_t size, void* p) {
   buf->total += size;
 }
 
-}  // namespace
+} // namespace
 
 size_t demangle(const char* name, char* out, size_t outSize) {
+#ifdef FOLLY_DEMANGLE_MAX_SYMBOL_SIZE
+  size_t mangledLen = strlen(name);
+  if (mangledLen > FOLLY_DEMANGLE_MAX_SYMBOL_SIZE) {
+    if (outSize) {
+      size_t n = std::min(mangledLen, outSize - 1);
+      memcpy(out, name, n);
+      out[n] = '\0';
+    }
+    return mangledLen;
+  }
+#endif
+
   DemangleBuf dbuf;
   dbuf.dest = out;
   dbuf.remaining = outSize ? outSize - 1 : 0;   // leave room for null term
@@ -134,4 +159,4 @@ size_t strlcpy(char* dest, const char* const src, size_t size) {
   return len;
 }
 
-} // folly
+} // namespace folly

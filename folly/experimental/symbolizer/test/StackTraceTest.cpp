@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,8 @@
 #include <folly/experimental/symbolizer/Symbolizer.h>
 
 #include <glog/logging.h>
-#include <gtest/gtest.h>
+
+#include <folly/portability/GTest.h>
 
 using namespace folly;
 using namespace folly::symbolizer;
@@ -86,11 +87,4 @@ TEST(StackTraceTest, Signal) {
   CHECK_ERR(sigaction(SIGUSR1, &sa, nullptr));
   raise(SIGUSR1);
   EXPECT_TRUE(handled);
-}
-
-int main(int argc, char *argv[]) {
-  testing::InitGoogleTest(&argc, argv);
-  gflags::ParseCommandLineFlags(&argc, &argv, true);
-  google::InitGoogleLogging(argv[0]);
-  return RUN_ALL_TESTS();
 }

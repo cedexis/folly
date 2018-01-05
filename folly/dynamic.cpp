@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,11 @@
  */
 
 #include <folly/dynamic.h>
-#include <folly/Hash.h>
+
+#include <folly/Format.h>
+#include <folly/hash/Hash.h>
+#include <folly/lang/Assume.h>
+#include <folly/portability/BitsFunctexcept.h>
 
 namespace folly {
 
@@ -26,7 +30,7 @@ namespace folly {
   constexpr dynamic::Type dynamic::TypeInfo<T>::type; \
   //
 
-FOLLY_DYNAMIC_DEF_TYPEINFO(void*)
+FOLLY_DYNAMIC_DEF_TYPEINFO(std::nullptr_t)
 FOLLY_DYNAMIC_DEF_TYPEINFO(bool)
 FOLLY_DYNAMIC_DEF_TYPEINFO(std::string)
 FOLLY_DYNAMIC_DEF_TYPEINFO(dynamic::Array)
@@ -41,20 +45,35 @@ const char* dynamic::typeName() const {
 }
 
 TypeError::TypeError(const std::string& expected, dynamic::Type actual)
-  : std::runtime_error(to<std::string>("TypeError: expected dynamic "
-      "type `", expected, '\'', ", but had type `",
-      dynamic::typeName(actual), '\''))
-{}
+    : std::runtime_error(sformat(
+          "TypeError: expected dynamic type `{}', but had type `{}'",
+          expected,
+          dynamic::typeName(actual))) {}
 
-TypeError::TypeError(const std::string& expected,
-    dynamic::Type actual1, dynamic::Type actual2)
-  : std::runtime_error(to<std::string>("TypeError: expected dynamic "
-      "types `", expected, '\'', ", but had types `",
-      dynamic::typeName(actual1), "' and `", dynamic::typeName(actual2),
-      '\''))
-{}
+TypeError::TypeError(
+    const std::string& expected,
+    dynamic::Type actual1,
+    dynamic::Type actual2)
+    : std::runtime_error(sformat(
+          "TypeError: expected dynamic types `{}, but had types `{}' and `{}'",
+          expected,
+          dynamic::typeName(actual1),
+          dynamic::typeName(actual2))) {}
 
 TypeError::~TypeError() = default;
+
+[[noreturn]] void throwTypeError_(
+    std::string const& expected,
+    dynamic::Type actual) {
+  throw TypeError(expected, actual);
+}
+
+[[noreturn]] void throwTypeError_(
+    std::string const& expected,
+    dynamic::Type actual1,
+    dynamic::Type actual2) {
+  throw TypeError(expected, actual1, actual2);
+}
 
 // This is a higher-order preprocessor macro to aid going from runtime
 // types to the compile time type system.
@@ -62,7 +81,7 @@ TypeError::~TypeError() = default;
   do {                                \
     switch ((type)) {                 \
       case NULLT:                     \
-        apply(void*);                 \
+        apply(std::nullptr_t);        \
         break;                        \
       case ARRAY:                     \
         apply(Array);                 \
@@ -90,7 +109,7 @@ TypeError::~TypeError() = default;
 
 bool dynamic::operator<(dynamic const& o) const {
   if (UNLIKELY(type_ == OBJECT || o.type_ == OBJECT)) {
-    throw TypeError("object", type_);
+    throwTypeError_("object", type_);
   }
   if (type_ != o.type_) {
     return type_ < o.type_;
@@ -153,7 +172,7 @@ dynamic& dynamic::operator=(dynamic&& o) noexcept {
 
 dynamic& dynamic::operator[](dynamic const& k) & {
   if (!isObject() && !isArray()) {
-    throw TypeError("object/array", type());
+    throwTypeError_("object/array", type());
   }
   if (isArray()) {
     return at(k);
@@ -200,12 +219,12 @@ dynamic dynamic::getDefault(const dynamic& k, dynamic&& v) && {
 const dynamic* dynamic::get_ptr(dynamic const& idx) const& {
   if (auto* parray = get_nothrow<Array>()) {
     if (!idx.isInt()) {
-      throw TypeError("int64", idx.type());
+      throwTypeError_("int64", idx.type());
     }
     if (idx < 0 || idx >= parray->size()) {
       return nullptr;
     }
-    return &(*parray)[idx.asInt()];
+    return &(*parray)[size_t(idx.asInt())];
   } else if (auto* pobject = get_nothrow<ObjectImpl>()) {
     auto it = pobject->find(idx);
     if (it == pobject->end()) {
@@ -213,28 +232,32 @@ const dynamic* dynamic::get_ptr(dynamic const& idx) const& {
     }
     return &it->second;
   } else {
-    throw TypeError("object/array", type());
+    throwTypeError_("object/array", type());
   }
+}
+
+[[noreturn]] static void throwOutOfRangeAtMissingKey(dynamic const& idx) {
+  auto msg = sformat("couldn't find key {} in dynamic object", idx.asString());
+  std::__throw_out_of_range(msg.c_str());
 }
 
 dynamic const& dynamic::at(dynamic const& idx) const& {
   if (auto* parray = get_nothrow<Array>()) {
     if (!idx.isInt()) {
-      throw TypeError("int64", idx.type());
+      throwTypeError_("int64", idx.type());
     }
     if (idx < 0 || idx >= parray->size()) {
-      throw std::out_of_range("out of range in dynamic array");
+      std::__throw_out_of_range("out of range in dynamic array");
     }
-    return (*parray)[idx.asInt()];
+    return (*parray)[size_t(idx.asInt())];
   } else if (auto* pobject = get_nothrow<ObjectImpl>()) {
     auto it = pobject->find(idx);
     if (it == pobject->end()) {
-      throw std::out_of_range(to<std::string>(
-          "couldn't find key ", idx.asString(), " in dynamic object"));
+      throwOutOfRangeAtMissingKey(idx);
     }
     return it->second;
   } else {
-    throw TypeError("object/array", type());
+    throwTypeError_("object/array", type());
   }
 }
 
@@ -248,11 +271,10 @@ std::size_t dynamic::size() const {
   if (auto* str = get_nothrow<std::string>()) {
     return str->size();
   }
-  throw TypeError("array/object", type());
+  throwTypeError_("array/object", type());
 }
 
-dynamic::const_iterator
-dynamic::erase(const_iterator first, const_iterator last) {
+dynamic::iterator dynamic::erase(const_iterator first, const_iterator last) {
   auto& arr = get<Array>();
   return get<Array>().erase(
     arr.begin() + (first - arr.begin()),
@@ -264,7 +286,7 @@ std::size_t dynamic::hash() const {
   case OBJECT:
   case ARRAY:
   case NULLT:
-    throw TypeError("not null/object/array", type());
+    throwTypeError_("not null/object/array", type());
   case INT64:
     return std::hash<int64_t>()(getInt());
   case DOUBLE:
@@ -276,9 +298,8 @@ std::size_t dynamic::hash() const {
     const auto& str = getString();
     return ::folly::hash::fnv32_buf(str.data(), str.size());
   }
-  default:
-    CHECK(0); abort();
   }
+  assume_unreachable();
 }
 
 char const* dynamic::typeName(Type t) {
@@ -289,7 +310,9 @@ char const* dynamic::typeName(Type t) {
 
 void dynamic::destroy() noexcept {
   // This short-circuit speeds up some microbenchmarks.
-  if (type_ == NULLT) return;
+  if (type_ == NULLT) {
+    return;
+  }
 
 #define FB_X(T) detail::Destroy::destroy(getAddress<T>())
   FB_DYNAMIC_APPLY(type_, FB_X);
@@ -300,4 +323,4 @@ void dynamic::destroy() noexcept {
 
 //////////////////////////////////////////////////////////////////////
 
-}
+} // namespace folly

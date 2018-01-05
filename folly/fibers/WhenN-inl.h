@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
  */
 #include <folly/Optional.h>
 
-#include <folly/fibers/FiberManager.h>
+#include <folly/fibers/FiberManagerInternal.h>
 #include <folly/fibers/ForEach.h>
 
 namespace folly {
@@ -53,10 +53,6 @@ collectN(InputIterator first, InputIterator last, size_t n) {
   await([first, last, context](Promise<void> promise) mutable {
     context->promise = std::move(promise);
     for (size_t i = 0; first != last; ++i, ++first) {
-#ifdef __clang__
-#pragma clang diagnostic push // ignore generalized lambda capture warning
-#pragma clang diagnostic ignored "-Wc++1y-extensions"
-#endif
       addTask([ i, context, f = std::move(*first) ]() {
         try {
           auto result = f();
@@ -74,9 +70,6 @@ collectN(InputIterator first, InputIterator last, size_t n) {
           context->promise->setValue();
         }
       });
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
     }
   });
 
@@ -114,10 +107,6 @@ collectN(InputIterator first, InputIterator last, size_t n) {
   await([first, last, context](Promise<void> promise) mutable {
     context->promise = std::move(promise);
     for (size_t i = 0; first != last; ++i, ++first) {
-#ifdef __clang__
-#pragma clang diagnostic push // ignore generalized lambda capture warning
-#pragma clang diagnostic ignored "-Wc++1y-extensions"
-#endif
       addTask([ i, context, f = std::move(*first) ]() {
         try {
           f();
@@ -135,9 +124,6 @@ collectN(InputIterator first, InputIterator last, size_t n) {
           context->promise->setValue();
         }
       });
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
     }
   });
 
@@ -160,7 +146,7 @@ typename std::vector<
         type> inline collectAll(InputIterator first, InputIterator last) {
   typedef typename std::result_of<
       typename std::iterator_traits<InputIterator>::value_type()>::type Result;
-  size_t n = std::distance(first, last);
+  size_t n = size_t(std::distance(first, last));
   std::vector<Result> results;
   std::vector<size_t> order(n);
   results.reserve(n);
@@ -218,5 +204,5 @@ typename std::enable_if<
   assert(result.size() == 1);
   return std::move(result[0]);
 }
-}
-}
+} // namespace fibers
+} // namespace folly

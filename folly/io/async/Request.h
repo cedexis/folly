@@ -1,30 +1,26 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2004-present Facebook, Inc.
  *
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements. See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership. The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License. You may obtain a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied. See the License for the
- * specific language governing permissions and limitations
- * under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
+
 #pragma once
 
 #include <map>
 #include <memory>
-#include <glog/logging.h>
-#include <folly/RWSpinLock.h>
-#include <folly/SingletonThreadLocal.h>
+#include <set>
+
+#include <folly/Synchronized.h>
 
 namespace folly {
 
@@ -34,81 +30,73 @@ namespace folly {
 class RequestData {
  public:
   virtual ~RequestData() = default;
-};
 
-class RequestContext;
+  // Avoid calling RequestContext::setContextData, setContextDataIfAbsent, or
+  // clearContextData from these callbacks. Doing so will cause deadlock. We
+  // could fix these deadlocks, but only at significant performance penalty, so
+  // just don't do it!
+
+  virtual bool hasCallback() = 0;
+  // Callback executed when setting RequestContext. Make sure your RequestData
+  // instance overrides the hasCallback method to return true otherwise
+  // the callback will not be executed
+  virtual void onSet() {}
+  // Callback executed when unsetting RequestContext. Make sure your RequestData
+  // instance overrides the hasCallback method to return true otherwise
+  // the callback will not be executed
+  virtual void onUnset() {}
+};
 
 // If you do not call create() to create a unique request context,
 // this default request context will always be returned, and is never
 // copied between threads.
 class RequestContext {
  public:
-  // Create a unique requext context for this request.
+  // Create a unique request context for this request.
   // It will be passed between queues / threads (where implemented),
   // so it should be valid for the lifetime of the request.
   static void create() {
-    getStaticContext() = std::make_shared<RequestContext>();
+    setContext(std::make_shared<RequestContext>());
   }
 
   // Get the current context.
-  static RequestContext* get() {
-    auto context = getStaticContext();
-    if (!context) {
-      static RequestContext defaultContext;
-      return std::addressof(defaultContext);
-    }
-    return context.get();
-  }
+  static RequestContext* get();
 
-  // The following API may be used to set per-request data in a thread-safe way.
-  // This access is still performance sensitive, so please ask if you need help
-  // profiling any use of these functions.
+  // The following APIs are used to add, remove and access RequestData instance
+  // in the RequestContext instance, normally used for per-RequestContext
+  // tracking or callback on set and unset. These APIs are Thread-safe.
+  // These APIs are performance sensitive, so please ask if you need help
+  // profiling any use of these APIs.
+
+  // Add RequestData instance "data" to this RequestContext instance, with
+  // string identifier "val". If the same string identifier has already been
+  // used, will print a warning message for the first time, clear the existing
+  // RequestData instance for "val", and **not** add "data".
   void setContextData(
-    const std::string& val, std::unique_ptr<RequestData> data) {
-    folly::RWSpinLock::WriteHolder guard(lock);
-    if (data_.find(val) != data_.end()) {
-      LOG_FIRST_N(WARNING, 1) <<
-        "Called RequestContext::setContextData with data already set";
+      const std::string& val,
+      std::unique_ptr<RequestData> data);
 
-      data_[val] = nullptr;
-    } else {
-      data_[val] = std::move(data);
-    }
-  }
+  // Add RequestData instance "data" to this RequestContext instance, with
+  // string identifier "val". If the same string identifier has already been
+  // used, return false and do nothing. Otherwise add "data" and return true.
+  bool setContextDataIfAbsent(
+      const std::string& val,
+      std::unique_ptr<RequestData> data);
 
-  // Unlike setContextData, this method does not panic if the key is already
-  // present. Returns true iff the new value has been inserted.
-  bool setContextDataIfAbsent(const std::string& val,
-                              std::unique_ptr<RequestData> data) {
-    folly::RWSpinLock::UpgradedHolder guard(lock);
-    if (data_.find(val) != data_.end()) {
-      return false;
-    }
+  // Remove the RequestData instance with string identifier "val", if it exists.
+  void clearContextData(const std::string& val);
 
-    folly::RWSpinLock::WriteHolder writeGuard(std::move(guard));
-    data_[val] = std::move(data);
-    return true;
-  }
+  // Returns true if and only if the RequestData instance with string identifier
+  // "val" exists in this RequestContext instnace.
+  bool hasContextData(const std::string& val) const;
 
-  bool hasContextData(const std::string& val) {
-    folly::RWSpinLock::ReadHolder guard(lock);
-    return data_.find(val) != data_.end();
-  }
+  // Get (constant) raw pointer of the RequestData instance with string
+  // identifier "val" if it exists, otherwise returns null pointer.
+  RequestData* getContextData(const std::string& val);
+  const RequestData* getContextData(const std::string& val) const;
 
-  RequestData* getContextData(const std::string& val) {
-    folly::RWSpinLock::ReadHolder guard(lock);
-    auto r = data_.find(val);
-    if (r == data_.end()) {
-      return nullptr;
-    } else {
-      return r->second.get();
-    }
-  }
-
-  void clearContextData(const std::string& val) {
-    folly::RWSpinLock::WriteHolder guard(lock);
-    data_.erase(val);
-  }
+  void onSet();
+  void onUnset();
 
   // The following API is used to pass the context through queues / threads.
   // saveContext is called to get a shared_ptr to the context, and
@@ -120,12 +108,8 @@ class RequestContext {
   //
   // A shared_ptr is used, because many request may fan out across
   // multiple threads, or do post-send processing, etc.
-  static std::shared_ptr<RequestContext>
-  setContext(std::shared_ptr<RequestContext> ctx) {
-    using std::swap;
-    swap(ctx, getStaticContext());
-    return ctx;
-  }
+  static std::shared_ptr<RequestContext> setContext(
+      std::shared_ptr<RequestContext> ctx);
 
   static std::shared_ptr<RequestContext> saveContext() {
     return getStaticContext();
@@ -134,8 +118,16 @@ class RequestContext {
  private:
   static std::shared_ptr<RequestContext>& getStaticContext();
 
-  folly::RWSpinLock lock;
-  std::map<std::string, std::unique_ptr<RequestData>> data_;
+  bool doSetContextData(
+      const std::string& val,
+      std::unique_ptr<RequestData>& data,
+      bool strict);
+
+  struct State {
+    std::map<std::string, std::unique_ptr<RequestData>> requestData_;
+    std::set<RequestData*> callbackData_;
+  };
+  folly::Synchronized<State> state_;
 };
 
 class RequestContextScopeGuard {
@@ -143,6 +135,11 @@ class RequestContextScopeGuard {
   std::shared_ptr<RequestContext> prev_;
 
  public:
+  RequestContextScopeGuard(const RequestContextScopeGuard&) = delete;
+  RequestContextScopeGuard& operator=(const RequestContextScopeGuard&) = delete;
+  RequestContextScopeGuard(RequestContextScopeGuard&&) = delete;
+  RequestContextScopeGuard& operator=(RequestContextScopeGuard&&) = delete;
+
   // Create a new RequestContext and reset to the original value when
   // this goes out of scope.
   RequestContextScopeGuard() : prev_(RequestContext::saveContext()) {
@@ -158,4 +155,4 @@ class RequestContextScopeGuard {
     RequestContext::setContext(std::move(prev_));
   }
 };
-}
+} // namespace folly

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,17 +15,16 @@
  */
 #pragma once
 
-#include <gmock/gmock.h>
-
 #include <folly/io/async/AsyncServerSocket.h>
 #include <folly/io/async/EventBase.h>
+#include <folly/portability/GMock.h>
 
 namespace folly {
 
 namespace test {
 
 class MockAsyncServerSocket : public AsyncServerSocket {
-public:
+ public:
   typedef std::unique_ptr<MockAsyncServerSocket, Destructor> UniquePtr;
 
   // We explicitly do not mock destroy(), since the base class implementation

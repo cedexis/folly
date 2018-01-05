@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,6 +14,12 @@
  * limitations under the License.
  */
 #pragma once
+
+#include <iterator>
+#include <memory>
+#include <type_traits>
+#include <utility>
+#include <vector>
 
 namespace folly {
 namespace fibers {
@@ -133,7 +139,7 @@ typename std::enable_if<
             typename std::iterator_traits<InputIterator>::value_type()>::type,
         void>::value,
     size_t>::type inline collectAny(InputIterator first, InputIterator last);
-}
-}
+} // namespace fibers
+} // namespace folly
 
 #include <folly/fibers/WhenN-inl.h>

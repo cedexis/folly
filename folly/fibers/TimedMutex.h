@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,8 @@
  */
 #pragma once
 
-#include <pthread.h>
-
+#include <folly/IntrusiveList.h>
+#include <folly/SpinLock.h>
 #include <folly/fibers/GenericBaton.h>
 
 namespace folly {
@@ -27,15 +27,14 @@ namespace fibers {
  *
  * Like mutex but allows timed_lock in addition to lock and try_lock.
  **/
-template <typename BatonType>
 class TimedMutex {
  public:
-  TimedMutex() {
-    pthread_spin_init(&lock_, PTHREAD_PROCESS_PRIVATE);
-  }
+  TimedMutex() noexcept {}
 
   ~TimedMutex() {
-    pthread_spin_destroy(&lock_);
+    DCHECK(threadWaiters_.empty());
+    DCHECK(fiberWaiters_.empty());
+    DCHECK(notifiedFiber_ == nullptr);
   }
 
   TimedMutex(const TimedMutex& rhs) = delete;
@@ -59,28 +58,25 @@ class TimedMutex {
   void unlock();
 
  private:
-  typedef boost::intrusive::list_member_hook<> MutexWaiterHookType;
+  enum class LockResult { SUCCESS, TIMEOUT, STOLEN };
+
+  template <typename WaitFunc>
+  LockResult lockHelper(WaitFunc&& waitFunc);
 
   // represents a waiter waiting for the lock. The waiter waits on the
   // baton until it is woken up by a post or timeout expires.
   struct MutexWaiter {
-    BatonType baton;
-    MutexWaiterHookType hook;
+    Baton baton;
+    folly::IntrusiveListHook hook;
   };
 
-  typedef boost::intrusive::
-      member_hook<MutexWaiter, MutexWaiterHookType, &MutexWaiter::hook>
-          MutexWaiterHook;
+  using MutexWaiterList = folly::IntrusiveList<MutexWaiter, &MutexWaiter::hook>;
 
-  typedef boost::intrusive::list<
-      MutexWaiter,
-      MutexWaiterHook,
-      boost::intrusive::constant_time_size<true>>
-      MutexWaiterList;
-
-  pthread_spinlock_t lock_; //< lock to protect waiter list
+  folly::SpinLock lock_; //< lock to protect waiter list
   bool locked_ = false; //< is this locked by some thread?
-  MutexWaiterList waiters_; //< list of waiters
+  MutexWaiterList threadWaiters_; //< list of waiters
+  MutexWaiterList fiberWaiters_; //< list of waiters
+  MutexWaiter* notifiedFiber_{nullptr}; //< Fiber waiter which has been notified
 };
 
 /**
@@ -95,13 +91,8 @@ class TimedMutex {
 template <typename BatonType>
 class TimedRWMutex {
  public:
-  TimedRWMutex() {
-    pthread_spin_init(&lock_, PTHREAD_PROCESS_PRIVATE);
-  }
-
-  ~TimedRWMutex() {
-    pthread_spin_destroy(&lock_);
-  }
+  TimedRWMutex() = default;
+  ~TimedRWMutex() = default;
 
   TimedRWMutex(const TimedRWMutex& rhs) = delete;
   TimedRWMutex& operator=(const TimedRWMutex& rhs) = delete;
@@ -225,7 +216,7 @@ class TimedRWMutex {
       boost::intrusive::constant_time_size<true>>
       MutexWaiterList;
 
-  pthread_spinlock_t lock_; //< lock protecting the internal state
+  folly::SpinLock lock_; //< lock protecting the internal state
   // (state_, read_waiters_, etc.)
   State state_ = State::UNLOCKED;
 
@@ -237,7 +228,7 @@ class TimedRWMutex {
   MutexWaiterList read_waiters_; //< List of thread / fibers waiting for
   //  shared access
 };
-}
-}
+} // namespace fibers
+} // namespace folly
 
 #include "TimedMutex-inl.h"

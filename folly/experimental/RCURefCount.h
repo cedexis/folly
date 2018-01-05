@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -97,17 +97,27 @@ class RCURefCount {
   }
 
   void useGlobal() noexcept {
-    state_ = State::GLOBAL_TRANSITION;
+    std::array<RCURefCount*, 1> ptrs{{this}};
+    useGlobal(ptrs);
+  }
+
+  template <typename Container>
+  static void useGlobal(const Container& refCountPtrs) {
+    for (auto refCountPtr : refCountPtrs) {
+      refCountPtr->state_ = State::GLOBAL_TRANSITION;
+    }
 
     synchronize_rcu();
     // At this point everyone is using the global count
 
-    auto accessor = localCount_.accessAllThreads();
-    for (auto& count : accessor) {
-      count.collect();
-    }
+    for (auto refCountPtr : refCountPtrs) {
+      auto accessor = refCountPtr->localCount_.accessAllThreads();
+      for (auto& count : accessor) {
+        count.collect();
+      }
 
-    state_ = State::GLOBAL;
+      refCountPtr->state_ = State::GLOBAL;
+    }
 
     synchronize_rcu();
     // After this ++ or -- can return 0.
@@ -157,4 +167,4 @@ class RCURefCount {
   std::atomic<int64_t> globalCount_{1};
 };
 
-}
+} // namespace folly

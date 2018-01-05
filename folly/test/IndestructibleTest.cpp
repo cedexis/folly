@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,8 +20,10 @@
 #include <map>
 #include <memory>
 #include <string>
-#include <gtest/gtest.h>
+#include <tuple>
+
 #include <folly/Memory.h>
+#include <folly/portability/GTest.h>
 
 using namespace std;
 using namespace folly;
@@ -46,7 +48,7 @@ struct Magic {
 };
 
 class IndestructibleTest : public testing::Test {};
-}
+} // namespace
 
 TEST_F(IndestructibleTest, access) {
   static const Indestructible<map<string, int>> data{
@@ -72,6 +74,12 @@ TEST_F(IndestructibleTest, no_destruction) {
 
   sing.~Indestructible();
   EXPECT_EQ(1, state);
+}
+
+TEST_F(IndestructibleTest, empty) {
+  static const Indestructible<map<string, int>> data;
+  auto& m = *data;
+  EXPECT_EQ(0, m.size());
 }
 
 TEST_F(IndestructibleTest, move) {
@@ -100,4 +108,50 @@ TEST_F(IndestructibleTest, move) {
   static Indestructible<Magic> move_assign = std::move(move_ctor);
   EXPECT_EQ(1, state);
   EXPECT_EQ(2, moves);
+}
+
+TEST_F(IndestructibleTest, disabled_default_ctor) {
+  EXPECT_TRUE((std::is_constructible<Indestructible<int>>::value)) << "sanity";
+
+  struct Foo {
+    Foo(int) {}
+  };
+  EXPECT_FALSE((std::is_constructible<Indestructible<Foo>>::value));
+  EXPECT_FALSE((std::is_constructible<Indestructible<Foo>, Magic>::value));
+  EXPECT_TRUE((std::is_constructible<Indestructible<Foo>, int>::value));
+}
+
+TEST_F(IndestructibleTest, list_initialization) {
+  auto map = folly::Indestructible<std::map<int, int>>{{{1, 2}}};
+  EXPECT_EQ(map->at(1), 2);
+}
+
+namespace {
+class InitializerListConstructible {
+ public:
+  InitializerListConstructible(InitializerListConstructible&&) = default;
+  explicit InitializerListConstructible(std::initializer_list<int>) {}
+  InitializerListConstructible(std::initializer_list<double>, double) {}
+};
+} // namespace
+
+TEST_F(IndestructibleTest, initializer_list_in_place_initialization) {
+  using I = InitializerListConstructible;
+  std::ignore = Indestructible<I>{{1, 2, 3, 4}};
+  std::ignore = Indestructible<I>{{1.2}, 4.2};
+}
+
+namespace {
+class ExplicitlyMoveConstructible {
+ public:
+  ExplicitlyMoveConstructible() = default;
+  explicit ExplicitlyMoveConstructible(ExplicitlyMoveConstructible&&) = default;
+};
+} // namespace
+
+TEST_F(IndestructibleTest, list_initialization_explicit_implicit) {
+  using E = ExplicitlyMoveConstructible;
+  using I = std::map<int, int>;
+  EXPECT_TRUE((!std::is_convertible<E, Indestructible<E>>::value));
+  EXPECT_TRUE((std::is_convertible<I, Indestructible<I>>::value));
 }

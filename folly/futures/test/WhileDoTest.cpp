@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,11 +18,9 @@
 #include <mutex>
 #include <queue>
 
-#include <gtest/gtest.h>
-#include <glog/logging.h>
-
 #include <folly/futures/Future.h>
 #include <folly/futures/Promise.h>
+#include <folly/portability/GTest.h>
 
 using namespace folly;
 
@@ -121,11 +119,11 @@ TEST(WhileDo, failure) {
 TEST(WhileDo, interrupt) {
   std::queue<std::shared_ptr<Promise<Unit>>> ps;
   std::mutex ps_mutex;
-  int i = 0;
   int interrupt = 0;
   bool complete = false;
   bool failure = false;
 
+  int i = 0;
   auto pred = makePred(i);
   auto thunk = makeThunk(ps, interrupt, ps_mutex);
   auto f = folly::whileDo(pred, thunk)
@@ -137,7 +135,7 @@ TEST(WhileDo, interrupt) {
   FutureException eggs("eggs");
   f.raise(eggs);
 
-  for (int i = 1; i <= 3; ++i) {
+  for (int j = 1; j <= 3; ++j) {
     EXPECT_EQ(1, interrupt);
     popAndFulfillPromise(ps, ps_mutex);
   }

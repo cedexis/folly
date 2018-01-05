@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,16 +16,12 @@
 
 #include <folly/detail/MemoryIdler.h>
 
-#include <folly/Baton.h>
-#include <folly/portability/Windows.h>
+#include <folly/portability/GMock.h>
+#include <folly/portability/GTest.h>
+#include <folly/synchronization/Baton.h>
 
 #include <memory>
 #include <thread>
-#include <assert.h>
-#include <semaphore.h>
-
-#include <gmock/gmock.h>
-#include <gtest/gtest.h>
 
 using namespace folly;
 using namespace folly::detail;
@@ -97,14 +93,15 @@ namespace folly { namespace detail {
 /// method signatures differ from the real Futex because we have elided
 /// unused default params and collapsed templated methods into the
 /// used type
-template<>
+template <>
 struct Futex<MockAtom> {
   MOCK_METHOD2(futexWait, bool(uint32_t, uint32_t));
   MOCK_METHOD3(futexWaitUntil,
                FutexResult(uint32_t, const MockClock::time_point&, uint32_t));
 };
 
-}}
+} // namespace detail
+} // namespace folly
 
 TEST(MemoryIdler, futexWaitValueChangedEarly) {
   StrictMock<Futex<MockAtom>> fut;

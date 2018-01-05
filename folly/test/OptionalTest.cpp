@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,16 +16,17 @@
 
 #include <folly/Optional.h>
 #include <folly/Portability.h>
+#include <folly/portability/GMock.h>
+#include <folly/portability/GTest.h>
 
-#include <memory>
-#include <vector>
 #include <algorithm>
 #include <iomanip>
+#include <memory>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
+#include <vector>
 
-#include <glog/logging.h>
-#include <gtest/gtest.h>
 #include <boost/optional.hpp>
 
 using std::unique_ptr;
@@ -33,7 +34,7 @@ using std::shared_ptr;
 
 namespace folly {
 
-template<class V>
+template <class V>
 std::ostream& operator<<(std::ostream& os, const Optional<V>& v) {
   if (v) {
     os << "Optional(" << v.value() << ')';
@@ -63,6 +64,28 @@ TEST(Optional, NoDefault) {
   EXPECT_TRUE(bool(x));
   x.clear();
   EXPECT_FALSE(x);
+}
+
+TEST(Optional, Emplace) {
+  Optional<std::vector<int>> opt;
+  auto& values1 = opt.emplace(3, 4);
+  EXPECT_THAT(values1, testing::ElementsAre(4, 4, 4));
+  auto& values2 = opt.emplace(2, 5);
+  EXPECT_THAT(values2, testing::ElementsAre(5, 5));
+}
+
+TEST(Optional, EmplaceInitializerList) {
+  Optional<std::vector<int>> opt;
+  auto& values1 = opt.emplace({3, 4, 5});
+  EXPECT_THAT(values1, testing::ElementsAre(3, 4, 5));
+  auto& values2 = opt.emplace({4, 5, 6});
+  EXPECT_THAT(values2, testing::ElementsAre(4, 5, 6));
+}
+
+TEST(Optional, Reset) {
+  Optional<int> opt(3);
+  opt.reset();
+  EXPECT_FALSE(opt);
 }
 
 TEST(Optional, String) {
@@ -111,7 +134,7 @@ TEST(Optional, Simple) {
 }
 
 class MoveTester {
-public:
+ public:
   /* implicit */ MoveTester(const char* s) : s_(s) {}
   MoveTester(const MoveTester&) = default;
   MoveTester(MoveTester&& other) noexcept {
@@ -124,7 +147,8 @@ public:
     other.s_ = "";
     return *this;
   }
-private:
+
+ private:
   friend bool operator==(const MoveTester& o1, const MoveTester& o2);
   std::string s_;
 };
@@ -174,23 +198,9 @@ struct ExpectingDeleter {
   }
 };
 
-TEST(Optional, value_life_extention) {
-  // Extends the life of the value.
-  const auto& ptr = Optional<std::unique_ptr<int, ExpectingDeleter>>(
-      {new int(42), ExpectingDeleter{1337}}).value();
-  *ptr = 1337;
-}
-
 TEST(Optional, value_move) {
   auto ptr = Optional<std::unique_ptr<int, ExpectingDeleter>>(
       {new int(42), ExpectingDeleter{1337}}).value();
-  *ptr = 1337;
-}
-
-TEST(Optional, dereference_life_extention) {
-  // Extends the life of the value.
-  const auto& ptr = *Optional<std::unique_ptr<int, ExpectingDeleter>>(
-      {new int(42), ExpectingDeleter{1337}});
   *ptr = 1337;
 }
 
@@ -209,6 +219,21 @@ TEST(Optional, EmptyConstruct) {
   EXPECT_FALSE(bool(test2));
 }
 
+TEST(Optional, InPlaceConstruct) {
+  using A = std::pair<int, double>;
+  Optional<A> opt(in_place, 5, 3.2);
+  EXPECT_TRUE(bool(opt));
+  EXPECT_EQ(5, opt->first);
+}
+
+TEST(Optional, InPlaceNestedConstruct) {
+  using A = std::pair<int, double>;
+  Optional<Optional<A>> opt(in_place, in_place, 5, 3.2);
+  EXPECT_TRUE(bool(opt));
+  EXPECT_TRUE(bool(*opt));
+  EXPECT_EQ(5, (*opt)->first);
+}
+
 TEST(Optional, Unique) {
   Optional<unique_ptr<int>> opt;
 
@@ -221,10 +246,10 @@ TEST(Optional, Unique) {
 
   opt.clear();
   // empty->moved
-  opt = unique_ptr<int>(new int(6));
+  opt = std::make_unique<int>(6);
   EXPECT_EQ(6, **opt);
   // full->moved
-  opt = unique_ptr<int>(new int(7));
+  opt = std::make_unique<int>(7);
   EXPECT_EQ(7, **opt);
 
   // move it out by move construct
@@ -316,6 +341,10 @@ TEST(Optional, Swap) {
   EXPECT_EQ("bye", a.value());
 
   swap(a, b);
+  EXPECT_TRUE(a.hasValue());
+  EXPECT_TRUE(b.hasValue());
+  EXPECT_EQ("hello", a.value());
+  EXPECT_EQ("bye", b.value());
 }
 
 TEST(Optional, Comparisons) {
@@ -385,6 +414,100 @@ TEST(Optional, Comparisons) {
   EXPECT_TRUE((bool)bob);
   EXPECT_TRUE(bob == false); // well that was confusing
   EXPECT_FALSE(bob != false);
+}
+
+TEST(Optional, HeterogeneousComparisons) {
+  using opt8 = Optional<uint8_t>;
+  using opt64 = Optional<uint64_t>;
+
+  EXPECT_TRUE(opt8(4) == uint64_t(4));
+  EXPECT_FALSE(opt8(8) == uint64_t(4));
+  EXPECT_FALSE(opt8() == uint64_t(4));
+
+  EXPECT_TRUE(uint64_t(4) == opt8(4));
+  EXPECT_FALSE(uint64_t(4) == opt8(8));
+  EXPECT_FALSE(uint64_t(4) == opt8());
+
+  EXPECT_FALSE(opt8(4) != uint64_t(4));
+  EXPECT_TRUE(opt8(8) != uint64_t(4));
+  EXPECT_TRUE(opt8() != uint64_t(4));
+
+  EXPECT_FALSE(uint64_t(4) != opt8(4));
+  EXPECT_TRUE(uint64_t(4) != opt8(8));
+  EXPECT_TRUE(uint64_t(4) != opt8());
+
+  EXPECT_TRUE(opt8() == opt64());
+  EXPECT_TRUE(opt8(4) == opt64(4));
+  EXPECT_FALSE(opt8(8) == opt64(4));
+  EXPECT_FALSE(opt8() == opt64(4));
+  EXPECT_FALSE(opt8(4) == opt64());
+
+  EXPECT_FALSE(opt8() != opt64());
+  EXPECT_FALSE(opt8(4) != opt64(4));
+  EXPECT_TRUE(opt8(8) != opt64(4));
+  EXPECT_TRUE(opt8() != opt64(4));
+  EXPECT_TRUE(opt8(4) != opt64());
+
+  EXPECT_TRUE(opt8() < opt64(4));
+  EXPECT_TRUE(opt8(4) < opt64(8));
+  EXPECT_FALSE(opt8() < opt64());
+  EXPECT_FALSE(opt8(4) < opt64(4));
+  EXPECT_FALSE(opt8(8) < opt64(4));
+  EXPECT_FALSE(opt8(4) < opt64());
+
+  EXPECT_FALSE(opt8() > opt64(4));
+  EXPECT_FALSE(opt8(4) > opt64(8));
+  EXPECT_FALSE(opt8() > opt64());
+  EXPECT_FALSE(opt8(4) > opt64(4));
+  EXPECT_TRUE(opt8(8) > opt64(4));
+  EXPECT_TRUE(opt8(4) > opt64());
+
+  EXPECT_TRUE(opt8() <= opt64(4));
+  EXPECT_TRUE(opt8(4) <= opt64(8));
+  EXPECT_TRUE(opt8() <= opt64());
+  EXPECT_TRUE(opt8(4) <= opt64(4));
+  EXPECT_FALSE(opt8(8) <= opt64(4));
+  EXPECT_FALSE(opt8(4) <= opt64());
+
+  EXPECT_FALSE(opt8() >= opt64(4));
+  EXPECT_FALSE(opt8(4) >= opt64(8));
+  EXPECT_TRUE(opt8() >= opt64());
+  EXPECT_TRUE(opt8(4) >= opt64(4));
+  EXPECT_TRUE(opt8(8) >= opt64(4));
+  EXPECT_TRUE(opt8(4) >= opt64());
+}
+
+TEST(Optional, NoneComparisons) {
+  using opt = Optional<int>;
+  EXPECT_TRUE(opt() == none);
+  EXPECT_TRUE(none == opt());
+  EXPECT_FALSE(opt(1) == none);
+  EXPECT_FALSE(none == opt(1));
+
+  EXPECT_FALSE(opt() != none);
+  EXPECT_FALSE(none != opt());
+  EXPECT_TRUE(opt(1) != none);
+  EXPECT_TRUE(none != opt(1));
+
+  EXPECT_FALSE(opt() < none);
+  EXPECT_FALSE(none < opt());
+  EXPECT_FALSE(opt(1) < none);
+  EXPECT_TRUE(none < opt(1));
+
+  EXPECT_FALSE(opt() > none);
+  EXPECT_FALSE(none > opt());
+  EXPECT_FALSE(none > opt(1));
+  EXPECT_TRUE(opt(1) > none);
+
+  EXPECT_TRUE(opt() <= none);
+  EXPECT_TRUE(none <= opt());
+  EXPECT_FALSE(opt(1) <= none);
+  EXPECT_TRUE(none <= opt(1));
+
+  EXPECT_TRUE(opt() >= none);
+  EXPECT_TRUE(none >= opt());
+  EXPECT_TRUE(opt(1) >= none);
+  EXPECT_FALSE(none >= opt(1));
 }
 
 TEST(Optional, Conversions) {
@@ -559,4 +682,12 @@ TEST(Optional, TriviallyDestructible) {
   EXPECT_TRUE(std::is_trivially_destructible<Optional<int>>::value);
   EXPECT_FALSE(std::is_trivially_destructible<Optional<WithDestructor>>::value);
 }
+
+TEST(Optional, Hash) {
+  // Test it's usable in std::unordered map (compile time check)
+  std::unordered_map<Optional<int>, Optional<int>> obj;
+  // Also check the std::hash template can be instantiated by the compiler
+  std::hash<Optional<int>>()(none);
+  std::hash<Optional<int>>()(3);
 }
+} // namespace folly

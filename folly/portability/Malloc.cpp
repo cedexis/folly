@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,9 @@
 
 #include <folly/portability/Malloc.h>
 
-#ifndef USE_JEMALLOC
+#if !defined(USE_JEMALLOC) && !defined(FOLLY_USE_JEMALLOC)
 #if defined(__APPLE__) && !defined(FOLLY_HAVE_MALLOC_USABLE_SIZE)
-#include <malloc/malloc.h>
+#include <malloc/malloc.h> // @manual
 
 extern "C" size_t malloc_usable_size(void* ptr) {
   return malloc_size(ptr);

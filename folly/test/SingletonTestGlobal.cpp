@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,12 +17,10 @@
 #include <memory>
 #include <vector>
 
-#include <folly/Singleton.h>
 #include <folly/Benchmark.h>
+#include <folly/Singleton.h>
+#include <folly/portability/GTest.h>
 #include <folly/test/SingletonTestStructs.h>
-
-#include <glog/logging.h>
-#include <gtest/gtest.h>
 
 /*
  * This test needs to be in its own file, as a standalone program.
@@ -35,7 +33,7 @@ using namespace folly;
 
 namespace {
 Singleton<GlobalWatchdog> global_watchdog;
-}
+} // namespace
 
 // Test basic global usage (the default way singletons will generally
 // be used).

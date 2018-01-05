@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,6 +25,11 @@
 namespace folly {
 
 /**
+ * Error codes for non-throwing interface of IPAddress family of functions.
+ */
+enum class IPAddressFormatError { INVALID_IP, UNSUPPORTED_ADDR_FAMILY };
+
+/**
  * Exception for invalid IP addresses.
  */
 class IPAddressFormatException : public std::exception {
@@ -37,8 +42,8 @@ class IPAddressFormatException : public std::exception {
       default;
   IPAddressFormatException& operator=(IPAddressFormatException&&) = default;
 
-  virtual ~IPAddressFormatException() noexcept {}
-  virtual const char *what(void) const noexcept {
+  ~IPAddressFormatException() noexcept override {}
+  const char* what() const noexcept override {
     return msg_.c_str();
   }
 
@@ -62,4 +67,4 @@ class InvalidAddressFamilyException : public IPAddressFormatException {
       default;
 };
 
-}  // folly
+} // namespace folly

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,12 +16,6 @@
 
 #pragma once
 
-#ifdef _WIN32
-#define FOLLY_HAVE_UNIX_SOCKETS 0
-#else
-#define FOLLY_HAVE_UNIX_SOCKETS 1
-#endif
-
 #ifndef _WIN32
 #include <netdb.h>
 #include <poll.h>
@@ -31,16 +25,47 @@
 #include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+
+#ifdef MSG_ERRQUEUE
+#define FOLLY_HAVE_MSG_ERRQUEUE 1
+/* for struct sock_extended_err*/
+#include <linux/errqueue.h>
+#endif
+
+#ifndef SO_EE_ORIGIN_ZEROCOPY
+#define SO_EE_ORIGIN_ZEROCOPY 5
+#endif
+
+#ifndef SO_EE_CODE_ZEROCOPY_COPIED
+#define SO_EE_CODE_ZEROCOPY_COPIED 1
+#endif
+
+#ifndef SO_ZEROCOPY
+#define SO_ZEROCOPY 60
+#endif
+
+#ifndef MSG_ZEROCOPY
+#define MSG_ZEROCOPY 0x4000000
+#endif
+
 #else
 #include <folly/portability/IOVec.h>
 #include <folly/portability/SysTypes.h>
 #include <folly/portability/Windows.h>
 
-#include <WS2tcpip.h>
+#include <WS2tcpip.h> // @manual
+
+using nfds_t = int;
+using sa_family_t = ADDRESS_FAMILY;
+
+// these are not supported
+#define SO_EE_ORIGIN_ZEROCOPY 0
+#define SO_ZEROCOPY 0
+#define MSG_ZEROCOPY 0x0
 
 // We don't actually support either of these flags
 // currently.
-#define MSG_DONTWAIT 1
+#define MSG_DONTWAIT 0x1000
 #define MSG_EOR 0
 struct msghdr {
   void* msg_name;
@@ -52,14 +77,24 @@ struct msghdr {
   int msg_flags;
 };
 
+struct sockaddr_un {
+  sa_family_t sun_family;
+  char sun_path[108];
+};
+
 #define SHUT_RD SD_RECEIVE
 #define SHUT_WR SD_SEND
 #define SHUT_RDWR SD_BOTH
 
-using nfds_t = int;
+// These are the same, but PF_LOCAL
+// isn't defined by WinSock.
+#define AF_LOCAL PF_UNIX
+#define PF_LOCAL PF_UNIX
 
-// This is named differently in posix.
-#define sa_family_t ADDRESS_FAMILY
+// This isn't defined by Windows, and we need to
+// distinguish it from SO_REUSEADDR
+#define SO_REUSEPORT 0x7001
+
 // Someone thought it would be a good idea
 // to define a field via a macro...
 #undef s_host
@@ -69,6 +104,7 @@ namespace folly {
 namespace portability {
 namespace sockets {
 #ifndef _WIN32
+using ::accept;
 using ::bind;
 using ::connect;
 using ::getpeername;
@@ -90,12 +126,14 @@ using ::socket;
 bool is_fh_socket(int fh);
 SOCKET fd_to_socket(int fd);
 int socket_to_fd(SOCKET s);
+int translate_wsa_error(int wsaErr);
 
 // These aren't additional overloads, but rather other functions that
 // are referenced that we need to wrap, or, in the case of inet_aton,
 // implement.
 int accept(int s, struct sockaddr* addr, socklen_t* addrlen);
 int inet_aton(const char* cp, struct in_addr* inp);
+int socketpair(int domain, int type, int protocol, int sv[2]);
 
 // Unless you have a case where you would normally have
 // to reference the function as being explicitly in the
@@ -182,11 +220,12 @@ int setsockopt(
     const char* optval,
     socklen_t optlen);
 #endif
-}
-}
-}
+} // namespace sockets
+} // namespace portability
+} // namespace folly
 
 #ifdef _WIN32
 // Add our helpers to the overload set.
-/* using override */ using namespace folly::portability::sockets;
+/* using override */
+using namespace folly::portability::sockets;
 #endif

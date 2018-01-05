@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,10 +14,13 @@
  * limitations under the License.
  */
 
+#include <cmath>
+
 #include <folly/experimental/Bits.h>
 
 #include <glog/logging.h>
-#include <gtest/gtest.h>
+
+#include <folly/portability/GTest.h>
 
 using namespace folly;
 
@@ -245,12 +248,23 @@ T testValue(int bits) {
   if (std::is_signed<T>::value) {
     --bits;
   }
-  auto value = pow(2, bits) * (negate ? -2.0 : 2.0) / 3.0;
+  auto value = std::pow(2, bits) * (negate ? -2.0 : 2.0) / 3.0;
   CHECK_GE(value, std::numeric_limits<T>::min());
   CHECK_LE(value, std::numeric_limits<T>::max());
   return static_cast<T>(value);
 }
-} // anonymous namespace
+} // namespace
+
+TEST(Bits, Boundaries) {
+  uint8_t buf[20];
+  for (size_t offset = 0; offset <= 64; ++offset) {
+    for (size_t size = 0; size <= 32; ++size) {
+      int32_t value = testValue<int32_t>(size);
+      testSet<true>(buf, offset, size, value);
+      EXPECT_EQ(value, (testGet<true, int32_t>(buf, offset, size)));
+    }
+  }
+}
 
 template <size_t N>
 void accSize(size_t& w) {

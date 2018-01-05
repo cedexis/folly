@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,11 +21,14 @@
 #include <type_traits>
 #include <utility>
 
-// Ignore shadowing warnings within this file, so includers can use -Wshadow.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wshadow"
+#include <folly/Portability.h>
 
-namespace folly { namespace gen {
+// Ignore shadowing warnings within this file, so includers can use -Wshadow.
+FOLLY_PUSH_WARNING
+FOLLY_GCC_DISABLE_WARNING("-Wshadow")
+
+namespace folly {
+namespace gen {
 
 /**
  * IsCompatibleSignature - Trait type for testing whether a given Functor
@@ -34,28 +37,28 @@ namespace folly { namespace gen {
  * Usage:
  *   IsCompatibleSignature<FunctorType, bool(int, float)>::value
  */
-template<class Candidate, class Expected>
+template <class Candidate, class Expected>
 class IsCompatibleSignature {
   static constexpr bool value = false;
 };
 
-template<class Candidate,
-         class ExpectedReturn,
-         class... ArgTypes>
+template <class Candidate, class ExpectedReturn, class... ArgTypes>
 class IsCompatibleSignature<Candidate, ExpectedReturn(ArgTypes...)> {
-  template<class F,
-           class ActualReturn =
-             decltype(std::declval<F>()(std::declval<ArgTypes>()...)),
-           bool good = std::is_same<ExpectedReturn, ActualReturn>::value>
+  template <
+      class F,
+      class ActualReturn =
+          decltype(std::declval<F>()(std::declval<ArgTypes>()...)),
+      bool good = std::is_same<ExpectedReturn, ActualReturn>::value>
   static constexpr bool testArgs(int*) {
     return good;
   }
 
-  template<class F>
+  template <class F>
   static constexpr bool testArgs(...) {
     return false;
   }
-public:
+
+ public:
   static constexpr bool value = testArgs<Candidate>(nullptr);
 };
 
@@ -63,7 +66,7 @@ public:
  * FBounded - Helper type for the curiously recurring template pattern, used
  * heavily here to enable inlining and obviate virtual functions
  */
-template<class Self>
+template <class Self>
 struct FBounded {
   const Self& self() const {
     return *static_cast<const Self*>(this);
@@ -79,16 +82,14 @@ struct FBounded {
  * generator. All operators implement a method compose(), which takes a
  * generator and produces an output generator.
  */
-template<class Self>
+template <class Self>
 class Operator : public FBounded<Self> {
  public:
   /**
    * compose() - Must be implemented by child class to compose a new Generator
    * out of a given generator. This function left intentionally unimplemented.
    */
-  template<class Source,
-           class Value,
-           class ResultGen = void>
+  template <class Source, class Value, class ResultGen = void>
   ResultGen compose(const GenImpl<Value, Source>& source) const;
 
  protected:
@@ -103,33 +104,37 @@ class Operator : public FBounded<Self> {
  * operator|() - For composing two operators without binding it to a
  * particular generator.
  */
-template<class Left,
-         class Right,
-         class Composed = detail::Composed<Left, Right>>
+template <
+    class Left,
+    class Right,
+    class Composed = detail::Composed<Left, Right>>
 Composed operator|(const Operator<Left>& left,
                    const Operator<Right>& right) {
   return Composed(left.self(), right.self());
 }
 
-template<class Left,
-         class Right,
-         class Composed = detail::Composed<Left, Right>>
+template <
+    class Left,
+    class Right,
+    class Composed = detail::Composed<Left, Right>>
 Composed operator|(const Operator<Left>& left,
                    Operator<Right>&& right) {
   return Composed(left.self(), std::move(right.self()));
 }
 
-template<class Left,
-         class Right,
-         class Composed = detail::Composed<Left, Right>>
+template <
+    class Left,
+    class Right,
+    class Composed = detail::Composed<Left, Right>>
 Composed operator|(Operator<Left>&& left,
                    const Operator<Right>& right) {
   return Composed(std::move(left.self()), right.self());
 }
 
-template<class Left,
-         class Right,
-         class Composed = detail::Composed<Left, Right>>
+template <
+    class Left,
+    class Right,
+    class Composed = detail::Composed<Left, Right>>
 Composed operator|(Operator<Left>&& left,
                    Operator<Right>&& right) {
   return Composed(std::move(left.self()), std::move(right.self()));
@@ -141,8 +146,7 @@ Composed operator|(Operator<Left>&& left,
  * implement apply(). foreach() may also be implemented to special case the
  * condition where the entire sequence is consumed.
  */
-template<class Value,
-         class Self>
+template <class Value, class Self>
 class GenImpl : public FBounded<Self> {
  protected:
   // To prevent slicing
@@ -163,13 +167,13 @@ class GenImpl : public FBounded<Self> {
    * the handler returning false), as 'Chain' uses the return value of apply to
    * determine if it should process the second object in its chain.
    */
-  template<class Handler>
+  template <class Handler>
   bool apply(Handler&& handler) const;
 
   /**
    * foreach() - Send all values produced by this generator to given lambda.
    */
-  template<class Body>
+  template <class Body>
   void foreach(Body&& body) const {
     this->self().apply([&](Value value) -> bool {
         static_assert(!infinite, "Cannot call foreach on infinite GenImpl");
@@ -191,11 +195,12 @@ class GenImpl : public FBounded<Self> {
   static constexpr bool infinite = false;
 };
 
-template<class LeftValue,
-         class Left,
-         class RightValue,
-         class Right,
-         class Chain = detail::Chain<LeftValue, Left, Right>>
+template <
+    class LeftValue,
+    class Left,
+    class RightValue,
+    class Right,
+    class Chain = detail::Chain<LeftValue, Left, Right>>
 Chain operator+(const GenImpl<LeftValue, Left>& left,
                 const GenImpl<RightValue, Right>& right) {
   static_assert(
@@ -204,11 +209,12 @@ Chain operator+(const GenImpl<LeftValue, Left>& left,
   return Chain(left.self(), right.self());
 }
 
-template<class LeftValue,
-         class Left,
-         class RightValue,
-         class Right,
-         class Chain = detail::Chain<LeftValue, Left, Right>>
+template <
+    class LeftValue,
+    class Left,
+    class RightValue,
+    class Right,
+    class Chain = detail::Chain<LeftValue, Left, Right>>
 Chain operator+(const GenImpl<LeftValue, Left>& left,
                 GenImpl<RightValue, Right>&& right) {
   static_assert(
@@ -217,11 +223,12 @@ Chain operator+(const GenImpl<LeftValue, Left>& left,
   return Chain(left.self(), std::move(right.self()));
 }
 
-template<class LeftValue,
-         class Left,
-         class RightValue,
-         class Right,
-         class Chain = detail::Chain<LeftValue, Left, Right>>
+template <
+    class LeftValue,
+    class Left,
+    class RightValue,
+    class Right,
+    class Chain = detail::Chain<LeftValue, Left, Right>>
 Chain operator+(GenImpl<LeftValue, Left>&& left,
                 const GenImpl<RightValue, Right>& right) {
   static_assert(
@@ -230,11 +237,12 @@ Chain operator+(GenImpl<LeftValue, Left>&& left,
   return Chain(std::move(left.self()), right.self());
 }
 
-template<class LeftValue,
-         class Left,
-         class RightValue,
-         class Right,
-         class Chain = detail::Chain<LeftValue, Left, Right>>
+template <
+    class LeftValue,
+    class Left,
+    class RightValue,
+    class Right,
+    class Chain = detail::Chain<LeftValue, Left, Right>>
 Chain operator+(GenImpl<LeftValue, Left>&& left,
                 GenImpl<RightValue, Right>&& right) {
   static_assert(
@@ -247,9 +255,7 @@ Chain operator+(GenImpl<LeftValue, Left>&& left,
  * operator|() which enables foreach-like usage:
  *   gen | [](Value v) -> void {...};
  */
-template<class Value,
-         class Gen,
-         class Handler>
+template <class Value, class Gen, class Handler>
 typename std::enable_if<
   IsCompatibleSignature<Handler, void(Value)>::value>::type
 operator|(const GenImpl<Value, Gen>& gen, Handler&& handler) {
@@ -262,9 +268,7 @@ operator|(const GenImpl<Value, Gen>& gen, Handler&& handler) {
  * operator|() which enables foreach-like usage with 'break' support:
  *   gen | [](Value v) -> bool { return shouldContinue(); };
  */
-template<class Value,
-         class Gen,
-         class Handler>
+template <class Value, class Gen, class Handler>
 typename std::enable_if<
   IsCompatibleSignature<Handler, bool(Value)>::value, bool>::type
 operator|(const GenImpl<Value, Gen>& gen, Handler&& handler) {
@@ -276,17 +280,13 @@ operator|(const GenImpl<Value, Gen>& gen, Handler&& handler) {
  * adaptors:
  *   gen | map(square) | sum
  */
-template<class Value,
-         class Gen,
-         class Op>
+template <class Value, class Gen, class Op>
 auto operator|(const GenImpl<Value, Gen>& gen, const Operator<Op>& op) ->
 decltype(op.self().compose(gen.self())) {
   return op.self().compose(gen.self());
 }
 
-template<class Value,
-         class Gen,
-         class Op>
+template <class Value, class Gen, class Op>
 auto operator|(GenImpl<Value, Gen>&& gen, const Operator<Op>& op) ->
 decltype(op.self().compose(std::move(gen.self()))) {
   return op.self().compose(std::move(gen.self()));
@@ -305,8 +305,7 @@ namespace detail {
  *
  *  auto valuesIncluded = from(optionals) | valuesOf | as<vector>();
  */
-template<class First,
-         class Second>
+template <class First, class Second>
 class Composed : public Operator<Composed<First, Second>> {
   First first_;
   Second second_;
@@ -317,22 +316,24 @@ class Composed : public Operator<Composed<First, Second>> {
     : first_(std::move(first))
     , second_(std::move(second)) {}
 
-  template<class Source,
-           class Value,
-           class FirstRet = decltype(std::declval<First>()
-                                     .compose(std::declval<Source>())),
-           class SecondRet = decltype(std::declval<Second>()
-                                      .compose(std::declval<FirstRet>()))>
+  template <
+      class Source,
+      class Value,
+      class FirstRet =
+          decltype(std::declval<First>().compose(std::declval<Source>())),
+      class SecondRet =
+          decltype(std::declval<Second>().compose(std::declval<FirstRet>()))>
   SecondRet compose(const GenImpl<Value, Source>& source) const {
     return second_.compose(first_.compose(source.self()));
   }
 
-  template<class Source,
-           class Value,
-           class FirstRet = decltype(std::declval<First>()
-                                     .compose(std::declval<Source>())),
-           class SecondRet = decltype(std::declval<Second>()
-                                      .compose(std::declval<FirstRet>()))>
+  template <
+      class Source,
+      class Value,
+      class FirstRet =
+          decltype(std::declval<First>().compose(std::declval<Source>())),
+      class SecondRet =
+          decltype(std::declval<Second>().compose(std::declval<FirstRet>()))>
   SecondRet compose(GenImpl<Value, Source>&& source) const {
     return second_.compose(first_.compose(std::move(source.self())));
   }
@@ -346,23 +347,24 @@ class Composed : public Operator<Composed<First, Second>> {
  *   auto nums = seq(1, 10) + seq(20, 30);
  *   int total = nums | sum;
  */
-template<class Value, class First, class Second>
+template <class Value, class First, class Second>
 class Chain : public GenImpl<Value,
                              Chain<Value, First, Second>> {
   First first_;
   Second second_;
-public:
+
+ public:
   explicit Chain(First first, Second second)
       : first_(std::move(first))
       , second_(std::move(second)) {}
 
-  template<class Handler>
+  template <class Handler>
   bool apply(Handler&& handler) const {
     return first_.apply(std::forward<Handler>(handler))
         && second_.apply(std::forward<Handler>(handler));
   }
 
-  template<class Body>
+  template <class Body>
   void foreach(Body&& body) const {
     first_.foreach(std::forward<Body>(body));
     second_.foreach(std::forward<Body>(body));
@@ -371,8 +373,8 @@ public:
   static constexpr bool infinite = First::infinite || Second::infinite;
 };
 
-} // detail
+} // namespace detail
+} // namespace gen
+} // namespace folly
 
-}} // folly::gen
-
-#pragma GCC diagnostic pop
+FOLLY_POP_WARNING

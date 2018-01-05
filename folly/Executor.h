@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,20 +16,20 @@
 
 #pragma once
 
-#include <atomic>
 #include <climits>
-#include <functional>
-#include <stdexcept>
+
+#include <folly/Function.h>
 
 namespace folly {
 
-typedef std::function<void()> Func;
+using Func = Function<void()>;
 
 /// An Executor accepts units of work with add(), which should be
 /// threadsafe.
 class Executor {
  public:
-  virtual ~Executor() = default;
+  // Workaround for a linkage problem with explicitly defaulted dtor t22914621
+  virtual ~Executor() {}
 
   /// Enqueue a function to executed by this executor. This and all
   /// variants must be threadsafe.
@@ -37,10 +37,7 @@ class Executor {
 
   /// Enqueue a function with a given priority, where 0 is the medium priority
   /// This is up to the implementation to enforce
-  virtual void addWithPriority(Func, int8_t /*priority*/) {
-    throw std::runtime_error(
-        "addWithPriority() is not implemented for this Executor");
-  }
+  virtual void addWithPriority(Func, int8_t priority);
 
   virtual uint8_t getNumPriorities() const {
     return 1;
@@ -50,15 +47,50 @@ class Executor {
   static const int8_t MID_PRI = 0;
   static const int8_t HI_PRI  = SCHAR_MAX;
 
-  /// A convenience function for shared_ptr to legacy functors.
+  class KeepAlive {
+   public:
+    KeepAlive() {}
+
+    void reset() {
+      executor_.reset();
+    }
+
+    explicit operator bool() const {
+      return executor_ != nullptr;
+    }
+
+    Executor* get() const {
+      return executor_.get();
+    }
+
+   private:
+    friend class Executor;
+    explicit KeepAlive(folly::Executor* executor) : executor_(executor) {}
+
+    struct Deleter {
+      void operator()(folly::Executor* executor) {
+        executor->keepAliveRelease();
+      }
+    };
+    std::unique_ptr<folly::Executor, Deleter> executor_;
+  };
+
+  /// Returns a keep-alive token which guarantees that Executor will keep
+  /// processing tasks until the token is released.
   ///
-  /// Sometimes you have a functor that is move-only, and therefore can't be
-  /// converted to a std::function (e.g. std::packaged_task). In that case,
-  /// wrap it in a shared_ptr (or maybe folly::MoveWrapper) and use this.
-  template <class P>
-  void addPtr(P fn) {
-    this->add([fn]() mutable { (*fn)(); });
+  /// If executor does not support keep-alive functionality - dummy token will
+  /// be returned.
+  virtual KeepAlive getKeepAliveToken() {
+    return {};
+  }
+
+ protected:
+  virtual void keepAliveAcquire();
+  virtual void keepAliveRelease();
+
+  KeepAlive makeKeepAlive() {
+    return KeepAlive{this};
   }
 };
 
-} // folly
+} // namespace folly

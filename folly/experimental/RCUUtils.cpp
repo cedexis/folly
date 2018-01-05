@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,9 +15,7 @@
  */
 #include <folly/experimental/RCUUtils.h>
 
-#include <folly/Portability.h>
 #include <folly/ThreadLocal.h>
-
 
 namespace folly {
 
@@ -35,7 +33,7 @@ struct RCURegisterThreadHelper {
   bool alive{false};
 };
 
-}
+} // namespace
 
 bool RCURegisterThread() {
   static folly::ThreadLocal<RCURegisterThreadHelper>* rcuRegisterThreadHelper =
@@ -49,4 +47,10 @@ bool RCURegisterThread() {
   return ret;
 }
 
+RCUReadLock& RCUReadLock::instance() {
+  // Both lock and unlock are static, so no need to worry about destruction
+  // order
+  static RCUReadLock instance;
+  return instance;
 }
+} // namespace folly

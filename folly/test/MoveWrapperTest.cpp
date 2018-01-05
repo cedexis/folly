@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
-#include <gtest/gtest.h>
-
 #include <folly/MoveWrapper.h>
+
 #include <memory>
+
+#include <folly/portability/GTest.h>
 
 namespace folly {
 
@@ -27,7 +28,7 @@ TEST(makeMoveWrapper, Empty) {
 }
 
 TEST(makeMoveWrapper, NonEmpty) {
-  auto u = std::unique_ptr<int>(new int(5));
+  auto u = std::make_unique<int>(5);
   EXPECT_EQ(*u, 5);
   auto p = makeMoveWrapper(std::move(u));
   EXPECT_TRUE(!u);
@@ -49,4 +50,4 @@ TEST(makeMoveWrapper, lvalue_copyable) {
   makeMoveWrapper(p);
 }
 
-} // namespace
+} // namespace folly

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,12 +15,14 @@
  */
 
 #include <folly/Range.h>
-#include <folly/Benchmark.h>
-#include <folly/Foreach.h>
+
 #include <algorithm>
 #include <iostream>
 #include <random>
 #include <string>
+
+#include <folly/Benchmark.h>
+#include <folly/container/Foreach.h>
 
 using namespace folly;
 using namespace std;
@@ -78,9 +80,8 @@ void initFile(int len) {
   }
 }
 
-
 string generateString(int len) {
-  std::uniform_int_distribution<uint32_t> validChar(1, 255);  // no null-char
+  std::uniform_int_distribution<uint32_t> validChar(1, 255); // no null-char
   string ret;
   while (len--) {
     ret.push_back(validChar(rnd));
@@ -91,7 +92,7 @@ string generateString(int len) {
 void initDelims(int len) {
   ffoDelim.clear();
 
-  string s(len - 1, '\0');  // find_first_of won't finish until last char
+  string s(len - 1, '\0'); // find_first_of won't finish until last char
   s.push_back('a');
   ffoTestString = s;
 
@@ -105,13 +106,13 @@ void initDelims(int len) {
     auto s = generateString(n);
     if (rnd() % 2) {
       // ~half of tests will find a hit
-      s[rnd() % s.size()] = 'a';  // yes, this could mean 'a' is a duplicate
+      s[rnd() % s.size()] = 'a'; // yes, this could mean 'a' is a duplicate
     }
     ffoDelim.push_back(s);
   }
 }
 
-}  // anonymous namespace
+} // namespace
 
 BENCHMARK(FindSingleCharMemchr, n) {
   StringPiece haystack(str);
@@ -139,13 +140,13 @@ template <class Func>
 void countHits(Func func, size_t n) {
   StringPiece needles = "\r\n\1";
   FOR_EACH_RANGE (i, 0, n) {
-    size_t p, n = 0;
+    size_t p, c = 0;
     for (StringPiece left = file;
          (p = func(left, needles)) != StringPiece::npos;
          left.advance(p + 1)) {
-      ++n;
+      ++c;
     }
-    doNotOptimizeAway(n);
+    doNotOptimizeAway(c);
   }
 }
 
@@ -303,8 +304,9 @@ BENCHMARK_RELATIVE(FindFirstOf32NeedlesBitSet, n) {
 
 BENCHMARK_DRAW_LINE();
 
-const string delims64 = "!bcdefghijklmnopqrstuvwxyz_"
-                        "ABCDEFGHIJKLMNOPQRSTUVWXYZ-0123456789$";
+const string delims64 =
+    "!bcdefghijklmnopqrstuvwxyz_"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ-0123456789$";
 
 BENCHMARK(FindFirstOf64NeedlesBase, n) {
   findFirstOfRange(delims64, detail::qfind_first_byte_of, n);
@@ -398,7 +400,7 @@ BENCHMARK_DRAW_LINE();
 int main(int argc, char** argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
 
-  for (int len : {1, 8, 10, 16, 32, 64, 128, 256, 10*1024, 1024*1024}) {
+  for (int len : {1, 8, 10, 16, 32, 64, 128, 256, 10 * 1024, 1024 * 1024}) {
     initStr(len);
     initDelims(len);
     initFile(len);

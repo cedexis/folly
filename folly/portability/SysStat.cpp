@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,13 +20,47 @@
 #include <folly/portability/Windows.h>
 
 extern "C" {
-int chmod(char const* fn, int am) { return _chmod(fn, am); }
+int chmod(char const* fn, int am) {
+  return _chmod(fn, am);
+}
+
+int fchmod(int fd, mode_t mode) {
+  HANDLE h = (HANDLE)_get_osfhandle(fd);
+  if (h == INVALID_HANDLE_VALUE) {
+    return -1;
+  }
+
+  FILE_ATTRIBUTE_TAG_INFO attr{};
+  if (!GetFileInformationByHandleEx(
+          h, FileAttributeTagInfo, &attr, sizeof(attr))) {
+    return -1;
+  }
+
+  if (mode & _S_IWRITE) {
+    attr.FileAttributes &= ~FILE_ATTRIBUTE_READONLY;
+  } else {
+    attr.FileAttributes |= FILE_ATTRIBUTE_READONLY;
+  }
+
+  if (!SetFileInformationByHandle(
+          h, FileAttributeTagInfo, &attr, sizeof(attr))) {
+    return -1;
+  }
+
+  return 0;
+}
 
 // Just return the result of a normal stat for now
-int lstat(const char* path, struct stat* st) { return stat(path, st); }
+int lstat(const char* path, struct stat* st) {
+  return stat(path, st);
+}
 
-int mkdir(const char* fn, int mode) { return _mkdir(fn); }
+int mkdir(const char* fn, int /* mode */) {
+  return _mkdir(fn);
+}
 
-int umask(int md) { return _umask(md); }
+int umask(int md) {
+  return _umask(md);
+}
 }
 #endif

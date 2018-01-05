@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,16 +18,19 @@
 
 #include <atomic>
 #include <mutex>
+
 #include <folly/MicroSpinLock.h>
 
-namespace folly { namespace detail {
+namespace folly {
+namespace futures {
+namespace detail {
 
 /// Finite State Machine helper base class.
 /// Inherit from this.
 /// For best results, use an "enum class" for Enum.
 template <class Enum>
 class FSM {
-private:
+ private:
   // I am not templatizing this because folly::MicroSpinLock needs to be
   // zero-initialized (or call init) which isn't generic enough for something
   // that behaves like std::mutex. :(
@@ -40,10 +43,10 @@ private:
   // An optimization would be to use a static conditional on the Enum type.
   std::atomic<Enum> state_;
 
-public:
+ public:
   explicit FSM(Enum startState) : state_(startState) {}
 
-  Enum getState() const {
+  Enum getState() const noexcept {
     return state_.load(std::memory_order_acquire);
   }
 
@@ -125,5 +128,6 @@ public:
 #define FSM_BREAK done = true; break;
 #define FSM_END }}}
 
-
-}} // folly::detail
+} // namespace detail
+} // namespace futures
+} // namespace folly

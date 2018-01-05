@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2011-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,19 +13,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 // @author: Andrei Alexandrescu (aalexandre)
 
 // Test bed for folly/Synchronized.h
 
+#include <folly/Synchronized.h>
 #include <folly/LockTraitsBoost.h>
 #include <folly/Portability.h>
-#include <folly/RWSpinLock.h>
 #include <folly/SharedMutex.h>
 #include <folly/SpinLock.h>
-#include <folly/Synchronized.h>
+#include <folly/portability/GTest.h>
+#include <folly/synchronization/RWSpinLock.h>
 #include <folly/test/SynchronizedTestLib.h>
-#include <gtest/gtest.h>
 
 using namespace folly::sync_tests;
 
@@ -63,6 +62,10 @@ TYPED_TEST(SynchronizedTest, WithLock) {
   testWithLock<TypeParam>();
 }
 
+TYPED_TEST(SynchronizedTest, Unlock) {
+  testUnlock<TypeParam>();
+}
+
 TYPED_TEST(SynchronizedTest, Deprecated) {
   testDeprecated<TypeParam>();
 }
@@ -89,6 +92,10 @@ TYPED_TEST(SynchronizedTest, DualLockingWithConst) {
 
 TYPED_TEST(SynchronizedTest, ConstCopy) {
   testConstCopy<TypeParam>();
+}
+
+TYPED_TEST(SynchronizedTest, InPlaceConstruction) {
+  testInPlaceConstruction<TypeParam>();
 }
 
 template <class Mutex>
@@ -142,22 +149,16 @@ TYPED_TEST(SynchronizedTimedWithConstTest, TimedSynchronizeWithConst) {
   testTimedSynchronizedWithConst<TypeParam>();
 }
 
-TYPED_TEST(SynchronizedTest, InPlaceConstruction) {
-  testInPlaceConstruction<TypeParam>();
-}
-
 using CountPair = std::pair<int, int>;
 // This class is specialized only to be uesed in SynchronizedLockTest
 class FakeMutex {
  public:
-  bool lock() {
+  void lock() {
     ++lockCount_;
-    return true;
   }
 
-  bool unlock() {
+  void unlock() {
     ++unlockCount_;
-    return true;
   }
 
   static CountPair getLockUnlockCount() {
@@ -187,67 +188,325 @@ class SynchronizedLockTest : public testing::Test {
   }
 };
 
-// Single level of SYNCHRONIZED and UNSYNCHRONIZED, although nested test are
-// super set of it, it is possible single level test passes while nested tests
-// fail
-TEST_F(SynchronizedLockTest, SyncUnSync) {
-  folly::Synchronized<std::vector<int>, FakeMutex> obj;
-  EXPECT_EQ((CountPair{0, 0}), FakeMutex::getLockUnlockCount());
-  SYNCHRONIZED(obj) {
-    EXPECT_EQ((CountPair{1, 0}), FakeMutex::getLockUnlockCount());
-    UNSYNCHRONIZED(obj) {
-      EXPECT_EQ((CountPair{1, 1}), FakeMutex::getLockUnlockCount());
-    }
-    EXPECT_EQ((CountPair{2, 1}), FakeMutex::getLockUnlockCount());
+/**
+ * Test mutex to help to automate assertions, taken from LockTraitsTest.cpp
+ */
+class FakeAllPowerfulAssertingMutexInternal {
+ public:
+  enum class CurrentLockState { UNLOCKED, SHARED, UPGRADE, UNIQUE };
+
+  void lock() {
+    EXPECT_EQ(this->lock_state, CurrentLockState::UNLOCKED);
+    this->lock_state = CurrentLockState::UNIQUE;
   }
-  EXPECT_EQ((CountPair{2, 2}), FakeMutex::getLockUnlockCount());
+  void unlock() {
+    EXPECT_EQ(this->lock_state, CurrentLockState::UNIQUE);
+    this->lock_state = CurrentLockState::UNLOCKED;
+  }
+  void lock_shared() {
+    EXPECT_EQ(this->lock_state, CurrentLockState::UNLOCKED);
+    this->lock_state = CurrentLockState::SHARED;
+  }
+  void unlock_shared() {
+    EXPECT_EQ(this->lock_state, CurrentLockState::SHARED);
+    this->lock_state = CurrentLockState::UNLOCKED;
+  }
+  void lock_upgrade() {
+    EXPECT_EQ(this->lock_state, CurrentLockState::UNLOCKED);
+    this->lock_state = CurrentLockState::UPGRADE;
+  }
+  void unlock_upgrade() {
+    EXPECT_EQ(this->lock_state, CurrentLockState::UPGRADE);
+    this->lock_state = CurrentLockState::UNLOCKED;
+  }
+
+  void unlock_upgrade_and_lock() {
+    EXPECT_EQ(this->lock_state, CurrentLockState::UPGRADE);
+    this->lock_state = CurrentLockState::UNIQUE;
+  }
+  void unlock_and_lock_upgrade() {
+    EXPECT_EQ(this->lock_state, CurrentLockState::UNIQUE);
+    this->lock_state = CurrentLockState::UPGRADE;
+  }
+  void unlock_and_lock_shared() {
+    EXPECT_EQ(this->lock_state, CurrentLockState::UNIQUE);
+    this->lock_state = CurrentLockState::SHARED;
+  }
+  void unlock_upgrade_and_lock_shared() {
+    EXPECT_EQ(this->lock_state, CurrentLockState::UPGRADE);
+    this->lock_state = CurrentLockState::SHARED;
+  }
+
+  template <class Rep, class Period>
+  bool try_lock_for(const std::chrono::duration<Rep, Period>&) {
+    EXPECT_EQ(this->lock_state, CurrentLockState::UNLOCKED);
+    this->lock_state = CurrentLockState::UNIQUE;
+    return true;
+  }
+
+  template <class Rep, class Period>
+  bool try_lock_upgrade_for(const std::chrono::duration<Rep, Period>&) {
+    EXPECT_EQ(this->lock_state, CurrentLockState::UNLOCKED);
+    this->lock_state = CurrentLockState::UPGRADE;
+    return true;
+  }
+
+  template <class Rep, class Period>
+  bool try_unlock_upgrade_and_lock_for(
+      const std::chrono::duration<Rep, Period>&) {
+    EXPECT_EQ(this->lock_state, CurrentLockState::UPGRADE);
+    this->lock_state = CurrentLockState::UNIQUE;
+    return true;
+  }
+
+  /*
+   * Initialize the FakeMutex with an unlocked state
+   */
+  CurrentLockState lock_state{CurrentLockState::UNLOCKED};
+};
+
+/**
+ * The following works around the internal mutex for synchronized being
+ * private
+ *
+ * This is horridly thread unsafe.
+ */
+static FakeAllPowerfulAssertingMutexInternal globalAllPowerfulAssertingMutex;
+
+class FakeAllPowerfulAssertingMutex {
+ public:
+  void lock() {
+    globalAllPowerfulAssertingMutex.lock();
+  }
+  void unlock() {
+    globalAllPowerfulAssertingMutex.unlock();
+  }
+  void lock_shared() {
+    globalAllPowerfulAssertingMutex.lock_shared();
+  }
+  void unlock_shared() {
+    globalAllPowerfulAssertingMutex.unlock_shared();
+  }
+  void lock_upgrade() {
+    globalAllPowerfulAssertingMutex.lock_upgrade();
+  }
+  void unlock_upgrade() {
+    globalAllPowerfulAssertingMutex.unlock_upgrade();
+  }
+
+  void unlock_upgrade_and_lock() {
+    globalAllPowerfulAssertingMutex.unlock_upgrade_and_lock();
+  }
+  void unlock_and_lock_upgrade() {
+    globalAllPowerfulAssertingMutex.unlock_and_lock_upgrade();
+  }
+  void unlock_and_lock_shared() {
+    globalAllPowerfulAssertingMutex.unlock_and_lock_shared();
+  }
+  void unlock_upgrade_and_lock_shared() {
+    globalAllPowerfulAssertingMutex.unlock_upgrade_and_lock_shared();
+  }
+
+  template <class Rep, class Period>
+  bool try_lock_for(const std::chrono::duration<Rep, Period>& arg) {
+    return globalAllPowerfulAssertingMutex.try_lock_for(arg);
+  }
+
+  template <class Rep, class Period>
+  bool try_lock_upgrade_for(const std::chrono::duration<Rep, Period>& arg) {
+    return globalAllPowerfulAssertingMutex.try_lock_upgrade_for(arg);
+  }
+
+  template <class Rep, class Period>
+  bool try_unlock_upgrade_and_lock_for(
+      const std::chrono::duration<Rep, Period>& arg) {
+    return globalAllPowerfulAssertingMutex.try_unlock_upgrade_and_lock_for(arg);
+  }
+
+  // reset state on destruction
+  ~FakeAllPowerfulAssertingMutex() {
+    globalAllPowerfulAssertingMutex = FakeAllPowerfulAssertingMutexInternal{};
+  }
+};
+
+TEST_F(SynchronizedLockTest, TestCopyConstructibleValues) {
+  struct NonCopyConstructible {
+    NonCopyConstructible(const NonCopyConstructible&) = delete;
+    NonCopyConstructible& operator=(const NonCopyConstructible&) = delete;
+  };
+  struct CopyConstructible {};
+  EXPECT_FALSE(std::is_copy_constructible<
+               folly::Synchronized<NonCopyConstructible>>::value);
+  EXPECT_FALSE(std::is_copy_assignable<
+               folly::Synchronized<NonCopyConstructible>>::value);
+  EXPECT_TRUE(std::is_copy_constructible<
+              folly::Synchronized<CopyConstructible>>::value);
+  EXPECT_TRUE(
+      std::is_copy_assignable<folly::Synchronized<CopyConstructible>>::value);
 }
 
-// Nested SYNCHRONIZED UNSYNCHRONIZED test, 2 levels of synchronization
-TEST_F(SynchronizedLockTest, NestedSyncUnSync) {
-  folly::Synchronized<std::vector<int>, FakeMutex> obj;
-  EXPECT_EQ((CountPair{0, 0}), FakeMutex::getLockUnlockCount());
-  SYNCHRONIZED(objCopy, obj) {
-    EXPECT_EQ((CountPair{1, 0}), FakeMutex::getLockUnlockCount());
-    SYNCHRONIZED(obj) {
-      EXPECT_EQ((CountPair{2, 0}), FakeMutex::getLockUnlockCount());
-      // Note: UNSYNCHRONIZED has always been kind of broken here.
-      // The input parameter is ignored (other than to overwrite what the input
-      // variable name refers to), and it unlocks the most object acquired in
-      // the most recent SYNCHRONIZED scope.
-      UNSYNCHRONIZED(obj) {
-        EXPECT_EQ((CountPair{2, 1}), FakeMutex::getLockUnlockCount());
-      }
-      EXPECT_EQ((CountPair{3, 1}), FakeMutex::getLockUnlockCount());
-      UNSYNCHRONIZED(obj) {
-        EXPECT_EQ((CountPair{3, 2}), FakeMutex::getLockUnlockCount());
-      }
-      EXPECT_EQ((CountPair{4, 2}), FakeMutex::getLockUnlockCount());
-    }
-    EXPECT_EQ((CountPair{4, 3}), FakeMutex::getLockUnlockCount());
+TEST_F(SynchronizedLockTest, UpgradableLocking) {
+  folly::Synchronized<int, FakeAllPowerfulAssertingMutex> sync;
+
+  // sanity assert
+  static_assert(
+      std::is_same<std::decay<decltype(*sync.ulock())>::type, int>::value,
+      "The ulock function was not well configured, blame aary@instagram.com");
+
+  {
+    auto ulock = sync.ulock();
+    EXPECT_EQ(
+        globalAllPowerfulAssertingMutex.lock_state,
+        FakeAllPowerfulAssertingMutexInternal::CurrentLockState::UPGRADE);
   }
-  EXPECT_EQ((CountPair{4, 4}), FakeMutex::getLockUnlockCount());
+
+  // should be unlocked here
+  EXPECT_EQ(
+      globalAllPowerfulAssertingMutex.lock_state,
+      FakeAllPowerfulAssertingMutexInternal::CurrentLockState::UNLOCKED);
+
+  // test going from upgrade to exclusive
+  {
+    auto ulock = sync.ulock();
+    auto wlock = ulock.moveFromUpgradeToWrite();
+    EXPECT_EQ(static_cast<bool>(ulock), false);
+    EXPECT_EQ(
+        globalAllPowerfulAssertingMutex.lock_state,
+        FakeAllPowerfulAssertingMutexInternal::CurrentLockState::UNIQUE);
+  }
+
+  // should be unlocked here
+  EXPECT_EQ(
+      globalAllPowerfulAssertingMutex.lock_state,
+      FakeAllPowerfulAssertingMutexInternal::CurrentLockState::UNLOCKED);
+
+  // test going from upgrade to shared
+  {
+    auto ulock = sync.ulock();
+    auto slock = ulock.moveFromUpgradeToRead();
+    EXPECT_EQ(static_cast<bool>(ulock), false);
+    EXPECT_EQ(
+        globalAllPowerfulAssertingMutex.lock_state,
+        FakeAllPowerfulAssertingMutexInternal::CurrentLockState::SHARED);
+  }
+
+  // should be unlocked here
+  EXPECT_EQ(
+      globalAllPowerfulAssertingMutex.lock_state,
+      FakeAllPowerfulAssertingMutexInternal::CurrentLockState::UNLOCKED);
+
+  // test going from exclusive to upgrade
+  {
+    auto wlock = sync.wlock();
+    auto ulock = wlock.moveFromWriteToUpgrade();
+    EXPECT_EQ(static_cast<bool>(wlock), false);
+    EXPECT_EQ(
+        globalAllPowerfulAssertingMutex.lock_state,
+        FakeAllPowerfulAssertingMutexInternal::CurrentLockState::UPGRADE);
+  }
+
+  // should be unlocked here
+  EXPECT_EQ(
+      globalAllPowerfulAssertingMutex.lock_state,
+      FakeAllPowerfulAssertingMutexInternal::CurrentLockState::UNLOCKED);
+
+  // test going from exclusive to shared
+  {
+    auto wlock = sync.wlock();
+    auto slock = wlock.moveFromWriteToRead();
+    EXPECT_EQ(static_cast<bool>(wlock), false);
+    EXPECT_EQ(
+        globalAllPowerfulAssertingMutex.lock_state,
+        FakeAllPowerfulAssertingMutexInternal::CurrentLockState::SHARED);
+  }
+
+  // should be unlocked here
+  EXPECT_EQ(
+      globalAllPowerfulAssertingMutex.lock_state,
+      FakeAllPowerfulAssertingMutexInternal::CurrentLockState::UNLOCKED);
 }
 
-// Different nesting behavior, UNSYNCHRONIZED called on different depth of
-// SYNCHRONIZED
-TEST_F(SynchronizedLockTest, NestedSyncUnSync2) {
-  folly::Synchronized<std::vector<int>, FakeMutex> obj;
-  EXPECT_EQ((CountPair{0, 0}), FakeMutex::getLockUnlockCount());
-  SYNCHRONIZED(objCopy, obj) {
-    EXPECT_EQ((CountPair{1, 0}), FakeMutex::getLockUnlockCount());
-    SYNCHRONIZED(obj) {
-      EXPECT_EQ((CountPair{2, 0}), FakeMutex::getLockUnlockCount());
-      UNSYNCHRONIZED(obj) {
-        EXPECT_EQ((CountPair{2, 1}), FakeMutex::getLockUnlockCount());
-      }
-      EXPECT_EQ((CountPair{3, 1}), FakeMutex::getLockUnlockCount());
-    }
-    EXPECT_EQ((CountPair{3, 2}), FakeMutex::getLockUnlockCount());
-    UNSYNCHRONIZED(obj) {
-      EXPECT_EQ((CountPair{3, 3}), FakeMutex::getLockUnlockCount());
-    }
-    EXPECT_EQ((CountPair{4, 3}), FakeMutex::getLockUnlockCount());
-  }
-  EXPECT_EQ((CountPair{4, 4}), FakeMutex::getLockUnlockCount());
+TEST_F(SynchronizedLockTest, UpgradableLockingWithULock) {
+  folly::Synchronized<int, FakeAllPowerfulAssertingMutex> sync;
+
+  // sanity assert
+  static_assert(
+      std::is_same<std::decay<decltype(*sync.ulock())>::type, int>::value,
+      "The ulock function was not well configured, blame aary@instagram.com");
+
+  // test from upgrade to write
+  sync.withULockPtr([](auto ulock) {
+    EXPECT_EQ(static_cast<bool>(ulock), true);
+    EXPECT_EQ(
+        globalAllPowerfulAssertingMutex.lock_state,
+        FakeAllPowerfulAssertingMutexInternal::CurrentLockState::UPGRADE);
+
+    auto wlock = ulock.moveFromUpgradeToWrite();
+    EXPECT_EQ(static_cast<bool>(ulock), false);
+    EXPECT_EQ(
+        globalAllPowerfulAssertingMutex.lock_state,
+        FakeAllPowerfulAssertingMutexInternal::CurrentLockState::UNIQUE);
+  });
+
+  // should be unlocked here
+  EXPECT_EQ(
+      globalAllPowerfulAssertingMutex.lock_state,
+      FakeAllPowerfulAssertingMutexInternal::CurrentLockState::UNLOCKED);
+
+  // test from write to upgrade
+  sync.withWLockPtr([](auto wlock) {
+    EXPECT_EQ(static_cast<bool>(wlock), true);
+    EXPECT_EQ(
+        globalAllPowerfulAssertingMutex.lock_state,
+        FakeAllPowerfulAssertingMutexInternal::CurrentLockState::UNIQUE);
+
+    auto ulock = wlock.moveFromWriteToUpgrade();
+    EXPECT_EQ(static_cast<bool>(wlock), false);
+    EXPECT_EQ(
+        globalAllPowerfulAssertingMutex.lock_state,
+        FakeAllPowerfulAssertingMutexInternal::CurrentLockState::UPGRADE);
+  });
+
+  // should be unlocked here
+  EXPECT_EQ(
+      globalAllPowerfulAssertingMutex.lock_state,
+      FakeAllPowerfulAssertingMutexInternal::CurrentLockState::UNLOCKED);
+
+  // test from upgrade to shared
+  sync.withULockPtr([](auto ulock) {
+    EXPECT_EQ(static_cast<bool>(ulock), true);
+    EXPECT_EQ(
+        globalAllPowerfulAssertingMutex.lock_state,
+        FakeAllPowerfulAssertingMutexInternal::CurrentLockState::UPGRADE);
+
+    auto slock = ulock.moveFromUpgradeToRead();
+    EXPECT_EQ(static_cast<bool>(ulock), false);
+    EXPECT_EQ(
+        globalAllPowerfulAssertingMutex.lock_state,
+        FakeAllPowerfulAssertingMutexInternal::CurrentLockState::SHARED);
+  });
+
+  // should be unlocked here
+  EXPECT_EQ(
+      globalAllPowerfulAssertingMutex.lock_state,
+      FakeAllPowerfulAssertingMutexInternal::CurrentLockState::UNLOCKED);
+
+  // test from write to shared
+  sync.withWLockPtr([](auto wlock) {
+    EXPECT_EQ(static_cast<bool>(wlock), true);
+    EXPECT_EQ(
+        globalAllPowerfulAssertingMutex.lock_state,
+        FakeAllPowerfulAssertingMutexInternal::CurrentLockState::UNIQUE);
+
+    auto slock = wlock.moveFromWriteToRead();
+    EXPECT_EQ(static_cast<bool>(wlock), false);
+    EXPECT_EQ(
+        globalAllPowerfulAssertingMutex.lock_state,
+        FakeAllPowerfulAssertingMutexInternal::CurrentLockState::SHARED);
+  });
+
+  // should be unlocked here
+  EXPECT_EQ(
+      globalAllPowerfulAssertingMutex.lock_state,
+      FakeAllPowerfulAssertingMutexInternal::CurrentLockState::UNLOCKED);
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,12 +28,14 @@
 #include <limits>
 #include <type_traits>
 
-#include <folly/Bits.h>
 #include <folly/Likely.h>
 #include <folly/Portability.h>
 #include <folly/Range.h>
+#include <folly/experimental/CodingDetail.h>
 #include <folly/experimental/Instructions.h>
 #include <folly/experimental/Select64.h>
+#include <folly/lang/Assume.h>
+#include <folly/lang/Bits.h>
 #include <glog/logging.h>
 
 #if !FOLLY_X64
@@ -43,6 +45,8 @@
 namespace folly { namespace compression {
 
 static_assert(kIsLittleEndian, "EliasFanoCoding.h requires little endianness");
+
+constexpr size_t kCacheLineSize = 64;
 
 template <class Pointer>
 struct EliasFanoCompressedListBase {
@@ -64,7 +68,9 @@ struct EliasFanoCompressedListBase {
     return ::free(data.data());
   }
 
-  size_t upperSize() const { return data.end() - upper; }
+  size_t upperSize() const {
+    return size_t(data.end() - upper);
+  }
 
   size_t size = 0;
   uint8_t numLowerBits = 0;
@@ -82,10 +88,11 @@ struct EliasFanoCompressedListBase {
 typedef EliasFanoCompressedListBase<const uint8_t*> EliasFanoCompressedList;
 typedef EliasFanoCompressedListBase<uint8_t*> MutableEliasFanoCompressedList;
 
-template <class Value,
-          class SkipValue = size_t,
-          size_t kSkipQuantum = 0,     // 0 = disabled
-          size_t kForwardQuantum = 0>  // 0 = disabled
+template <
+    class Value,
+    class SkipValue = size_t,
+    size_t kSkipQuantum = 0, // 0 = disabled
+    size_t kForwardQuantum = 0> // 0 = disabled
 struct EliasFanoEncoderV2 {
   static_assert(std::is_integral<Value>::value &&
                     std::is_unsigned<Value>::value,
@@ -102,11 +109,17 @@ struct EliasFanoEncoderV2 {
   static constexpr size_t forwardQuantum = kForwardQuantum;
 
   static uint8_t defaultNumLowerBits(size_t upperBound, size_t size) {
-    if (size == 0 || upperBound < size) {
+    if (UNLIKELY(size == 0 || upperBound < size)) {
       return 0;
     }
-    // floor(log(upperBound / size));
-    return folly::findLastSet(upperBound / size) - 1;
+    // Result that should be returned is "floor(log(upperBound / size))".
+    // In order to avoid expensive division, we rely on
+    // "floor(a) - floor(b) - 1 <= floor(a - b) <= floor(a) - floor(b)".
+    // Assuming "candidate = floor(log(upperBound)) - floor(log(upperBound))",
+    // then result is either "candidate - 1" or "candidate".
+    auto candidate = folly::findLastSet(upperBound) - folly::findLastSet(size);
+    // NOTE: As size != 0, "candidate" is always < 64.
+    return (size > (upperBound >> candidate)) ? candidate - 1 : candidate;
   }
 
   // Requires: input range (begin, end) is sorted (encoding
@@ -120,7 +133,7 @@ struct EliasFanoEncoderV2 {
     if (begin == end) {
       return MutableCompressedList();
     }
-    EliasFanoEncoderV2 encoder(end - begin, *(end - 1));
+    EliasFanoEncoderV2 encoder(size_t(end - begin), *(end - 1));
     for (; begin != end; ++begin) {
       encoder.add(*begin);
     }
@@ -135,7 +148,7 @@ struct EliasFanoEncoderV2 {
         forwardPointers_(reinterpret_cast<SkipValueType*>(
               result.forwardPointers)),
         result_(result) {
-    std::fill(result.data.begin(), result.data.end(), 0);
+    std::fill(result.data.begin(), result.data.end(), '\0');
   }
 
   EliasFanoEncoderV2(size_t size, ValueType upperBound)
@@ -161,15 +174,15 @@ struct EliasFanoEncoderV2 {
     /* static */ if (skipQuantum != 0) {
       while ((skipPointersSize_ + 1) * skipQuantum <= upperBits) {
         // Store the number of preceding 1-bits.
-        skipPointers_[skipPointersSize_++] = size_;
+        skipPointers_[skipPointersSize_++] = SkipValue(size_);
       }
     }
 
     /* static */ if (forwardQuantum != 0) {
       if ((size_ + 1) % forwardQuantum == 0) {
-        const auto pos = size_ / forwardQuantum;
+        const auto k = size_ / forwardQuantum;
         // Store the number of preceding 0-bits.
-        forwardPointers_[pos] = upperBits;
+        forwardPointers_[k] = upperBits;
       }
     }
 
@@ -206,10 +219,11 @@ struct EliasFanoEncoderV2 {
   MutableCompressedList result_;
 };
 
-template <class Value,
-          class SkipValue,
-          size_t kSkipQuantum,
-          size_t kForwardQuantum>
+template <
+    class Value,
+    class SkipValue,
+    size_t kSkipQuantum,
+    size_t kForwardQuantum>
 struct EliasFanoEncoderV2<Value,
                           SkipValue,
                           kSkipQuantum,
@@ -255,9 +269,7 @@ struct EliasFanoEncoderV2<Value,
       // more serialization-friendly way (upperSizeBits doesn't need
       // to be known by this function, unlike upper).
 
-      // '?: 1' is a workaround for false 'division by zero'
-      // compile-time error.
-      size_t numSkipPointers = (8 * upper - size) / (skipQuantum ?: 1);
+      size_t numSkipPointers = (8 * upper - size) / skipQuantum;
       layout.skipPointers = numSkipPointers * sizeof(SkipValueType);
     }
 
@@ -265,7 +277,7 @@ struct EliasFanoEncoderV2<Value,
     // Store (1-indexed) position of every forwardQuantum-th
     // 1-bit in upper bits sequence.
     /* static */ if (forwardQuantum != 0) {
-      size_t numForwardPointers = size / (forwardQuantum ?: 1);
+      size_t numForwardPointers = size / forwardQuantum;
       layout.forwardPointers = numForwardPointers * sizeof(SkipValueType);
     }
 
@@ -324,29 +336,33 @@ struct EliasFanoEncoderV2<Value,
 
 namespace detail {
 
-template <class Encoder, class Instructions>
-class UpperBitsReader {
+template <class Encoder, class Instructions, class SizeType>
+class UpperBitsReader : ForwardPointers<Encoder::forwardQuantum>,
+                        SkipPointers<Encoder::skipQuantum> {
   typedef typename Encoder::SkipValueType SkipValueType;
  public:
   typedef typename Encoder::ValueType ValueType;
 
   explicit UpperBitsReader(const typename Encoder::CompressedList& list)
-      : forwardPointers_(list.forwardPointers),
-        skipPointers_(list.skipPointers),
+      : ForwardPointers<Encoder::forwardQuantum>(list.forwardPointers),
+        SkipPointers<Encoder::skipQuantum>(list.skipPointers),
         start_(list.upper) {
     reset();
   }
 
   void reset() {
     block_ = start_ != nullptr ? folly::loadUnaligned<block_t>(start_) : 0;
+    position_ = std::numeric_limits<SizeType>::max();
     outer_ = 0;
-    inner_ = -1;
-    position_ = -1;
     value_ = 0;
   }
 
-  size_t position() const { return position_; }
-  ValueType value() const { return value_; }
+  SizeType position() const {
+    return position_;
+  }
+  ValueType value() const {
+    return value_;
+  }
 
   ValueType next() {
     // Skip to the first non-zero block.
@@ -356,30 +372,25 @@ class UpperBitsReader {
     }
 
     ++position_;
-    inner_ = Instructions::ctz(block_);
+    size_t inner = Instructions::ctz(block_);
     block_ = Instructions::blsr(block_);
 
-    return setValue();
+    return setValue(inner);
   }
 
-  ValueType skip(size_t n) {
+  ValueType skip(SizeType n) {
     DCHECK_GT(n, 0);
 
     position_ += n;  // n 1-bits will be read.
 
     // Use forward pointer.
     if (Encoder::forwardQuantum > 0 && n > Encoder::forwardQuantum) {
-      // Workaround to avoid 'division by zero' compile-time error.
-      constexpr size_t q = Encoder::forwardQuantum ?: 1;
+      const size_t steps = position_ / Encoder::forwardQuantum;
+      const size_t dest = folly::loadUnaligned<SkipValueType>(
+          this->forwardPointers_ + (steps - 1) * sizeof(SkipValueType));
 
-      const size_t steps = position_ / q;
-      const size_t dest =
-        folly::loadUnaligned<SkipValueType>(
-            forwardPointers_ + (steps - 1) * sizeof(SkipValueType));
-
-      reposition(dest + steps * q);
-      n = position_ + 1 - steps * q;  // n is > 0.
-      // Correct inner_ will be set at the end.
+      reposition(dest + steps * Encoder::forwardQuantum);
+      n = position_ + 1 - steps * Encoder::forwardQuantum; // n is > 0.
     }
 
     size_t cnt;
@@ -392,10 +403,10 @@ class UpperBitsReader {
 
     // Skip to the n-th one in the block.
     DCHECK_GT(n, 0);
-    inner_ = select64<Instructions>(block_, n - 1);
-    block_ &= (block_t(-1) << inner_) << 1;
+    size_t inner = select64<Instructions>(block_, n - 1);
+    block_ &= (block_t(-1) << inner) << 1;
 
-    return setValue();
+    return setValue(inner);
   }
 
   // Skip to the first element that is >= v and located *after* the current
@@ -405,19 +416,14 @@ class UpperBitsReader {
 
     // Use skip pointer.
     if (Encoder::skipQuantum > 0 && v >= value_ + Encoder::skipQuantum) {
-      // Workaround to avoid 'division by zero' compile-time error.
-      constexpr size_t q = Encoder::skipQuantum ?: 1;
+      const size_t steps = v / Encoder::skipQuantum;
+      const size_t dest = folly::loadUnaligned<SkipValueType>(
+          this->skipPointers_ + (steps - 1) * sizeof(SkipValueType));
 
-      const size_t steps = v / q;
-      const size_t dest =
-        folly::loadUnaligned<SkipValueType>(
-            skipPointers_ + (steps - 1) * sizeof(SkipValueType));
-
-      reposition(dest + q * steps);
+      reposition(dest + Encoder::skipQuantum * steps);
       position_ = dest - 1;
 
-      // Correct inner_ and value_ will be set during the next()
-      // call at the end.
+      // Correct value_ will be set during the next() call at the end.
 
       // NOTE: Corresponding block of lower bits sequence may be
       // prefetched here (via __builtin_prefetch), but experiments
@@ -446,11 +452,44 @@ class UpperBitsReader {
     return value_;
   }
 
+  /**
+   * Prepare to skip to `value`. This is a constant-time operation that will
+   * prefetch memory required for a `skipTo(value)` call.
+   *
+   * @return position of reader
+   */
+  SizeType prepareSkipTo(ValueType v) const {
+    auto position = position_;
+
+    if (Encoder::skipQuantum > 0 && v >= value_ + Encoder::skipQuantum) {
+      auto outer = outer_;
+      const size_t steps = v / Encoder::skipQuantum;
+      const size_t dest = folly::loadUnaligned<SkipValueType>(
+          this->skipPointers_ + (steps - 1) * sizeof(SkipValueType));
+
+      position = dest - 1;
+      outer = (dest + Encoder::skipQuantum * steps) / 8;
+
+      // Prefetch up to the beginning of where we linear search. After that,
+      // hardware prefetching will outperform our own. In addition, this
+      // simplifies calculating what to prefetch as we don't have to calculate
+      // the entire destination address. Two cache lines are prefetched because
+      // this results in fewer cycles used (based on practical results) than
+      // one. However, three cache lines does not have any additional effect.
+      const auto addr = start_ + outer;
+      __builtin_prefetch(addr);
+      __builtin_prefetch(addr + kCacheLineSize);
+    }
+
+    return position;
+  }
+
   ValueType jump(size_t n) {
     if (Encoder::forwardQuantum == 0 || n <= Encoder::forwardQuantum) {
       reset();
     } else {
-      position_ = -1;  // Avoid reading the head, skip() will reposition.
+      // Avoid reading the head, skip() will reposition.
+      position_ = std::numeric_limits<SizeType>::max();
     }
     return skip(n);
   }
@@ -465,68 +504,71 @@ class UpperBitsReader {
   }
 
   ValueType previousValue() const {
-    DCHECK_NE(position(), -1);
+    DCHECK_NE(position(), std::numeric_limits<SizeType>::max());
     DCHECK_GT(position(), 0);
 
-    size_t outer = outer_;
+    auto outer = outer_;
+    auto inner = size_t(value_) - 8 * outer_ + position_;
     block_t block = folly::loadUnaligned<block_t>(start_ + outer);
-    block &= (block_t(1) << inner_) - 1;
+    block &= (block_t(1) << inner) - 1;
 
     while (UNLIKELY(block == 0)) {
-      DCHECK_GE(outer, sizeof(block_t));
-      outer -= sizeof(block_t);
+      DCHECK_GT(outer, 0);
+      outer -= std::min<OuterType>(sizeof(block_t), outer);
       block = folly::loadUnaligned<block_t>(start_ + outer);
     }
 
-    auto inner = 8 * sizeof(block_t) - 1 - Instructions::clz(block);
+    inner = 8 * sizeof(block_t) - 1 - Instructions::clz(block);
     return static_cast<ValueType>(8 * outer + inner - (position_ - 1));
   }
 
-  void setDone(size_t endPos) {
+  void setDone(SizeType endPos) {
     position_ = endPos;
   }
 
  private:
-  ValueType setValue() {
-    value_ = static_cast<ValueType>(8 * outer_ + inner_ - position_);
+  ValueType setValue(size_t inner) {
+    value_ = static_cast<ValueType>(8 * outer_ + inner - position_);
     return value_;
   }
 
-  void reposition(size_t dest) {
+  void reposition(SizeType dest) {
     outer_ = dest / 8;
     block_ = folly::loadUnaligned<block_t>(start_ + outer_);
     block_ &= ~((block_t(1) << (dest % 8)) - 1);
   }
 
-  typedef uint64_t block_t;
-  const unsigned char* const forwardPointers_;
-  const unsigned char* const skipPointers_;
+  using block_t = uint64_t;
+  // The size in bytes of the upper bits is limited by n + universe / 8,
+  // so a type that can hold either sizes or values is sufficient.
+  using OuterType = typename std::common_type<ValueType, SizeType>::type;
+
   const unsigned char* const start_;
   block_t block_;
-  size_t outer_;  // Outer offset: number of consumed bytes in upper.
-  size_t inner_;  // Inner offset: (bit) position in current block.
-  size_t position_;  // Index of current value (= #reads - 1).
+  SizeType position_; // Index of current value (= #reads - 1).
+  OuterType outer_; // Outer offset: number of consumed bytes in upper.
   ValueType value_;
 };
 
-}  // namespace detail
+} // namespace detail
 
 // If kUnchecked = true the caller must guarantee that all the
 // operations return valid elements, i.e., they would never return
 // false if checked.
-template <class Encoder,
-          class Instructions = instructions::Default,
-          bool kUnchecked = false>
+template <
+    class Encoder,
+    class Instructions = instructions::Default,
+    bool kUnchecked = false,
+    class SizeType = size_t>
 class EliasFanoReader {
  public:
   typedef Encoder EncoderType;
   typedef typename Encoder::ValueType ValueType;
 
   explicit EliasFanoReader(const typename Encoder::CompressedList& list)
-      : size_(list.size),
+      : upper_(list),
         lower_(list.lower),
-        upper_(list),
-        lowerMask_((ValueType(1) << list.numLowerBits) - 1),
+        size_(list.size),
         numLowerBits_(list.numLowerBits) {
     DCHECK(Instructions::supported());
     // To avoid extra branching during skipTo() while reading
@@ -537,7 +579,7 @@ class EliasFanoReader {
       lastValue_ = 0;
       return;
     }
-    ValueType lastUpperValue = 8 * list.upperSize() - size_;
+    ValueType lastUpperValue = ValueType(8 * list.upperSize() - size_);
     auto it = list.upper + list.upperSize() - 1;
     DCHECK_NE(*it, 0);
     lastUpperValue -= 8 - folly::findLastSet(*it);
@@ -559,12 +601,14 @@ class EliasFanoReader {
     return true;
   }
 
-  bool skip(size_t n) {
+  bool skip(SizeType n) {
     CHECK_GT(n, 0);
 
     if (kUnchecked || LIKELY(position() + n < size_)) {
       if (LIKELY(n < kLinearScanThreshold)) {
-        for (size_t i = 0; i < n; ++i) upper_.next();
+        for (SizeType i = 0; i < n; ++i) {
+          upper_.next();
+        }
       } else {
         upper_.skip(n);
       }
@@ -586,8 +630,8 @@ class EliasFanoReader {
       return true;
     }
 
-    size_t upperValue = (value >> numLowerBits_);
-    size_t upperSkip = upperValue - upper_.value();
+    ValueType upperValue = (value >> numLowerBits_);
+    ValueType upperSkip = upperValue - upper_.value();
     // The average density of ones in upper bits is 1/2.
     // LIKELY here seems to make things worse, even for small skips.
     if (upperSkip < 2 * kLinearScanThreshold) {
@@ -602,7 +646,30 @@ class EliasFanoReader {
     return true;
   }
 
-  bool jump(size_t n) {
+  /**
+   * Prepare to skip to `value` by prefetching appropriate memory in both the
+   * upper and lower bits.
+   */
+  void prepareSkipTo(ValueType value) const {
+    // Also works when value_ == kInvalidValue.
+    if (value != kInvalidValue) {
+      DCHECK_GE(value + 1, value_ + 1);
+    }
+
+    if ((!kUnchecked && value > lastValue_) || (value == value_)) {
+      return;
+    }
+
+    // Do minimal computation required to prefetch address used in
+    // `readLowerPart()`.
+    ValueType upperValue = (value >> numLowerBits_);
+    const auto upperPosition = upper_.prepareSkipTo(upperValue);
+    const auto addr = lower_ + (upperPosition * numLowerBits_ / 8);
+    __builtin_prefetch(addr);
+    __builtin_prefetch(addr + kCacheLineSize);
+  }
+
+  bool jump(SizeType n) {
     if (LIKELY(n < size_)) {  // Also checks that n != -1.
       value_ = readLowerPart(n) | (upper_.jump(n + 1) << numLowerBits_);
       return true;
@@ -627,21 +694,26 @@ class EliasFanoReader {
       (upper_.previousValue() << numLowerBits_);
   }
 
-  size_t size() const { return size_; }
+  SizeType size() const {
+    return size_;
+  }
 
   bool valid() const {
     return position() < size(); // Also checks that position() != -1.
   }
 
-  size_t position() const { return upper_.position(); }
+  SizeType position() const {
+    return upper_.position();
+  }
   ValueType value() const {
     DCHECK(valid());
     return value_;
   }
 
  private:
+  // Must hold kInvalidValue + 1 == 0.
   constexpr static ValueType kInvalidValue =
-    std::numeric_limits<ValueType>::max();  // Must hold kInvalidValue + 1 == 0.
+      std::numeric_limits<ValueType>::max();
 
   bool setDone() {
     value_ = kInvalidValue;
@@ -649,32 +721,37 @@ class EliasFanoReader {
     return false;
   }
 
-  ValueType readLowerPart(size_t i) const {
+  ValueType readLowerPart(SizeType i) const {
     DCHECK_LT(i, size_);
     const size_t pos = i * numLowerBits_;
     const unsigned char* ptr = lower_ + (pos / 8);
     const uint64_t ptrv = folly::loadUnaligned<uint64_t>(ptr);
-    return lowerMask_ & (ptrv >> (pos % 8));
+    // This removes the branch in the fallback implementation of
+    // bzhi. The condition is verified at encoding time.
+    assume(numLowerBits_ < sizeof(ValueType) * 8);
+    return Instructions::bzhi(ptrv >> (pos % 8), numLowerBits_);
   }
 
   void iterateTo(ValueType value) {
     while (true) {
       value_ = readLowerPart(upper_.position()) |
         (upper_.value() << numLowerBits_);
-      if (LIKELY(value_ >= value)) break;
+      if (LIKELY(value_ >= value)) {
+        break;
+      }
       upper_.next();
     }
   }
 
   constexpr static size_t kLinearScanThreshold = 8;
 
-  size_t size_;
+  detail::UpperBitsReader<Encoder, Instructions, SizeType> upper_;
   const uint8_t* lower_;
-  detail::UpperBitsReader<Encoder, Instructions> upper_;
-  const ValueType lowerMask_;
+  SizeType size_;
   ValueType value_ = kInvalidValue;
   ValueType lastValue_;
   uint8_t numLowerBits_;
 };
 
-}}  // namespaces
+} // namespace compression
+} // namespace folly

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,9 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/experimental/bser/Bser.h>
+
 #include <folly/String.h>
-#include <gtest/gtest.h>
+#include <folly/portability/GTest.h>
 
 using folly::dynamic;
 
@@ -34,7 +36,7 @@ static const dynamic roundtrips[] = {
     nullptr,
     1.5,
     "hello",
-    {1, 2, 3},
+    folly::dynamic::array(1, 2, 3),
     dynamic::object("key", "value")("otherkey", "otherval"),
 };
 
@@ -47,11 +49,10 @@ const uint8_t template_blob[] =
     "\x1e\x0c\x03\x19";
 
 // and here's what it represents
-static const dynamic template_dynamic = {
+static const dynamic template_dynamic = folly::dynamic::array(
     dynamic::object("name", "fred")("age", 20),
     dynamic::object("name", "pete")("age", 30),
-    dynamic::object("name", nullptr)("age", 25),
-};
+    dynamic::object("name", nullptr)("age", 25));
 
 TEST(Bser, RoundTrip) {
   dynamic decoded(nullptr);
@@ -66,7 +67,8 @@ TEST(Bser, RoundTrip) {
     } catch (const std::exception& err) {
       LOG(ERROR) << err.what() << "\nInput: " << dyn.typeName() << ": " << dyn
                  << " decoded back as " << decoded.typeName() << ": " << decoded
-                 << "\n" << folly::hexDump(str.data(), str.size());
+                 << "\n"
+                 << folly::hexDump(str.data(), str.size());
       throw;
     }
   }
@@ -79,33 +81,37 @@ TEST(Bser, Template) {
   decoded = folly::bser::parseBser(
       folly::ByteRange(template_blob, sizeof(template_blob) - 1));
   EXPECT_EQ(decoded, template_dynamic)
-      << "Didn't load template value."
-         "\nInput: " << template_dynamic.typeName() << ": " << template_dynamic
+      << "Didn't load template value.\n"
+      << "Input: " << template_dynamic.typeName() << ": " << template_dynamic
       << " decoded back as " << decoded.typeName() << ": " << decoded << "\n"
       << folly::hexDump(template_blob, sizeof(template_blob) - 1);
 
   // Now check that we can generate this same data representation
   folly::bser::serialization_opts opts;
-  folly::bser::serialization_opts::TemplateMap templates = {
-      std::make_pair(&decoded, folly::dynamic{"name", "age"})};
+  folly::bser::serialization_opts::TemplateMap templates = {std::make_pair(
+      &decoded, folly::dynamic(folly::dynamic::array("name", "age")))};
   opts.templates = templates;
 
   str = folly::bser::toBser(decoded, opts);
-  EXPECT_EQ(folly::ByteRange((const uint8_t*)str.data(), str.size()),
-            folly::ByteRange(template_blob, sizeof(template_blob) - 1))
+  EXPECT_EQ(
+      folly::ByteRange((const uint8_t*)str.data(), str.size()),
+      folly::ByteRange(template_blob, sizeof(template_blob) - 1))
       << "Expected:\n"
       << folly::hexDump(template_blob, sizeof(template_blob) - 1) << "\nGot:\n"
       << folly::hexDump(str.data(), str.size());
 }
 
 TEST(Bser, PduLength) {
-  EXPECT_THROW([] {
-    // Try to decode PDU for a short buffer that doesn't even have the
-    // complete length available
-    auto buf = folly::IOBuf::wrapBuffer(template_blob, 3);
-    auto len = folly::bser::decodePduLength(&*buf);
-    LOG(ERROR) << "managed to return a length, but only had 3 bytes";
-  }(), std::out_of_range);
+  EXPECT_THROW(
+      [] {
+        // Try to decode PDU for a short buffer that doesn't even have the
+        // complete length available
+        auto buf = folly::IOBuf::wrapBuffer(template_blob, 3);
+        auto len = folly::bser::decodePduLength(&*buf);
+        (void)len;
+        LOG(ERROR) << "managed to return a length, but only had 3 bytes";
+      }(),
+      std::out_of_range);
 
   auto buf = folly::IOBuf::wrapBuffer(template_blob, sizeof(template_blob));
   auto len = folly::bser::decodePduLength(&*buf);

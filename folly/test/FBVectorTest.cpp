@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,17 +17,19 @@
 //
 // Author: andrei.alexandrescu@fb.com
 
-#include <folly/Foreach.h>
-#include <folly/Traits.h>
-#include <folly/Random.h>
-#include <folly/FBString.h>
 #include <folly/FBVector.h>
 
-#include <gtest/gtest.h>
 #include <list>
 #include <map>
 #include <memory>
+
 #include <boost/random.hpp>
+
+#include <folly/FBString.h>
+#include <folly/Random.h>
+#include <folly/Traits.h>
+#include <folly/container/Foreach.h>
+#include <folly/portability/GTest.h>
 
 using namespace std;
 using namespace folly;
@@ -60,12 +62,12 @@ void Num2String(String& str, Integral /* n */) {
   str.resize(strlen(str.c_str()));
 }
 
-template<class T> T randomObject();
+template <class T> T randomObject();
 
-template<> int randomObject<int>() {
+template <> int randomObject<int>() {
   return random(0, 1024);
 }
-}
+} // namespace
 
 ////////////////////////////////////////////////////////////////////////////////
 // Tests begin here
@@ -101,11 +103,11 @@ TEST(fbvector, clause_23_3_6_2_6) {
 
 TEST(fbvector, clause_23_3_6_4_ambiguity) {
   fbvector<int> v;
-  fbvector<int>::const_iterator i = v.end();
-  v.insert(i, 10, 20);
+  fbvector<int>::const_iterator it = v.end();
+  v.insert(it, 10, 20);
   EXPECT_EQ(v.size(), 10);
-  FOR_EACH (i, v) {
-    EXPECT_EQ(*i, 20);
+  for (auto i : v) {
+    EXPECT_EQ(i, 20);
   }
 }
 
@@ -121,7 +123,7 @@ TEST(fbvector, works_with_std_string) {
 
 namespace {
 class UserDefinedType { int whatevs_; };
-}
+} // namespace
 
 FOLLY_ASSUME_FBVECTOR_COMPATIBLE(UserDefinedType);
 
@@ -189,7 +191,7 @@ TEST(fbvector, unique_ptr) {
 
   v[0] = std::move(p);
   EXPECT_FALSE(v[0].get());
-  v[0].reset(new int(32));
+  v[0] = std::make_unique<int>(32);
   std::unique_ptr<int> somePtr;
   v.insert(v.begin(), std::move(somePtr));
   EXPECT_EQ(*v[1], 32);
@@ -267,4 +269,18 @@ TEST(FBVector, shrink_to_fit_after_clear) {
   fb1.shrink_to_fit();
   EXPECT_EQ(fb1.size(), 0);
   EXPECT_EQ(fb1.capacity(), 0);
+}
+
+TEST(FBVector, zero_len) {
+  fbvector<int> fb1(0);
+  fbvector<int> fb2(0, 10);
+  fbvector<int> fb3(std::move(fb1));
+  fbvector<int> fb4;
+  fb4 = std::move(fb2);
+  fbvector<int> fb5 = fb3;
+  fbvector<int> fb6;
+  fb6 = fb4;
+  std::initializer_list<int> il = {};
+  fb6 = il;
+  fbvector<int> fb7(fb6.begin(), fb6.end());
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,11 +16,26 @@
 
 #pragma once
 
-#include <folly/ThreadLocal.h>
 #include <folly/Singleton.h>
+#include <folly/ThreadLocal.h>
 
 namespace folly {
 
+// SingletonThreadLocal
+//
+// This class can help you implement a per-thread leaky-singleton model within
+// your application. Please read the usage block at the top of Singleton.h as
+// the recommendations there are also generally applicable to this class.
+//
+// When we say this is "leaky" we mean that the T instances held by a
+// SingletonThreadLocal<T> will survive until their owning thread exits,
+// regardless of the lifetime of the singleton object holding them.  That
+// means that they can be safely used during process shutdown, and
+// that they can also be safely used in an application that spawns many
+// temporary threads throughout its life.
+//
+// Keywords to help people find this class in search:
+// Thread Local Singleton ThreadLocalSingleton
 template <typename T, typename Tag = detail::DefaultTag>
 class SingletonThreadLocal {
  public:
@@ -77,4 +92,4 @@ class SingletonThreadLocal {
 
   SingletonT singleton_;
 };
-}
+} // namespace folly

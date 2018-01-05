@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,9 @@
 #include <folly/portability/Stdio.h>
 
 #ifdef _WIN32
+
 #include <cstdlib>
+
 #include <folly/ScopeGuard.h>
 #include <folly/portability/Unistd.h>
 
@@ -25,24 +27,34 @@ extern "C" {
 int dprintf(int fd, const char* fmt, ...) {
   va_list args;
   va_start(args, fmt);
-  SCOPE_EXIT { va_end(args); };
+  SCOPE_EXIT {
+    va_end(args);
+  };
 
-  int len = vsnprintf(nullptr, 0, fmt, args);
-  if (len <= 0) {
+  int ret = vsnprintf(nullptr, 0, fmt, args);
+  if (ret <= 0) {
     return -1;
   }
+  size_t len = size_t(ret);
   char* buf = new char[len + 1];
-  SCOPE_EXIT { delete[] buf; };
-  if (vsnprintf(buf, len + 1, fmt, args) == len && write(fd, buf, len) == len) {
-    return len;
+  SCOPE_EXIT {
+    delete[] buf;
+  };
+  if (size_t(vsnprintf(buf, len + 1, fmt, args)) == len &&
+      write(fd, buf, len) == ssize_t(len)) {
+    return ret;
   }
 
   return -1;
 }
 
-int pclose(FILE* f) { return _pclose(f); }
+int pclose(FILE* f) {
+  return _pclose(f);
+}
 
-FILE* popen(const char* name, const char* mode) { return _popen(name, mode); }
+FILE* popen(const char* name, const char* mode) {
+  return _popen(name, mode);
+}
 
 void setbuffer(FILE* f, char* buf, size_t size) {
   setvbuf(f, buf, _IOFBF, size);
@@ -53,12 +65,13 @@ int vasprintf(char** dest, const char* format, va_list ap) {
   if (len <= 0) {
     return -1;
   }
-  char* buf = *dest = (char*)malloc(len + 1);
-  if (vsnprintf(buf, len + 1, format, ap) == len) {
+  char* buf = *dest = (char*)malloc(size_t(len + 1));
+  if (vsnprintf(buf, size_t(len + 1), format, ap) == len) {
     return len;
   }
   free(buf);
   return -1;
 }
 }
+
 #endif

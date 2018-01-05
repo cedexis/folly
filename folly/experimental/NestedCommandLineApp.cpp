@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 #include <folly/experimental/NestedCommandLineApp.h>
 
 #include <iostream>
+
 #include <folly/FileUtil.h>
 #include <folly/Format.h>
 #include <folly/experimental/io/FsUtil.h>
@@ -36,7 +37,7 @@ std::string guessProgramName() {
   }
 }
 
-}  // namespace
+} // namespace
 
 ProgramExit::ProgramExit(int status, const std::string& msg)
   : std::runtime_error(msg),
@@ -48,11 +49,15 @@ ProgramExit::ProgramExit(int status, const std::string& msg)
 NestedCommandLineApp::NestedCommandLineApp(
     std::string programName,
     std::string version,
+    std::string programHeading,
+    std::string programHelpFooter,
     InitFunction initFunction)
-  : programName_(std::move(programName)),
-    version_(std::move(version)),
-    initFunction_(std::move(initFunction)),
-    globalOptions_("Global options") {
+    : programName_(std::move(programName)),
+      programHeading_(std::move(programHeading)),
+      programHelpFooter_(std::move(programHelpFooter)),
+      version_(std::move(version)),
+      initFunction_(std::move(initFunction)),
+      globalOptions_("Global options") {
   addCommand("help", "[command]",
              "Display help (globally or for a given command)",
              "Displays help (globally or for a given command).",
@@ -101,8 +106,10 @@ void NestedCommandLineApp::displayHelp(
   if (args.empty()) {
     // General help
     printf(
-        "Usage: %s [global_options...] <command> [command_options...] "
-        "[command_args...]\n\n", programName_.c_str());
+        "%s\nUsage: %s [global_options...] <command> [command_options...] "
+        "[command_args...]\n\n",
+        programHeading_.c_str(),
+        programName_.c_str());
     std::cout << globalOptions_;
     printf("\nAvailable commands:\n");
 
@@ -126,6 +133,7 @@ void NestedCommandLineApp::displayHelp(
                int(maxLen), p.first.c_str(), resolveAlias(p.second).c_str());
       }
     }
+    std::cout << "\n" << programHelpFooter_ << "\n";
   } else {
     // Help for a given command
     auto& p = findCommand(args.front());
@@ -143,14 +151,14 @@ void NestedCommandLineApp::displayHelp(
         info.argStr.empty() ? "" : " ",
         info.argStr.c_str());
 
+    printf("%s\n", info.fullHelp.c_str());
+
     std::cout << globalOptions_;
 
     if (!info.options.options().empty()) {
       printf("\n");
       std::cout << info.options;
     }
-
-    printf("\n%s\n", info.fullHelp.c_str());
   }
 }
 
@@ -263,4 +271,4 @@ void NestedCommandLineApp::doRun(const std::vector<std::string>& args) {
   info.command(vm, cmdArgs);
 }
 
-}  // namespaces
+} // namespace folly

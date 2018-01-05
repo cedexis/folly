@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,20 +16,20 @@
 
 #include <folly/AtomicUnorderedMap.h>
 
-#include <semaphore.h>
+#include <memory>
 #include <thread>
 #include <unordered_map>
 
-#include <gtest/gtest.h>
-
 #include <folly/Benchmark.h>
 #include <folly/portability/GFlags.h>
+#include <folly/portability/GTest.h>
+#include <folly/portability/Semaphore.h>
 #include <folly/test/DeterministicSchedule.h>
 
 using namespace folly;
 using namespace folly::test;
 
-template<class T>
+template <class T>
 struct non_atomic {
   T value;
 
@@ -89,11 +89,12 @@ struct non_atomic {
   bool is_lock_free() const {return true;}
 };
 
-template <typename Key,
-          typename Value,
-          typename IndexType,
-          template <typename> class Atom = std::atomic,
-          typename Allocator = std::allocator<char>>
+template <
+    typename Key,
+    typename Value,
+    typename IndexType,
+    template <typename> class Atom = std::atomic,
+    typename Allocator = std::allocator<char>>
 using UIM =
     AtomicUnorderedInsertMap<Key,
                              Value,
@@ -108,7 +109,7 @@ using UIM =
 namespace {
 template <typename T>
 struct AtomicUnorderedInsertMapTest : public ::testing::Test {};
-}
+} // namespace
 
 // uint16_t doesn't make sense for most platforms, but we might as well
 // test it
@@ -207,7 +208,7 @@ BENCHMARK(lookup_int_int_hit, iters) {
   size_t capacity = 100000;
 
   BENCHMARK_SUSPEND {
-    ptr.reset(new AtomicUnorderedInsertMap<int,size_t>(capacity));
+    ptr = std::make_unique<AtomicUnorderedInsertMap<int, size_t>>(capacity);
     for (size_t i = 0; i < capacity; ++i) {
       auto k = 3 * ((5641 * i) % capacity);
       ptr->emplace(k, k + 1);
@@ -249,7 +250,7 @@ void contendedRW(size_t itersPerThread,
   std::vector<std::thread> threads;
 
   BENCHMARK_SUSPEND {
-    ptr.reset(new Map(capacity));
+    ptr = std::make_unique<Map>(capacity);
     while (threads.size() < numThreads) {
       threads.emplace_back([&](){
         while (!go) {
@@ -276,7 +277,7 @@ void contendedRW(size_t itersPerThread,
               if (!pr.second) {
                 pr.first->second.data++;
               }
-            } catch (std::bad_alloc& x) {
+            } catch (std::bad_alloc&) {
               LOG(INFO) << "bad alloc";
             }
           }
@@ -397,7 +398,7 @@ BENCHMARK(fast_map_64) {
 
 int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   int rv = RUN_ALL_TESTS();
   folly::runBenchmarksOnFlag();
   return rv;

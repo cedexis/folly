@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,8 +17,8 @@
 #include <folly/File.h>
 
 #include <folly/String.h>
-
-#include <gtest/gtest.h>
+#include <folly/portability/Fcntl.h>
+#include <folly/portability/GTest.h>
 
 using namespace folly;
 
@@ -32,7 +32,7 @@ void expectOK(ssize_t r) {
   int savedErrno = errno;
   EXPECT_LE(0, r) << ": errno=" << errnoStr(savedErrno);
 }
-}  // namespace
+} // namespace
 
 TEST(File, Simple) {
   // Open a file, ensure it's indeed open for reading
@@ -118,20 +118,30 @@ TEST(File, Truthy) {
   if (temp) {
     ;
   } else {
-    EXPECT_FALSE(true);
+    ADD_FAILURE();
   }
 
   if (File file = File::temporary()) {
     ;
   } else {
-    EXPECT_FALSE(true);
+    ADD_FAILURE();
   }
 
   EXPECT_FALSE(bool(File()));
   if (File()) {
-    EXPECT_TRUE(false);
+    ADD_FAILURE();
   }
   if (File notOpened = File()) {
-    EXPECT_TRUE(false);
+    ADD_FAILURE();
   }
+}
+
+TEST(File, HelperCtor) {
+  File::makeFile(StringPiece("/etc/hosts")).then([](File&& f) {
+    char buf = 'x';
+    EXPECT_NE(-1, f.fd());
+    EXPECT_EQ(1, ::read(f.fd(), &buf, 1));
+    f.close();
+    EXPECT_EQ(-1, f.fd());
+  });
 }

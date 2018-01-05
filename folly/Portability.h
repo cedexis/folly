@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,17 +16,11 @@
 
 #pragma once
 
-#include <string.h>
-
 #include <cstddef>
 
 #include <folly/portability/Config.h>
 
 #include <folly/CPortability.h>
-
-#if FOLLY_HAVE_SCHED_H
- #include <sched.h>
-#endif
 
 // Unaligned loads and stores
 namespace folly {
@@ -35,19 +29,10 @@ constexpr bool kHasUnalignedAccess = true;
 #else
 constexpr bool kHasUnalignedAccess = false;
 #endif
-}
+} // namespace folly
 
 // compiler specific attribute translation
 // msvc should come first, so if clang is in msvc mode it gets the right defines
-
-#if defined(__clang__) || defined(__GNUC__)
-# define FOLLY_ALIGNED(size) __attribute__((__aligned__(size)))
-#elif defined(_MSC_VER)
-# define FOLLY_ALIGNED(size) __declspec(align(size))
-#else
-# error Cannot define FOLLY_ALIGNED on this platform
-#endif
-#define FOLLY_ALIGNED_MAX FOLLY_ALIGNED(alignof(std::max_align_t))
 
 // NOTE: this will only do checking in msvc with versions that support /analyze
 #if _MSC_VER
@@ -56,7 +41,7 @@ constexpr bool kHasUnalignedAccess = false;
 # endif
 /* nolint */
 # define _USE_ATTRIBUTES_FOR_SAL 1
-# include <sal.h>
+# include <sal.h> // @manual
 # define FOLLY_PRINTF_FORMAT _Printf_format_string_
 # define FOLLY_PRINTF_FORMAT_ATTR(format_param, dots_param) /**/
 #else
@@ -74,22 +59,20 @@ constexpr bool kHasUnalignedAccess = false;
 # define FOLLY_DEPRECATED(msg)
 #endif
 
-// noinline
-#ifdef _MSC_VER
-# define FOLLY_NOINLINE __declspec(noinline)
-#elif defined(__clang__) || defined(__GNUC__)
-# define FOLLY_NOINLINE __attribute__((__noinline__))
-#else
-# define FOLLY_NOINLINE
+// warn unused result
+#if defined(__has_cpp_attribute)
+#if __has_cpp_attribute(nodiscard)
+#define FOLLY_NODISCARD [[nodiscard]]
 #endif
-
-// always inline
-#ifdef _MSC_VER
-# define FOLLY_ALWAYS_INLINE __forceinline
+#endif
+#if !defined FOLLY_NODISCARD
+#if defined(_MSC_VER) && (_MSC_VER >= 1700)
+#define FOLLY_NODISCARD _Check_return_
 #elif defined(__clang__) || defined(__GNUC__)
-# define FOLLY_ALWAYS_INLINE inline __attribute__((__always_inline__))
+#define FOLLY_NODISCARD __attribute__((__warn_unused_result__))
 #else
-# define FOLLY_ALWAYS_INLINE inline
+#define FOLLY_NODISCARD
+#endif
 #endif
 
 // target
@@ -106,10 +89,16 @@ constexpr bool kHasUnalignedAccess = false;
 # define FOLLY_X64 0
 #endif
 
-#if defined(__aarch64__)
-# define FOLLY_A64 1
+#if defined(__arm__)
+#define FOLLY_ARM 1
 #else
-# define FOLLY_A64 0
+#define FOLLY_ARM 0
+#endif
+
+#if defined(__aarch64__)
+# define FOLLY_AARCH64 1
+#else
+# define FOLLY_AARCH64 0
 #endif
 
 #if defined (__powerpc64__)
@@ -117,6 +106,34 @@ constexpr bool kHasUnalignedAccess = false;
 #else
 # define FOLLY_PPC64 0
 #endif
+
+namespace folly {
+constexpr bool kIsArchArm = FOLLY_ARM == 1;
+constexpr bool kIsArchAmd64 = FOLLY_X64 == 1;
+constexpr bool kIsArchAArch64 = FOLLY_AARCH64 == 1;
+constexpr bool kIsArchPPC64 = FOLLY_PPC64 == 1;
+} // namespace folly
+
+namespace folly {
+
+#if FOLLY_SANITIZE_ADDRESS
+constexpr bool kIsSanitizeAddress = true;
+#else
+constexpr bool kIsSanitizeAddress = false;
+#endif
+
+#if FOLLY_SANITIZE_THREAD
+constexpr bool kIsSanitizeThread = true;
+#else
+constexpr bool kIsSanitizeThread = false;
+#endif
+
+#if FOLLY_SANITIZE
+constexpr bool kIsSanitize = true;
+#else
+constexpr bool kIsSanitize = false;
+#endif
+} // namespace folly
 
 // packing is very ugly in msvc
 #ifdef _MSC_VER
@@ -143,12 +160,10 @@ constexpr bool kHasUnalignedAccess = false;
 #elif defined(__clang__) || defined(__GNUC__)
 # define FOLLY_PUSH_WARNING _Pragma("GCC diagnostic push")
 # define FOLLY_POP_WARNING _Pragma("GCC diagnostic pop")
-#define FOLLY_GCC_DISABLE_WARNING_INTERNAL3(warningName) #warningName
-#define FOLLY_GCC_DISABLE_WARNING_INTERNAL2(warningName) \
-  FOLLY_GCC_DISABLE_WARNING_INTERNAL3(warningName)
-#define FOLLY_GCC_DISABLE_WARNING(warningName)                       \
-  _Pragma(FOLLY_GCC_DISABLE_WARNING_INTERNAL2(GCC diagnostic ignored \
-          FOLLY_GCC_DISABLE_WARNING_INTERNAL3(-W##warningName)))
+# define FOLLY_GCC_DISABLE_WARNING_INTERNAL2(warningName) #warningName
+# define FOLLY_GCC_DISABLE_WARNING(warningName) \
+  _Pragma(                                      \
+  FOLLY_GCC_DISABLE_WARNING_INTERNAL2(GCC diagnostic ignored warningName))
 // Disable the MSVC warnings.
 # define FOLLY_MSVC_DISABLE_WARNING(warningNumber)
 #else
@@ -158,35 +173,12 @@ constexpr bool kHasUnalignedAccess = false;
 # define FOLLY_MSVC_DISABLE_WARNING(warningNumber)
 #endif
 
-// portable version check
-#ifndef __GNUC_PREREQ
-# if defined __GNUC__ && defined __GNUC_MINOR__
-/* nolint */
-#  define __GNUC_PREREQ(maj, min) ((__GNUC__ << 16) + __GNUC_MINOR__ >= \
-                                   ((maj) << 16) + (min))
-# else
-/* nolint */
-#  define __GNUC_PREREQ(maj, min) 0
-# endif
-#endif
-
-#if defined(__GNUC__) && !defined(__APPLE__) && !__GNUC_PREREQ(4,9)
-// https://gcc.gnu.org/bugzilla/show_bug.cgi?id=56019
-// gcc 4.8.x incorrectly placed max_align_t in the root namespace
-// Alias it into std (where it's found in 4.9 and later)
-namespace std { typedef ::max_align_t max_align_t; }
-#endif
-
-// portable version check for clang
-#ifndef __CLANG_PREREQ
-# if defined __clang__ && defined __clang_major__ && defined __clang_minor__
-/* nolint */
-#  define __CLANG_PREREQ(maj, min) \
-    ((__clang_major__ << 16) + __clang_minor__ >= ((maj) << 16) + (min))
-# else
-/* nolint */
-#  define __CLANG_PREREQ(maj, min) 0
-# endif
+#ifdef FOLLY_HAVE_SHADOW_LOCAL_WARNINGS
+#define FOLLY_GCC_DISABLE_NEW_SHADOW_WARNINGS        \
+  FOLLY_GCC_DISABLE_WARNING("-Wshadow-compatible-local") \
+  FOLLY_GCC_DISABLE_WARNING("-Wshadow-local")
+#else
+#define FOLLY_GCC_DISABLE_NEW_SHADOW_WARNINGS /* empty */
 #endif
 
 /* Platform specific TLS support
@@ -211,7 +203,7 @@ namespace std { typedef ::max_align_t max_align_t; }
 // the 'std' namespace; the latter uses inline namespaces. Wrap this decision
 // up in a macro to make forward-declarations easier.
 #if FOLLY_USE_LIBCPP
-#include <__config>
+#include <__config> // @manual
 #define FOLLY_NAMESPACE_STD_BEGIN     _LIBCPP_BEGIN_NAMESPACE_STD
 #define FOLLY_NAMESPACE_STD_END       _LIBCPP_END_NAMESPACE_STD
 #else
@@ -222,41 +214,13 @@ namespace std { typedef ::max_align_t max_align_t; }
 // If the new c++ ABI is used, __cxx11 inline namespace needs to be added to
 // some types, e.g. std::list.
 #if _GLIBCXX_USE_CXX11_ABI
-# define FOLLY_GLIBCXX_NAMESPACE_CXX11_BEGIN _GLIBCXX_BEGIN_NAMESPACE_CXX11
+#define FOLLY_GLIBCXX_NAMESPACE_CXX11_BEGIN \
+  inline _GLIBCXX_BEGIN_NAMESPACE_CXX11
 # define FOLLY_GLIBCXX_NAMESPACE_CXX11_END   _GLIBCXX_END_NAMESPACE_CXX11
 #else
 # define FOLLY_GLIBCXX_NAMESPACE_CXX11_BEGIN
 # define FOLLY_GLIBCXX_NAMESPACE_CXX11_END
 #endif
-
-// Provide our own std::__throw_* wrappers for platforms that don't have them
-#if FOLLY_HAVE_BITS_FUNCTEXCEPT_H
-#include <bits/functexcept.h>
-#else
-#include <folly/detail/FunctionalExcept.h>
-#endif
-
-#if defined(__cplusplus)
-// Unfortunately, boost::has_trivial_copy<T> is broken in libc++ due to its
-// usage of __has_trivial_copy(), so we can't use it as a
-// least-common-denominator for C++11 implementations that don't support
-// std::is_trivially_copyable<T>.
-//
-//      http://stackoverflow.com/questions/12754886/has-trivial-copy-behaves-differently-in-clang-and-gcc-whos-right
-//
-// As a result, use std::is_trivially_copyable() where it exists, and fall back
-// to Boost otherwise.
-#if FOLLY_HAVE_STD__IS_TRIVIALLY_COPYABLE
-#include <type_traits>
-#define FOLLY_IS_TRIVIALLY_COPYABLE(T)                   \
-  (std::is_trivially_copyable<T>::value)
-#else
-#include <boost/type_traits.hpp>
-#define FOLLY_IS_TRIVIALLY_COPYABLE(T)                   \
-  (boost::has_trivial_copy<T>::value &&                  \
-   boost::has_trivial_destructor<T>::value)
-#endif
-#endif // __cplusplus
 
 // MSVC specific defines
 // mainly for posix compat
@@ -283,7 +247,7 @@ constexpr auto kIsDebug = false;
 #else
 constexpr auto kIsDebug = true;
 #endif
-}
+} // namespace folly
 
 // Endianness
 namespace folly {
@@ -298,7 +262,7 @@ constexpr auto kIsLittleEndian = true;
 constexpr auto kIsLittleEndian = __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__;
 #endif
 constexpr auto kIsBigEndian = !kIsLittleEndian;
-}
+} // namespace folly
 
 #ifndef FOLLY_SSE
 # if defined(__SSE4_2__)
@@ -332,12 +296,12 @@ constexpr auto kIsBigEndian = !kIsLittleEndian;
 namespace FOLLY_GFLAGS_NAMESPACE { }
 namespace gflags {
 using namespace FOLLY_GFLAGS_NAMESPACE;
-}  // namespace gflags
+} // namespace gflags
 #endif
 
 // for TARGET_OS_IPHONE
 #ifdef __APPLE__
-#include <TargetConditionals.h>
+#include <TargetConditionals.h> // @manual
 #endif
 
 // RTTI may not be enabled for this compilation unit.
@@ -353,4 +317,62 @@ using namespace FOLLY_GFLAGS_NAMESPACE;
 // This priority is already used by JEMalloc and other memory allocators so
 // we will take the next one.
 #define FOLLY_STATIC_CTOR_PRIORITY_MAX __attribute__((__init_priority__(102)))
+#endif
+
+namespace folly {
+
+#if __OBJC__
+constexpr auto kIsObjC = true;
+#else
+constexpr auto kIsObjC = false;
+#endif
+
+#if FOLLY_MOBILE
+constexpr auto kIsMobile = true;
+#else
+constexpr auto kIsMobile = false;
+#endif
+
+#if defined(__linux__) && !FOLLY_MOBILE
+constexpr auto kIsLinux = true;
+#else
+constexpr auto kIsLinux = false;
+#endif
+
+#if defined(_WIN32)
+constexpr auto kIsWindows = true;
+constexpr auto kMscVer = _MSC_VER;
+#else
+constexpr auto kIsWindows = false;
+constexpr auto kMscVer = 0;
+#endif
+} // namespace folly
+
+// Define FOLLY_USE_CPP14_CONSTEXPR to be true if the compiler's C++14
+// constexpr support is "good enough".
+#ifndef FOLLY_USE_CPP14_CONSTEXPR
+#if defined(__clang__)
+#define FOLLY_USE_CPP14_CONSTEXPR __cplusplus >= 201300L
+#elif defined(__GNUC__)
+#define FOLLY_USE_CPP14_CONSTEXPR __cplusplus >= 201304L
+#else
+#define FOLLY_USE_CPP14_CONSTEXPR 0 // MSVC?
+#endif
+#endif
+
+#if FOLLY_USE_CPP14_CONSTEXPR
+#define FOLLY_CPP14_CONSTEXPR constexpr
+#else
+#define FOLLY_CPP14_CONSTEXPR inline
+#endif
+
+#if __cpp_coroutines >= 201703L && FOLLY_HAS_INCLUDE(<experimental/coroutine>)
+#define FOLLY_HAS_COROUTINES 1
+#elif _MSC_VER && _RESUMABLE_FUNCTIONS_SUPPORTED
+#define FOLLY_HAS_COROUTINES 1
+#endif
+
+// MSVC 2017.5
+#if __cpp_noexcept_function_type >= 201510 || _MSC_FULL_VER >= 191225816
+#define FOLLY_HAVE_NOEXCEPT_FUNCTION_TYPE 1
 #endif

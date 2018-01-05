@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,9 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "Bser.h"
-#include <folly/io/Cursor.h>
+
+#include <folly/experimental/bser/Bser.h>
+
 #include <folly/String.h>
+#include <folly/io/Cursor.h>
 
 using namespace folly;
 using folly::io::Cursor;
@@ -26,10 +28,11 @@ static dynamic parseBser(Cursor& curs);
 
 template <typename... ARGS>
 [[noreturn]] static void throwDecodeError(Cursor& curs, ARGS&&... args) {
-  throw BserDecodeError(folly::to<std::string>(std::forward<ARGS>(args)...,
-                                               " with ",
-                                               curs.length(),
-                                               " bytes remaining in cursor"));
+  throw BserDecodeError(folly::to<std::string>(
+      std::forward<ARGS>(args)...,
+      " with ",
+      curs.length(),
+      " bytes remaining in cursor"));
 }
 
 static int64_t decodeInt(Cursor& curs) {
@@ -56,16 +59,17 @@ static std::string decodeString(Cursor& curs) {
   if (len < 0) {
     throw std::range_error("string length must not be negative");
   }
-  str.reserve(len);
+  str.reserve(size_t(len));
 
   size_t available = curs.length();
   while (available < (size_t)len) {
     if (available == 0) {
       // Saw this case when we decodeHeader was returning the incorrect length
       // and we were splitting off too few bytes from the IOBufQueue
-      throwDecodeError(curs,
-                       "no data available while decoding a string, header was "
-                       "not decoded properly");
+      throwDecodeError(
+          curs,
+          "no data available while decoding a string, header was "
+          "not decoded properly");
     }
     str.append(reinterpret_cast<const char*>(curs.data()), available);
     curs.skipAtMost(available);
@@ -73,8 +77,8 @@ static std::string decodeString(Cursor& curs) {
     available = curs.length();
   }
 
-  str.append(reinterpret_cast<const char*>(curs.data()), len);
-  curs.skipAtMost(len);
+  str.append(reinterpret_cast<const char*>(curs.data()), size_t(len));
+  curs.skipAtMost(size_t(len));
   return str;
 }
 
@@ -101,7 +105,7 @@ static dynamic decodeObject(Cursor& curs) {
 }
 
 static dynamic decodeTemplate(Cursor& curs) {
-  std::vector<dynamic> arr;
+  dynamic arr = folly::dynamic::array;
 
   // List of property names
   if ((BserType)curs.read<int8_t>() != BserType::Array) {
@@ -110,7 +114,6 @@ static dynamic decodeTemplate(Cursor& curs) {
   auto names = decodeArray(curs);
 
   auto size = decodeInt(curs);
-  arr.reserve(size);
 
   while (size-- > 0) {
     dynamic obj = dynamic::object;
@@ -126,10 +129,10 @@ static dynamic decodeTemplate(Cursor& curs) {
       obj[name.getString()] = parseBser(curs);
     }
 
-    arr.emplace_back(std::move(obj));
+    arr.push_back(std::move(obj));
   }
 
-  return dynamic(std::move(arr));
+  return arr;
 }
 
 static dynamic parseBser(Cursor& curs) {
@@ -218,8 +221,8 @@ folly::dynamic parseBser(ByteRange str) {
 folly::dynamic parseBser(StringPiece str) {
   return parseBser(ByteRange((uint8_t*)str.data(), str.size()));
 }
-}
-}
+} // namespace bser
+} // namespace folly
 
 /* vim:ts=2:sw=2:et:
  */

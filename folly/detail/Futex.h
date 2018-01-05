@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,9 +17,10 @@
 #pragma once
 
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <limits>
-#include <assert.h>
+
 #include <boost/noncopyable.hpp>
 
 #include <folly/portability/Unistd.h>
@@ -45,7 +46,7 @@ enum class FutexResult {
 template <template <typename> class Atom = std::atomic>
 struct Futex : Atom<uint32_t>, boost::noncopyable {
 
-  explicit Futex(uint32_t init = 0) : Atom<uint32_t>(init) {}
+  explicit constexpr Futex(uint32_t init = 0) : Atom<uint32_t>(init) {}
 
   /** Puts the thread to sleep if this->load() == expected.  Returns true when
    *  it is returning because it has consumed a wake() event, false for any
@@ -143,24 +144,25 @@ struct EmulatedFutexAtomic : public std::atomic<T> {
 
 /* Available specializations, with definitions elsewhere */
 
-template<>
+template <>
 int Futex<std::atomic>::futexWake(int count, uint32_t wakeMask);
 
-template<>
+template <>
 FutexResult Futex<std::atomic>::futexWaitImpl(
       uint32_t expected,
       std::chrono::time_point<std::chrono::system_clock>* absSystemTime,
       std::chrono::time_point<std::chrono::steady_clock>* absSteadyTime,
       uint32_t waitMask);
 
-template<>
+template <>
 int Futex<EmulatedFutexAtomic>::futexWake(int count, uint32_t wakeMask);
 
-template<>
+template <>
 FutexResult Futex<EmulatedFutexAtomic>::futexWaitImpl(
       uint32_t expected,
       std::chrono::time_point<std::chrono::system_clock>* absSystemTime,
       std::chrono::time_point<std::chrono::steady_clock>* absSteadyTime,
       uint32_t waitMask);
 
-}}
+} // namespace detail
+} // namespace folly

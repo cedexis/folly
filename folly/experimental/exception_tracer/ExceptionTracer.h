@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ struct ExceptionInfo {
   // The values in frames are IP (instruction pointer) addresses.
   // They are only filled if the low-level exception tracer library is
   // linked in or LD_PRELOADed.
-  std::vector<uintptr_t> frames;  // front() is top of stack
+  std::vector<uintptr_t> frames; // front() is top of stack
 };
 
 void printExceptionInfo(
@@ -52,5 +52,5 @@ std::vector<ExceptionInfo> getCurrentExceptions();
  */
 void installHandlers();
 
-}  // namespace exception_tracer
-}  // namespace folly
+} // namespace exception_tracer
+} // namespace folly

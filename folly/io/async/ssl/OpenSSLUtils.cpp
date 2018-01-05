@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,35 +13,63 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <folly/io/async/ssl/OpenSSLUtils.h>
-#include <folly/ScopeGuard.h>
-#include <folly/portability/Sockets.h>
 
-#include <openssl/bio.h>
-#include <openssl/err.h>
-#include <openssl/rand.h>
-#include <openssl/ssl.h>
-#include <openssl/x509v3.h>
+#include <folly/io/async/ssl/OpenSSLUtils.h>
 
 #include <glog/logging.h>
 
-#define OPENSSL_IS_101 (OPENSSL_VERSION_NUMBER >= 0x1000105fL && \
-                         OPENSSL_VERSION_NUMBER < 0x1000200fL)
-#define OPENSSL_IS_102 (OPENSSL_VERSION_NUMBER >= 0x1000200fL && \
-                        OPENSSL_VERSION_NUMBER < 0x10100000L)
-#define OPENSSL_IS_110 (OPENSSL_VERSION_NUMBER >= 0x10100000L)
+#include <unordered_map>
+
+#include <folly/ScopeGuard.h>
+#include <folly/portability/Sockets.h>
+#include <folly/portability/Unistd.h>
 
 namespace {
-#if defined(OPENSSL_IS_BORINGSSL)
+#ifdef OPENSSL_IS_BORINGSSL
 // BoringSSL doesn't (as of May 2016) export the equivalent
 // of BIO_sock_should_retry, so this is one way around it :(
 static int boringssl_bio_fd_should_retry(int err);
 #endif
 
-}
+} // namespace
 
 namespace folly {
 namespace ssl {
+
+bool OpenSSLUtils::getTLSMasterKey(
+    const SSL_SESSION* session,
+    MutableByteRange keyOut) {
+#if FOLLY_OPENSSL_IS_101 || FOLLY_OPENSSL_IS_102
+  if (session &&
+      session->master_key_length == static_cast<int>(keyOut.size())) {
+    auto masterKey = session->master_key;
+    std::copy(
+        masterKey, masterKey + session->master_key_length, keyOut.begin());
+    return true;
+  }
+#else
+  (SSL_SESSION*)session;
+  (MutableByteRange) keyOut;
+#endif
+  return false;
+}
+
+bool OpenSSLUtils::getTLSClientRandom(
+    const SSL* ssl,
+    MutableByteRange randomOut) {
+#if FOLLY_OPENSSL_IS_101 || FOLLY_OPENSSL_IS_102
+  if ((SSL_version(ssl) >> 8) == TLS1_VERSION_MAJOR && ssl->s3 &&
+      randomOut.size() == SSL3_RANDOM_SIZE) {
+    auto clientRandom = ssl->s3->client_random;
+    std::copy(clientRandom, clientRandom + SSL3_RANDOM_SIZE, randomOut.begin());
+    return true;
+  }
+#else
+  (SSL*)ssl;
+  (MutableByteRange) randomOut;
+#endif
+  return false;
+}
 
 bool OpenSSLUtils::getPeerAddressFromX509StoreCtx(X509_STORE_CTX* ctx,
                                                   sockaddr_storage* addrStorage,
@@ -98,7 +126,7 @@ bool OpenSSLUtils::validatePeerCertNames(X509* cert,
     if ((addr4 != nullptr || addr6 != nullptr) && name->type == GEN_IPADD) {
       // Extra const-ness for paranoia
       unsigned char const* const rawIpStr = name->d.iPAddress->data;
-      int const rawIpLen = name->d.iPAddress->length;
+      size_t const rawIpLen = size_t(name->d.iPAddress->length);
 
       if (rawIpLen == 4 && addr4 != nullptr) {
         if (::memcmp(rawIpStr, &addr4->sin_addr, rawIpLen) == 0) {
@@ -118,17 +146,108 @@ bool OpenSSLUtils::validatePeerCertNames(X509* cert,
   return false;
 }
 
+static std::unordered_map<uint16_t, std::string> getOpenSSLCipherNames() {
+  std::unordered_map<uint16_t, std::string> ret;
+  SSL_CTX* ctx = nullptr;
+  SSL* ssl = nullptr;
+
+  const SSL_METHOD* meth = SSLv23_server_method();
+  OpenSSL_add_ssl_algorithms();
+
+  if ((ctx = SSL_CTX_new(meth)) == nullptr) {
+    return ret;
+  }
+  SCOPE_EXIT {
+    SSL_CTX_free(ctx);
+  };
+
+  if ((ssl = SSL_new(ctx)) == nullptr) {
+    return ret;
+  }
+  SCOPE_EXIT {
+    SSL_free(ssl);
+  };
+
+  STACK_OF(SSL_CIPHER)* sk = SSL_get_ciphers(ssl);
+  for (int i = 0; i < sk_SSL_CIPHER_num(sk); i++) {
+    const SSL_CIPHER* c = sk_SSL_CIPHER_value(sk, i);
+    unsigned long id = SSL_CIPHER_get_id(c);
+    // OpenSSL 1.0.2 and prior does weird things such as stuff the SSL/TLS
+    // version into the top 16 bits. Let's ignore those for now. This is
+    // BoringSSL compatible (their id can be cast as uint16_t)
+    uint16_t cipherCode = id & 0xffffL;
+    ret[cipherCode] = SSL_CIPHER_get_name(c);
+  }
+  return ret;
+}
+
+const std::string& OpenSSLUtils::getCipherName(uint16_t cipherCode) {
+  // Having this in a hash map saves the binary search inside OpenSSL
+  static std::unordered_map<uint16_t, std::string> cipherCodeToName(
+      getOpenSSLCipherNames());
+
+  const auto& iter = cipherCodeToName.find(cipherCode);
+  if (iter != cipherCodeToName.end()) {
+    return iter->second;
+  } else {
+    static std::string empty("");
+    return empty;
+  }
+}
+
+void OpenSSLUtils::setSSLInitialCtx(SSL* ssl, SSL_CTX* ctx) {
+  (void)ssl;
+  (void)ctx;
+#if !FOLLY_OPENSSL_IS_110 && !defined(OPENSSL_NO_TLSEXT)
+  if (ssl) {
+    if (ctx) {
+      SSL_CTX_up_ref(ctx);
+    }
+    ssl->initial_ctx = ctx;
+  }
+#endif
+}
+
+SSL_CTX* OpenSSLUtils::getSSLInitialCtx(SSL* ssl) {
+  (void)ssl;
+#if !FOLLY_OPENSSL_IS_110 && !defined(OPENSSL_NO_TLSEXT)
+  if (ssl) {
+    return ssl->initial_ctx;
+  }
+#endif
+  return nullptr;
+}
+
+BioMethodUniquePtr OpenSSLUtils::newSocketBioMethod() {
+  BIO_METHOD* newmeth = nullptr;
+#if FOLLY_OPENSSL_IS_110
+  if (!(newmeth = BIO_meth_new(BIO_TYPE_SOCKET, "socket_bio_method"))) {
+    return nullptr;
+  }
+  auto meth = const_cast<BIO_METHOD*>(BIO_s_socket());
+  BIO_meth_set_create(newmeth, BIO_meth_get_create(meth));
+  BIO_meth_set_destroy(newmeth, BIO_meth_get_destroy(meth));
+  BIO_meth_set_ctrl(newmeth, BIO_meth_get_ctrl(meth));
+  BIO_meth_set_callback_ctrl(newmeth, BIO_meth_get_callback_ctrl(meth));
+  BIO_meth_set_read(newmeth, BIO_meth_get_read(meth));
+  BIO_meth_set_write(newmeth, BIO_meth_get_write(meth));
+  BIO_meth_set_gets(newmeth, BIO_meth_get_gets(meth));
+  BIO_meth_set_puts(newmeth, BIO_meth_get_puts(meth));
+#else
+  if (!(newmeth = (BIO_METHOD*)OPENSSL_malloc(sizeof(BIO_METHOD)))) {
+    return nullptr;
+  }
+  memcpy(newmeth, BIO_s_socket(), sizeof(BIO_METHOD));
+#endif
+
+  return BioMethodUniquePtr(newmeth);
+}
+
 bool OpenSSLUtils::setCustomBioReadMethod(
     BIO_METHOD* bioMeth,
     int (*meth)(BIO*, char*, int)) {
   bool ret = false;
-#if OPENSSL_IS_110
   ret = (BIO_meth_set_read(bioMeth, meth) == 1);
-#elif (defined(OPENSSL_IS_BORINGSSL) || OPENSSL_IS_101 || OPENSSL_IS_102)
-  bioMeth->bread = meth;
-  ret = true;
-#endif
-
   return ret;
 }
 
@@ -136,19 +255,13 @@ bool OpenSSLUtils::setCustomBioWriteMethod(
     BIO_METHOD* bioMeth,
     int (*meth)(BIO*, const char*, int)) {
   bool ret = false;
-#if OPENSSL_IS_110
   ret = (BIO_meth_set_write(bioMeth, meth) == 1);
-#elif (defined(OPENSSL_IS_BORINGSSL) || OPENSSL_IS_101 || OPENSSL_IS_102)
-  bioMeth->bwrite = meth;
-  ret = true;
-#endif
-
   return ret;
 }
 
 int OpenSSLUtils::getBioShouldRetryWrite(int r) {
   int ret = 0;
-#if defined(OPENSSL_IS_BORINGSSL)
+#ifdef OPENSSL_IS_BORINGSSL
   ret = boringssl_bio_fd_should_retry(r);
 #else
   ret = BIO_sock_should_retry(r);
@@ -157,7 +270,7 @@ int OpenSSLUtils::getBioShouldRetryWrite(int r) {
 }
 
 void OpenSSLUtils::setBioAppData(BIO* b, void* ptr) {
-#if defined(OPENSSL_IS_BORINGSSL)
+#ifdef OPENSSL_IS_BORINGSSL
   BIO_set_callback_arg(b, static_cast<char*>(ptr));
 #else
   BIO_set_app_data(b, ptr);
@@ -165,26 +278,43 @@ void OpenSSLUtils::setBioAppData(BIO* b, void* ptr) {
 }
 
 void* OpenSSLUtils::getBioAppData(BIO* b) {
-#if defined(OPENSSL_IS_BORINGSSL)
+#ifdef OPENSSL_IS_BORINGSSL
   return BIO_get_callback_arg(b);
 #else
   return BIO_get_app_data(b);
 #endif
 }
 
-void OpenSSLUtils::setCustomBioMethod(BIO* b, BIO_METHOD* meth) {
-#if defined(OPENSSL_IS_BORINGSSL)
-  b->method = meth;
+int OpenSSLUtils::getBioFd(BIO* b, int* fd) {
+#ifdef _WIN32
+  int ret = portability::sockets::socket_to_fd((SOCKET)BIO_get_fd(b, fd));
+  if (fd != nullptr) {
+    *fd = ret;
+  }
+  return ret;
 #else
-  BIO_set(b, meth);
+  return BIO_get_fd(b, fd);
 #endif
 }
 
-} // ssl
-} // folly
+void OpenSSLUtils::setBioFd(BIO* b, int fd, int flags) {
+#ifdef _WIN32
+  SOCKET socket = portability::sockets::fd_to_socket(fd);
+  // Internally OpenSSL uses this as an int for reasons completely
+  // beyond any form of sanity, so we do the cast ourselves to avoid
+  // the warnings that would be generated.
+  int sock = int(socket);
+#else
+  int sock = fd;
+#endif
+  BIO_set_fd(b, sock, flags);
+}
+
+} // namespace ssl
+} // namespace folly
 
 namespace {
-#if defined(OPENSSL_IS_BORINGSSL)
+#ifdef OPENSSL_IS_BORINGSSL
 
 static int boringssl_bio_fd_non_fatal_error(int err) {
   if (
@@ -220,11 +350,6 @@ static int boringssl_bio_fd_non_fatal_error(int err) {
 
 #if defined(OPENSSL_WINDOWS)
 
-#include <io.h>
-#pragma warning(push, 3)
-#include <windows.h>
-#pragma warning(pop)
-
 int boringssl_bio_fd_should_retry(int i) {
   if (i == -1) {
     return boringssl_bio_fd_non_fatal_error((int)GetLastError());
@@ -234,7 +359,6 @@ int boringssl_bio_fd_should_retry(int i) {
 
 #else // !OPENSSL_WINDOWS
 
-#include <unistd.h>
 int boringssl_bio_fd_should_retry(int i) {
   if (i == -1) {
     return boringssl_bio_fd_non_fatal_error(errno);
@@ -245,4 +369,4 @@ int boringssl_bio_fd_should_retry(int i) {
 
 #endif // OEPNSSL_IS_BORINGSSL
 
-}
+} // namespace

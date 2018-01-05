@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -36,6 +36,10 @@
 // Number pulled from 3.10 kernel headers.
 #ifndef SO_REUSEPORT
 #define SO_REUSEPORT 15
+#endif
+
+#if defined __linux__ && !defined SO_NO_TRANSPARENT_TLS
+#define SO_NO_TRANSPARENT_TLS 200
 #endif
 
 namespace folly {
@@ -223,7 +227,7 @@ class AsyncServerSocket : public DelayedDestruction
                                                  Destructor());
   }
 
-  void setShutdownSocketSet(ShutdownSocketSet* newSS);
+  void setShutdownSocketSet(const std::weak_ptr<ShutdownSocketSet>& wNewSS);
 
   /**
    * Destroy the socket.
@@ -242,7 +246,7 @@ class AsyncServerSocket : public DelayedDestruction
    * time after destroy() returns.  They will not receive any more callback
    * invocations once acceptStopped() is invoked.
    */
-  virtual void destroy();
+  void destroy() override;
 
   /**
    * Attach this AsyncServerSocket to its primary EventBase.
@@ -264,7 +268,7 @@ class AsyncServerSocket : public DelayedDestruction
   /**
    * Get the EventBase used by this socket.
    */
-  EventBase* getEventBase() const {
+  EventBase* getEventBase() const override {
     return eventBase_;
   }
 
@@ -315,6 +319,11 @@ class AsyncServerSocket : public DelayedDestruction
     }
   }
 
+  /* enable zerocopy support for the server sockets - the s = accept sockets
+   * inherit it
+   */
+  bool setZeroCopy(bool enable);
+
   /**
    * Bind to the specified address.
    *
@@ -349,7 +358,18 @@ class AsyncServerSocket : public DelayedDestruction
    *
    * Throws TTransportException on error.
    */
-  void getAddress(SocketAddress* addressReturn) const;
+  void getAddress(SocketAddress* addressReturn) const override;
+
+  /**
+   * Get the local address to which the socket is bound.
+   *
+   * Throws TTransportException on error.
+   */
+  SocketAddress getAddress() const {
+    SocketAddress ret;
+    getAddress(&ret);
+    return ret;
+  }
 
   /**
    * Get all the local addresses to which the socket is bound.
@@ -573,7 +593,9 @@ class AsyncServerSocket : public DelayedDestruction
    * socket's primary EventBase.
    */
   int64_t getNumPendingMessagesInQueue() const {
-    assert(eventBase_ == nullptr || eventBase_->isInEventBaseThread());
+    if (eventBase_) {
+      eventBase_->dcheckIsInEventBaseThread();
+    }
     int64_t numMsgs = 0;
     for (const auto& callback : callbacks_) {
       numMsgs += callback.consumer->getQueue()->size();
@@ -668,6 +690,13 @@ class AsyncServerSocket : public DelayedDestruction
   }
 
   /**
+   * Do not attempt the transparent TLS handshake
+   */
+  void disableTransparentTls() {
+    noTransparentTls_ = true;
+  }
+
+  /**
    * Get whether or not the socket is accepting new connections
    */
   bool getAccepting() const {
@@ -695,7 +724,7 @@ class AsyncServerSocket : public DelayedDestruction
    *
    * Invoke destroy() instead to destroy the AsyncServerSocket.
    */
-  virtual ~AsyncServerSocket();
+  ~AsyncServerSocket() override;
 
  private:
   enum class MessageType {
@@ -722,24 +751,24 @@ class AsyncServerSocket : public DelayedDestruction
    */
   class RemoteAcceptor
       : private NotificationQueue<QueueMessage>::Consumer {
-  public:
+   public:
     explicit RemoteAcceptor(AcceptCallback *callback,
                             ConnectionEventCallback *connectionEventCallback)
       : callback_(callback),
         connectionEventCallback_(connectionEventCallback) {}
 
-    ~RemoteAcceptor() = default;
+    ~RemoteAcceptor() override = default;
 
     void start(EventBase *eventBase, uint32_t maxAtOnce, uint32_t maxInQueue);
     void stop(EventBase* eventBase, AcceptCallback* callback);
 
-    virtual void messageAvailable(QueueMessage&& message);
+    void messageAvailable(QueueMessage&& message) noexcept override;
 
     NotificationQueue<QueueMessage>* getQueue() {
       return &queue_;
     }
 
-  private:
+   private:
     AcceptCallback *callback_;
     ConnectionEventCallback* connectionEventCallback_;
 
@@ -819,7 +848,7 @@ class AsyncServerSocket : public DelayedDestruction
     }
 
     // Inherited from EventHandler
-    virtual void handlerReady(uint16_t events) noexcept {
+    void handlerReady(uint16_t events) noexcept override {
       parent_->handlerReady(events, socket_, addressFamily_);
     }
 
@@ -846,9 +875,10 @@ class AsyncServerSocket : public DelayedDestruction
   bool reusePortEnabled_{false};
   bool closeOnExec_;
   bool tfo_{false};
+  bool noTransparentTls_{false};
   uint32_t tfoMaxQueueSize_{0};
-  ShutdownSocketSet* shutdownSocketSet_;
+  std::weak_ptr<ShutdownSocketSet> wShutdownSocketSet_;
   ConnectionEventCallback* connectionEventCallback_{nullptr};
 };
 
-} // folly
+} // namespace folly

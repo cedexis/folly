@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,18 +16,15 @@
 
 #include <folly/experimental/TestUtil.h>
 
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <fcntl.h>
-
 #include <system_error>
 
 #include <boost/algorithm/string.hpp>
 #include <glog/logging.h>
-#include <gtest/gtest.h>
 
 #include <folly/Memory.h>
-#include <folly/portability/Environment.h>
+#include <folly/portability/Fcntl.h>
+#include <folly/portability/GTest.h>
+#include <folly/portability/Stdlib.h>
 
 using namespace folly;
 using namespace folly::test;
@@ -45,13 +42,28 @@ TEST(TemporaryFile, Simple) {
     EXPECT_EQ(1, r);
   }
 
-  // The file must have been closed.  This assumes that no other thread
-  // has opened another file in the meanwhile, which is a sane assumption
-  // to make in this test.
-  ssize_t r = write(fd, &c, 1);
-  int savedErrno = errno;
-  EXPECT_EQ(-1, r);
-  EXPECT_EQ(EBADF, savedErrno);
+  msvcSuppressAbortOnInvalidParams([&] {
+    // The file must have been closed.  This assumes that no other thread
+    // has opened another file in the meanwhile, which is a sane assumption
+    // to make in this test.
+    ssize_t r = write(fd, &c, 1);
+    int savedErrno = errno;
+    EXPECT_EQ(-1, r);
+    EXPECT_EQ(EBADF, savedErrno);
+  });
+}
+
+TEST(TemporaryFile, EarlyClose) {
+  fs::path p;
+  {
+    TemporaryFile f;
+    p = f.path();
+    EXPECT_TRUE(fs::exists(p));
+    f.close();
+    EXPECT_EQ(-1, f.fd());
+    EXPECT_TRUE(fs::exists(p));
+  }
+  EXPECT_FALSE(fs::exists(p));
 }
 
 TEST(TemporaryFile, Prefix) {
@@ -71,6 +83,35 @@ TEST(TemporaryFile, PathPrefix) {
 TEST(TemporaryFile, NoSuchPath) {
   EXPECT_THROW({TemporaryFile f("", "/no/such/path");},
                std::system_error);
+}
+
+TEST(TemporaryFile, moveAssignment) {
+  TemporaryFile f;
+  int fd;
+
+  EXPECT_TRUE(f.path().is_absolute());
+  {
+    TemporaryFile g("Foo", ".");
+    EXPECT_NE(g.fd(), -1);
+    fd = g.fd();
+    f = std::move(g);
+  }
+  EXPECT_EQ(fs::path("."), f.path().parent_path());
+  EXPECT_EQ(f.fd(), fd);
+
+  TemporaryFile h = TemporaryFile("FooBar", ".");
+  EXPECT_NE(h.fd(), -1);
+}
+
+TEST(TemporaryFile, moveCtor) {
+  struct FooBar {
+    TemporaryFile f_;
+    explicit FooBar(TemporaryFile&& f) : f_(std::move(f)) {}
+  };
+  TemporaryFile g("Foo");
+  FooBar fb(std::move(g));
+  EXPECT_EQ(g.fd(), -1);
+  EXPECT_NE(fb.f_.fd(), -1);
 }
 
 void testTemporaryDirectory(TemporaryDirectory::Scope scope) {
@@ -119,7 +160,7 @@ TEST(TemporaryDirectory, SafelyMove) {
     expectTempdirExists(d);
     expectTempdirExists(d2);
 
-    dir = folly::make_unique<TemporaryDirectory>(std::move(d));
+    dir = std::make_unique<TemporaryDirectory>(std::move(d));
     dir2 = std::move(d2);
   }
 
@@ -187,48 +228,4 @@ TEST(CaptureFD, ChunkCob) {
     EXPECT_PCRE_MATCH(".*foo.*bar.*baz.*", err.read());
   }
   EXPECT_EQ(2, chunks.size());
-}
-
-
-class EnvVarSaverTest : public testing::Test {};
-
-TEST_F(EnvVarSaverTest, ExampleNew) {
-  auto key = "hahahahaha";
-  EXPECT_EQ(nullptr, getenv(key));
-
-  auto saver = make_unique<EnvVarSaver>();
-  PCHECK(0 == setenv(key, "blah", true));
-  EXPECT_EQ("blah", std::string{getenv(key)});
-  saver = nullptr;
-  EXPECT_EQ(nullptr, getenv(key));
-}
-
-TEST_F(EnvVarSaverTest, ExampleExisting) {
-  auto key = "USER";
-  EXPECT_NE(nullptr, getenv(key));
-  auto value = std::string{getenv(key)};
-
-  auto saver = make_unique<EnvVarSaver>();
-  PCHECK(0 == setenv(key, "blah", true));
-  EXPECT_EQ("blah", std::string{getenv(key)});
-  saver = nullptr;
-  EXPECT_TRUE(value == getenv(key));
-}
-
-TEST_F(EnvVarSaverTest, ExampleDeleting) {
-  auto key = "USER";
-  EXPECT_NE(nullptr, getenv(key));
-  auto value = std::string{getenv(key)};
-
-  auto saver = make_unique<EnvVarSaver>();
-  PCHECK(0 == unsetenv(key));
-  EXPECT_EQ(nullptr, getenv(key));
-  saver = nullptr;
-  EXPECT_TRUE(value == getenv(key));
-}
-
-int main(int argc, char *argv[]) {
-  testing::InitGoogleTest(&argc, argv);
-  gflags::ParseCommandLineFlags(&argc, &argv, true);
-  return RUN_ALL_TESTS();
 }

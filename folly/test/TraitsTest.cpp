@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,10 +22,28 @@
 #include <utility>
 
 #include <folly/ScopeGuard.h>
-#include <gtest/gtest.h>
+#include <folly/portability/GTest.h>
 
 using namespace folly;
 using namespace std;
+
+namespace {
+
+FOLLY_CREATE_HAS_MEMBER_TYPE_TRAITS(has_member_type_x, x);
+} // namespace
+
+TEST(Traits, has_member_type) {
+  struct membership_no {};
+  struct membership_yes {
+    using x = void;
+  };
+
+  EXPECT_TRUE((is_same<false_type, has_member_type_x<membership_no>>::value));
+  EXPECT_TRUE((is_same<true_type, has_member_type_x<membership_yes>>::value));
+}
+
+//  Note: FOLLY_CREATE_HAS_MEMBER_FN_TRAITS tests are in
+//  folly/test/HasMemberFnTraitsTest.cpp.
 
 struct T1 {}; // old-style IsRelocatable, below
 struct T2 {}; // old-style IsRelocatable, below
@@ -39,9 +57,11 @@ struct F3 : T3 { typedef std::false_type IsRelocatable; };
 struct F4 : T1 {};
 
 namespace folly {
-  template <> struct IsRelocatable<T1> : std::true_type {};
-  template <> FOLLY_ASSUME_RELOCATABLE(T2);
-}
+template <>
+struct IsRelocatable<T1> : std::true_type {};
+template <>
+FOLLY_ASSUME_RELOCATABLE(T2);
+} // namespace folly
 
 TEST(Traits, scalars) {
   EXPECT_TRUE(IsRelocatable<int>::value);
@@ -52,7 +72,7 @@ TEST(Traits, scalars) {
 
 TEST(Traits, containers) {
   EXPECT_TRUE  (IsRelocatable<vector<F1>>::value);
-  EXPECT_FALSE((IsRelocatable<pair<F1, F1>>::value));
+  EXPECT_TRUE((IsRelocatable<pair<F1, F1>>::value));
   EXPECT_TRUE ((IsRelocatable<pair<T1, T2>>::value));
 }
 
@@ -69,8 +89,8 @@ TEST(Traits, typedefd) {
 }
 
 TEST(Traits, unset) {
-  EXPECT_FALSE(IsRelocatable<F1>::value);
-  EXPECT_FALSE(IsRelocatable<F4>::value);
+  EXPECT_TRUE(IsRelocatable<F1>::value);
+  EXPECT_TRUE(IsRelocatable<F4>::value);
 }
 
 TEST(Traits, bitprop) {
@@ -133,9 +153,41 @@ TEST(Traits, relational) {
   EXPECT_FALSE((folly::greater_than<uint8_t, 255u, uint8_t>(254u)));
 }
 
+#if FOLLY_HAVE_INT128_T
+
+TEST(Traits, int128) {
+  EXPECT_TRUE(
+      (::std::is_same<::std::make_unsigned<__int128_t>::type, __uint128_t>::
+           value));
+  EXPECT_TRUE((
+      ::std::is_same<::std::make_signed<__int128_t>::type, __int128_t>::value));
+  EXPECT_TRUE(
+      (::std::is_same<::std::make_unsigned<__uint128_t>::type, __uint128_t>::
+           value));
+  EXPECT_TRUE(
+      (::std::is_same<::std::make_signed<__uint128_t>::type, __int128_t>::
+           value));
+  EXPECT_TRUE((::std::is_arithmetic<__int128_t>::value));
+  EXPECT_TRUE((::std::is_arithmetic<__uint128_t>::value));
+  EXPECT_TRUE((::std::is_integral<__int128_t>::value));
+  EXPECT_TRUE((::std::is_integral<__uint128_t>::value));
+  EXPECT_FALSE((::std::is_unsigned<__int128_t>::value));
+  EXPECT_TRUE((::std::is_signed<__int128_t>::value));
+  EXPECT_TRUE((::std::is_unsigned<__uint128_t>::value));
+  EXPECT_FALSE((::std::is_signed<__uint128_t>::value));
+  EXPECT_TRUE((::std::is_fundamental<__int128_t>::value));
+  EXPECT_TRUE((::std::is_fundamental<__uint128_t>::value));
+  EXPECT_TRUE((::std::is_scalar<__int128_t>::value));
+  EXPECT_TRUE((::std::is_scalar<__uint128_t>::value));
+}
+
+#endif // FOLLY_HAVE_INT128_T
+
 template <typename T, typename... Args>
 void testIsRelocatable(Args&&... args) {
-  if (!IsRelocatable<T>::value) return;
+  if (!IsRelocatable<T>::value) {
+    return;
+  }
 
   // We use placement new on zeroed memory to avoid garbage subsections
   char vsrc[sizeof(T)] = { 0 };
@@ -169,11 +221,93 @@ TEST(Traits, actuallyRelocatable) {
   testIsRelocatable<std::vector<char>>(5, 'g');
 }
 
-struct membership_no {};
-struct membership_yes { using x = void; };
-FOLLY_CREATE_HAS_MEMBER_TYPE_TRAITS(has_member_type_x, x);
+namespace {
+// has_value_type<T>::value is true if T has a nested type `value_type`
+template <class T, class = void>
+struct has_value_type : std::false_type {};
 
-TEST(Traits, has_member_type) {
-  EXPECT_FALSE(bool(has_member_type_x<membership_no>::value));
-  EXPECT_TRUE(bool(has_member_type_x<membership_yes>::value));
+template <class T>
+struct has_value_type<T, folly::void_t<typename T::value_type>>
+    : std::true_type {};
+
+struct some_tag {};
+
+template <typename T>
+struct container {
+  template <class... Args>
+  container(
+      folly::type_t<some_tag, decltype(T(std::declval<Args>()...))>,
+      Args&&...) {}
+};
+} // namespace
+
+TEST(Traits, void_t) {
+  EXPECT_TRUE((::std::is_same<folly::void_t<>, void>::value));
+  EXPECT_TRUE((::std::is_same<folly::void_t<int>, void>::value));
+  EXPECT_TRUE((::std::is_same<folly::void_t<int, short>, void>::value));
+  EXPECT_TRUE(
+      (::std::is_same<folly::void_t<int, short, std::string>, void>::value));
+  EXPECT_TRUE((::has_value_type<std::string>::value));
+  EXPECT_FALSE((::has_value_type<int>::value));
+}
+
+TEST(Traits, type_t) {
+  EXPECT_TRUE((::std::is_same<folly::type_t<float>, float>::value));
+  EXPECT_TRUE((::std::is_same<folly::type_t<float, int>, float>::value));
+  EXPECT_TRUE((::std::is_same<folly::type_t<float, int, short>, float>::value));
+  EXPECT_TRUE(
+      (::std::is_same<folly::type_t<float, int, short, std::string>, float>::
+           value));
+  EXPECT_TRUE((
+      ::std::is_constructible<::container<std::string>, some_tag, std::string>::
+          value));
+  EXPECT_FALSE(
+      (::std::is_constructible<::container<std::string>, some_tag, float>::
+           value));
+}
+
+TEST(Traits, remove_cvref) {
+  using folly::remove_cvref;
+  using folly::remove_cvref_t;
+
+  // test all possible c-ref qualifiers without volatile
+  EXPECT_TRUE((std::is_same<remove_cvref_t<int>, int>::value));
+  EXPECT_TRUE((std::is_same<remove_cvref<int>::type, int>::value));
+
+  EXPECT_TRUE((std::is_same<remove_cvref_t<int&&>, int>::value));
+  EXPECT_TRUE((std::is_same<remove_cvref<int&&>::type, int>::value));
+
+  EXPECT_TRUE((std::is_same<remove_cvref_t<int&>, int>::value));
+  EXPECT_TRUE((std::is_same<remove_cvref<int&>::type, int>::value));
+
+  EXPECT_TRUE((std::is_same<remove_cvref_t<int const>, int>::value));
+  EXPECT_TRUE((std::is_same<remove_cvref<int const>::type, int>::value));
+
+  EXPECT_TRUE((std::is_same<remove_cvref_t<int const&>, int>::value));
+  EXPECT_TRUE((std::is_same<remove_cvref<int const&>::type, int>::value));
+
+  EXPECT_TRUE((std::is_same<remove_cvref_t<int const&&>, int>::value));
+  EXPECT_TRUE((std::is_same<remove_cvref<int const&&>::type, int>::value));
+
+  // test all possible c-ref qualifiers with volatile
+  EXPECT_TRUE((std::is_same<remove_cvref_t<int volatile>, int>::value));
+  EXPECT_TRUE((std::is_same<remove_cvref<int volatile>::type, int>::value));
+
+  EXPECT_TRUE((std::is_same<remove_cvref_t<int volatile&&>, int>::value));
+  EXPECT_TRUE((std::is_same<remove_cvref<int volatile&&>::type, int>::value));
+
+  EXPECT_TRUE((std::is_same<remove_cvref_t<int volatile&>, int>::value));
+  EXPECT_TRUE((std::is_same<remove_cvref<int volatile&>::type, int>::value));
+
+  EXPECT_TRUE((std::is_same<remove_cvref_t<int volatile const>, int>::value));
+  EXPECT_TRUE(
+      (std::is_same<remove_cvref<int volatile const>::type, int>::value));
+
+  EXPECT_TRUE((std::is_same<remove_cvref_t<int volatile const&>, int>::value));
+  EXPECT_TRUE(
+      (std::is_same<remove_cvref<int volatile const&>::type, int>::value));
+
+  EXPECT_TRUE((std::is_same<remove_cvref_t<int volatile const&&>, int>::value));
+  EXPECT_TRUE(
+      (std::is_same<remove_cvref<int volatile const&&>::type, int>::value));
 }

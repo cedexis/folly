@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,79 +16,89 @@
 
 #pragma once
 
-#include <exception>
+#include <stdexcept>
 #include <string>
+
+#include <folly/CPortability.h>
 
 namespace folly {
 
-class FutureException : public std::exception {
-
-public:
-
-  explicit FutureException(std::string message_arg)
-    : message(message_arg) {}
-
-  ~FutureException() throw(){}
-
-  virtual const char *what() const throw() {
-    return message.c_str();
-  }
-
-  bool operator==(const FutureException &other) const{
-    return other.message == this->message;
-  }
-
-  bool operator!=(const FutureException &other) const{
-    return !(*this == other);
-  }
-
-  protected:
-    std::string message;
+class FOLLY_EXPORT FutureException : public std::logic_error {
+ public:
+  using std::logic_error::logic_error;
 };
 
-class BrokenPromise : public FutureException {
-  public:
-    explicit BrokenPromise(std::string type) :
-      FutureException(
-          (std::string("Broken promise for type name `") + type) + '`') { }
+class FOLLY_EXPORT BrokenPromise : public FutureException {
+ public:
+  explicit BrokenPromise(const std::string& type)
+      : FutureException("Broken promise for type name `" + type + '`') {}
+
+  explicit BrokenPromise(const char* type) : BrokenPromise(std::string(type)) {}
 };
 
-class NoState : public FutureException {
-  public:
-    explicit NoState() : FutureException("No state") { }
+class FOLLY_EXPORT NoState : public FutureException {
+ public:
+  NoState() : FutureException("No state") {}
 };
 
-class PromiseAlreadySatisfied : public FutureException {
-  public:
-    explicit PromiseAlreadySatisfied() :
-      FutureException("Promise already satisfied") { }
+[[noreturn]] void throwNoState();
+
+class FOLLY_EXPORT PromiseAlreadySatisfied : public FutureException {
+ public:
+  PromiseAlreadySatisfied() : FutureException("Promise already satisfied") {}
 };
 
-class FutureNotReady : public FutureException {
-  public:
-    explicit FutureNotReady() :
-      FutureException("Future not ready") { }
+[[noreturn]] void throwPromiseAlreadySatisfied();
+
+class FOLLY_EXPORT FutureNotReady : public FutureException {
+ public:
+  FutureNotReady() : FutureException("Future not ready") {}
 };
 
-class FutureAlreadyRetrieved : public FutureException {
-  public:
-    explicit FutureAlreadyRetrieved () :
-      FutureException("Future already retrieved") { }
+[[noreturn]] void throwFutureNotReady();
+
+class FOLLY_EXPORT FutureAlreadyRetrieved : public FutureException {
+ public:
+  FutureAlreadyRetrieved() : FutureException("Future already retrieved") {}
 };
 
-class FutureCancellation : public FutureException {
+[[noreturn]] void throwFutureAlreadyRetrieved();
+
+class FOLLY_EXPORT FutureCancellation : public FutureException {
  public:
   FutureCancellation() : FutureException("Future was cancelled") {}
 };
 
-class TimedOut : public FutureException {
+class FOLLY_EXPORT TimedOut : public FutureException {
  public:
   TimedOut() : FutureException("Timed out") {}
 };
 
-class PredicateDoesNotObtain : public FutureException {
+[[noreturn]] void throwTimedOut();
+
+class FOLLY_EXPORT PredicateDoesNotObtain : public FutureException {
  public:
   PredicateDoesNotObtain() : FutureException("Predicate does not obtain") {}
 };
 
-}
+[[noreturn]] void throwPredicateDoesNotObtain();
+
+class FOLLY_EXPORT NoFutureInSplitter : public FutureException {
+ public:
+  NoFutureInSplitter() : FutureException("No Future in this FutureSplitter") {}
+};
+
+[[noreturn]] void throwNoFutureInSplitter();
+
+class FOLLY_EXPORT NoTimekeeper : public FutureException {
+ public:
+  NoTimekeeper() : FutureException("No timekeeper available") {}
+};
+
+[[noreturn]] void throwNoExecutor();
+
+class FOLLY_EXPORT NoExecutor : public FutureException {
+ public:
+  NoExecutor() : FutureException("No executor provided to via") {}
+};
+} // namespace folly

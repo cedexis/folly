@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,8 +18,9 @@
 
 #include <folly/DynamicConverter.h>
 
+#include <folly/portability/GTest.h>
+
 #include <algorithm>
-#include <gtest/gtest.h>
 #include <map>
 #include <vector>
 
@@ -222,7 +223,7 @@ template <> struct DynamicConverter<A> {
     return { convertTo<int>(d["i"]) };
   }
 };
-}
+} // namespace folly
 TEST(DynamicConverter, custom_class) {
   dynamic d1 = dynamic::object("i", 17);
   auto i1 = convertTo<A>(d1);
@@ -295,11 +296,11 @@ TEST(DynamicConverter, consts) {
 
   dynamic d3 = true;
   auto i3 = convertTo<const bool>(d3);
-  EXPECT_EQ(true, i3);
+  EXPECT_TRUE(i3);
 
   dynamic d4 = "true";
   auto i4 = convertTo<const bool>(d4);
-  EXPECT_EQ(true, i4);
+  EXPECT_TRUE(i4);
 
   dynamic d5 = dynamic::array(1, 2);
   auto i5 = convertTo<const std::pair<const int, const int>>(d5);
@@ -323,7 +324,7 @@ template <> struct DynamicConverter<Token> {
     return Token(k, lex);
   }
 };
-}
+} // namespace folly
 
 TEST(DynamicConverter, example) {
   dynamic d1 = dynamic::object("KIND", 2)("LEXEME", "a token");
@@ -381,6 +382,12 @@ TEST(DynamicConverter, construct) {
                                dynamic::array(3, 4, 5));
     EXPECT_EQ(d, toDynamic(c));
   }
+
+  {
+    vector<bool> vb{true, false};
+    dynamic d = dynamic::array(true, false);
+    EXPECT_EQ(d, toDynamic(vb));
+  }
 }
 
 TEST(DynamicConverter, errors) {
@@ -394,4 +401,65 @@ TEST(DynamicConverter, errors) {
 
   dynamic d2 = floatOver;
   EXPECT_THROW(convertTo<float>(d2), std::range_error);
+}
+
+TEST(DynamicConverter, partial_dynamics) {
+  std::vector<dynamic> c{
+      dynamic::array(2, 3, 4), dynamic::array(3, 4, 5),
+  };
+  dynamic d = dynamic::array(dynamic::array(2, 3, 4), dynamic::array(3, 4, 5));
+  EXPECT_EQ(d, toDynamic(c));
+
+  std::unordered_map<std::string, dynamic> m{{"one", 1}, {"two", 2}};
+  dynamic md = dynamic::object("one", 1)("two", 2);
+  EXPECT_EQ(md, toDynamic(m));
+}
+
+TEST(DynamicConverter, asan_exception_case_umap) {
+  EXPECT_THROW(
+      (convertTo<std::unordered_map<int, int>>(dynamic::array(1))), TypeError);
+}
+
+TEST(DynamicConverter, asan_exception_case_uset) {
+  EXPECT_THROW(
+      (convertTo<std::unordered_set<int>>(
+          dynamic::array(1, dynamic::array(), 3))),
+      TypeError);
+}
+
+static int constructB = 0;
+static int destroyB = 0;
+static int ticker = 0;
+struct B {
+  struct BException : std::exception {};
+
+  /* implicit */ B(int x) : x_(x) {
+    if (ticker-- == 0) {
+      throw BException();
+    }
+    constructB++;
+  }
+  B(const B& o) : x_(o.x_) {
+    constructB++;
+  }
+  ~B() {
+    destroyB++;
+  }
+  int x_;
+};
+namespace folly {
+template <>
+struct DynamicConverter<B> {
+  static B convert(const dynamic& d) {
+    return B(convertTo<int>(d));
+  }
+};
+} // namespace folly
+
+TEST(DynamicConverter, double_destroy) {
+  dynamic d = dynamic::array(1, 3, 5, 7, 9, 11, 13, 15, 17);
+  ticker = 3;
+
+  EXPECT_THROW(convertTo<std::vector<B>>(d), B::BException);
+  EXPECT_EQ(constructB, destroyB);
 }

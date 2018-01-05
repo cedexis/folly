@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,8 @@
 
 #pragma once
 
-#include <utility>
 #include <type_traits>
+#include <utility>
 
 namespace folly {
 namespace dptr_detail {
@@ -164,5 +164,5 @@ using ApplyConstVisitor = ApplyConstVisitor1<
     typename ConstVisitorResult<V, Types...>::type,
     Types...>;
 
-}  // namespace dptr_detail
-}  // namespace folly
+} // namespace dptr_detail
+} // namespace folly

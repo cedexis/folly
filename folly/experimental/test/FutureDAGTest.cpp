@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
  */
 #include <boost/thread/barrier.hpp>
 #include <folly/experimental/FutureDAG.h>
-#include <gtest/gtest.h>
+#include <folly/portability/GTest.h>
 
 using namespace folly;
 
@@ -23,7 +23,7 @@ struct FutureDAGTest : public testing::Test {
   typedef FutureDAG::Handle Handle;
 
   Handle add() {
-    auto node = folly::make_unique<TestNode>(this);
+    auto node = std::make_unique<TestNode>(this);
     auto handle = node->handle;
     nodes.emplace(handle, std::move(node));
     return handle;
@@ -53,17 +53,15 @@ struct FutureDAGTest : public testing::Test {
   }
 
   void remove(Handle a) {
-    for (auto itr = nodes.begin(); itr != nodes.end(); itr++) {
-      auto& deps = itr->second->dependencies;
-      if (std::find(deps.begin(), deps.end(), a) != deps.end()) {
-        deps.erase(deps.begin() + a);
-      }
+    for (auto& node : nodes) {
+      node.second->dependencies.erase(a);
     }
     nodes.erase(a);
     dag->remove(a);
   }
+
   void dependency(Handle a, Handle b) {
-    nodes.at(b)->dependencies.push_back(a);
+    nodes.at(b)->dependencies.insert(a);
     dag->dependency(a, b);
   }
 
@@ -83,20 +81,19 @@ struct FutureDAGTest : public testing::Test {
   }
 
   struct TestNode {
-    explicit TestNode(FutureDAGTest* test) {
-      func = [this, test] {
-        test->order.push_back(handle);
-        return Future<Unit>();
-      };
-      handle = test->dag->add(func);
-    }
+    explicit TestNode(FutureDAGTest* test)
+        : func([this, test] {
+            test->order.push_back(handle);
+            return Future<Unit>();
+          }),
+          handle(test->dag->add(func)) {}
 
-    FutureDAG::FutureFunc func;
-    Handle handle;
-    std::vector<Handle> dependencies;
+    const FutureDAG::FutureFunc func;
+    const Handle handle;
+    std::set<Handle> dependencies;
   };
 
-  std::shared_ptr<FutureDAG> dag = FutureDAG::create();
+  const std::shared_ptr<FutureDAG> dag = FutureDAG::create();
   std::map<Handle, std::unique_ptr<TestNode>> nodes;
   std::vector<Handle> order;
 };
@@ -110,6 +107,7 @@ TEST_F(FutureDAGTest, SingleNode) {
 TEST_F(FutureDAGTest, RemoveSingleNode) {
   auto h1 = add();
   auto h2 = add();
+  (void)h1;
   remove(h2);
   ASSERT_NO_THROW(dag->go().get());
   checkOrder();
@@ -121,8 +119,9 @@ TEST_F(FutureDAGTest, RemoveNodeComplex) {
   auto h3 = add();
   dependency(h1, h3);
   dependency(h2, h1);
-  remove(h1);
+  remove(h3);
   remove(h2);
+  remove(h1);
   ASSERT_NO_THROW(dag->go().get());
   checkOrder();
 }
@@ -257,8 +256,8 @@ TEST_F(FutureDAGTest, DestroyBeforeComplete) {
   auto barrier = std::make_shared<boost::barrier>(2);
   Future<Unit> f;
   {
-    auto dag = FutureDAG::create();
-    auto h1 = dag->add([barrier] {
+    auto localDag = FutureDAG::create();
+    auto h1 = localDag->add([barrier] {
       auto p = std::make_shared<Promise<Unit>>();
       std::thread t([p, barrier] {
         barrier->wait();
@@ -267,9 +266,9 @@ TEST_F(FutureDAGTest, DestroyBeforeComplete) {
       t.detach();
       return p->getFuture();
     });
-    auto h2 = dag->add(makeFutureFunc);
-    dag->dependency(h1, h2);
-    f = dag->go();
+    auto h2 = localDag->add(makeFutureFunc);
+    localDag->dependency(h1, h2);
+    f = localDag->go();
   }
   barrier->wait();
   ASSERT_NO_THROW(f.get());

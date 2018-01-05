@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2012-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,8 @@
  */
 
 #include <folly/Format.h>
-
-#include <gtest/gtest.h>
+#include <folly/Utility.h>
+#include <folly/portability/GTest.h>
 
 #include <string>
 
@@ -126,20 +126,22 @@ TEST(Format, Simple) {
   EXPECT_EQ("0042", sformat("{0[3]:04}", defaulted(v2, 42)));
   EXPECT_EQ("0042", svformat("{3:04}", defaulted(v2, 42)));
 
-  const int p[] = {10, 20, 30};
-  const int* q = p;
-  EXPECT_EQ("0020", sformat("{0[1]:04}", p));
-  EXPECT_EQ("0020", svformat("{1:04}", p));
-  EXPECT_EQ("0020", sformat("{0[1]:04}", q));
-  EXPECT_EQ("0020", svformat("{1:04}", q));
-  EXPECT_NE("", sformat("{}", q));
+  {
+    const int p[] = { 10, 20, 30 };
+    const int* q = p;
+    EXPECT_EQ("0020", sformat("{0[1]:04}", p));
+    EXPECT_EQ("0020", svformat("{1:04}", p));
+    EXPECT_EQ("0020", sformat("{0[1]:04}", q));
+    EXPECT_EQ("0020", svformat("{1:04}", q));
+    EXPECT_NE("", sformat("{}", q));
 
-  EXPECT_EQ("0x", sformat("{}", p).substr(0, 2));
-  EXPECT_EQ("10", svformat("{}", p));
-  EXPECT_EQ("0x", sformat("{}", q).substr(0, 2));
-  EXPECT_EQ("10", svformat("{}", q));
-  q = nullptr;
-  EXPECT_EQ("(null)", sformat("{}", q));
+    EXPECT_EQ("0x", sformat("{}", p).substr(0, 2));
+    EXPECT_EQ("10", svformat("{}", p));
+    EXPECT_EQ("0x", sformat("{}", q).substr(0, 2));
+    EXPECT_EQ("10", svformat("{}", q));
+    q = nullptr;
+    EXPECT_EQ("(null)", sformat("{}", q));
+  }
 
   std::map<int, std::string> m { {10, "hello"}, {20, "world"} };
   EXPECT_EQ("worldXX", sformat("{[20]:X<7}", m));
@@ -160,6 +162,12 @@ TEST(Format, Simple) {
   EXPECT_EQ("worldXX", svformat("{hello:X<7}", defaulted(m2, "meow")));
   EXPECT_EQ("meowXXX", sformat("{[none]:X<7}", defaulted(m2, "meow")));
   EXPECT_EQ("meowXXX", svformat("{none:X<7}", defaulted(m2, "meow")));
+  try {
+    svformat("{none:X<7}", m2);
+    EXPECT_FALSE(true) << "svformat should throw on missing key";
+  } catch (const FormatKeyNotFoundException& e) {
+    EXPECT_STREQ("none", e.key());
+  }
 
   // Test indexing in strings
   EXPECT_EQ("61 62", sformat("{0[0]:x} {0[1]:x}", "abcde"));
@@ -331,7 +339,7 @@ struct KeyValue {
   int value;
 };
 
-}  // namespace
+} // namespace
 
 namespace folly {
 
@@ -350,7 +358,7 @@ template <> class FormatValue<KeyValue> {
   const KeyValue& kv_;
 };
 
-}  // namespace
+} // namespace folly
 
 TEST(Format, Custom) {
   KeyValue kv { "hello", 42 };
@@ -475,7 +483,7 @@ class TestExtendingFormatter
     auto appender = [&result](StringPiece s) {
       result.append(s.data(), s.size());
     };
-    std::get<K>(this->values_).format(arg, appender);
+    this->template getFormatValue<K>().format(arg, appender);
     result = sformat("{{{}}}", result);
     cb(StringPiece(result));
   }
@@ -505,4 +513,56 @@ TEST(Format, Extending) {
                        texsformat("a {}", "formatter"),
                        "another formatter"),
             "Extending {a {formatter}} in {another formatter}");
+}
+
+TEST(Format, Temporary) {
+  constexpr StringPiece kStr = "A long string that should go on the heap";
+  auto fmt = format("{}", kStr.str()); // Pass a temporary std::string.
+  EXPECT_EQ(fmt.str(), kStr);
+  // The formatter can be reused.
+  EXPECT_EQ(fmt.str(), kStr);
+}
+
+namespace {
+
+struct NoncopyableInt : MoveOnly {
+  explicit NoncopyableInt(int v) : value(v) {}
+  int value;
+};
+
+} // namespace
+
+namespace folly {
+
+template <>
+class FormatValue<NoncopyableInt> {
+ public:
+  explicit FormatValue(const NoncopyableInt& v) : v_(v) {}
+
+  template <class FormatCallback>
+  void format(FormatArg& arg, FormatCallback& cb) const {
+    FormatValue<int>(v_.value).format(arg, cb);
+  }
+
+ private:
+  const NoncopyableInt& v_;
+};
+
+} // namespace folly
+
+TEST(Format, NoncopyableArg) {
+  {
+    // Test that lvalues are held by reference.
+    NoncopyableInt v(1);
+    auto fmt = format("{}", v);
+    EXPECT_EQ(fmt.str(), "1");
+    // The formatter can be reused.
+    EXPECT_EQ(fmt.str(), "1");
+  }
+
+  {
+    // Test that rvalues are moved.
+    auto fmt = format("{}", NoncopyableInt(1));
+    EXPECT_EQ(fmt.str(), "1");
+  }
 }

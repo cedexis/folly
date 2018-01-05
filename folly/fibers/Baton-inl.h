@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 #include <folly/fibers/Fiber.h>
-#include <folly/fibers/FiberManager.h>
+#include <folly/fibers/FiberManagerInternal.h>
 
 namespace folly {
 namespace fibers {
@@ -51,7 +51,7 @@ void Baton::waitFiber(FiberManager& fm, F&& mainContextFunc) {
       if (LIKELY(baton_fiber == NO_WAITER)) {
         continue;
       } else if (baton_fiber == POSTED || baton_fiber == TIMEOUT) {
-        fiber.setData(0);
+        fiber.resume();
         break;
       } else {
         throw std::logic_error("Some Fiber is already waiting on this Baton.");
@@ -66,9 +66,9 @@ void Baton::waitFiber(FiberManager& fm, F&& mainContextFunc) {
   fm.activeFiber_->preempt(Fiber::AWAITING);
 }
 
-template <typename F>
-bool Baton::timed_wait(
-    TimeoutController::Duration timeout,
+template <typename Rep, typename Period, typename F>
+bool Baton::try_wait_for(
+    const std::chrono::duration<Rep, Period>& timeout,
     F&& mainContextFunc) {
   auto fm = FiberManager::getFiberManagerUnsafe();
 
@@ -87,7 +87,7 @@ bool Baton::timed_wait(
   auto id =
       fm->timeoutManager_->registerTimeout(std::ref(timeoutFunc), timeout);
 
-  waitFiber(*fm, std::move(mainContextFunc));
+  waitFiber(*fm, static_cast<F&&>(mainContextFunc));
 
   auto posted = waitingFiber_ == POSTED;
 
@@ -98,16 +98,17 @@ bool Baton::timed_wait(
   return posted;
 }
 
-template <typename C, typename D>
-bool Baton::timed_wait(const std::chrono::time_point<C, D>& timeout) {
-  auto now = C::now();
+template <typename Clock, typename Duration, typename F>
+bool Baton::try_wait_until(
+    const std::chrono::time_point<Clock, Duration>& deadline,
+    F&& mainContextFunc) {
+  auto now = Clock::now();
 
-  if (LIKELY(now <= timeout)) {
-    return timed_wait(
-        std::chrono::duration_cast<std::chrono::milliseconds>(timeout - now));
+  if (LIKELY(now <= deadline)) {
+    return try_wait_for(deadline - now, static_cast<F&&>(mainContextFunc));
   } else {
-    return timed_wait(TimeoutController::Duration(0));
+    return try_wait_for(Duration{}, static_cast<F&&>(mainContextFunc));
   }
 }
-}
-}
+} // namespace fibers
+} // namespace folly

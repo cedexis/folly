@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -124,6 +124,7 @@ Sample usage:
 #include <limits>
 #include <memory>
 #include <type_traits>
+
 #include <boost/iterator/iterator_facade.hpp>
 #include <glog/logging.h>
 
@@ -134,12 +135,13 @@ Sample usage:
 
 namespace folly {
 
-template<typename T,
-         typename Comp = std::less<T>,
-         // All nodes are allocated using provided SimpleAllocator,
-         // it should be thread-safe.
-         typename NodeAlloc = SysAlloc,
-         int MAX_HEIGHT = 24>
+template <
+    typename T,
+    typename Comp = std::less<T>,
+    // All nodes are allocated using provided SimpleAllocator,
+    // it should be thread-safe.
+    typename NodeAlloc = SysAlloc,
+    int MAX_HEIGHT = 24>
 class ConcurrentSkipList {
   // MAX_HEIGHT needs to be at least 2 to suppress compiler
   // warnings/errors (Werror=uninitialized tiggered due to preds_[1]
@@ -195,7 +197,7 @@ class ConcurrentSkipList {
   //===================================================================
 
   ~ConcurrentSkipList() {
-    /* static */ if (NodeType::template destroyIsNoOp<NodeAlloc>()) {
+    /* static */ if (NodeType::template DestroyIsNoOp<NodeAlloc>::value) {
       // Avoid traversing the list if using arena allocator.
       return;
     }
@@ -235,7 +237,7 @@ class ConcurrentSkipList {
 
       // if found, succs[0..foundLayer] need to point to the cached foundNode,
       // as foundNode might be deleted at the same time thus pred->skip() can
-      // return NULL or another node.
+      // return nullptr or another node.
       succs[layer] = foundNode ? foundNode : node;
     }
     return foundLayer;
@@ -256,7 +258,9 @@ class ConcurrentSkipList {
   // Returns the node if found, nullptr otherwise.
   NodeType* find(const value_type &data) {
     auto ret = findNode(data);
-    if (ret.second && !ret.first->markedForRemoval()) return ret.first;
+    if (ret.second && !ret.first->markedForRemoval()) {
+      return ret.first;
+    }
     return nullptr;
   }
 
@@ -296,7 +300,7 @@ class ConcurrentSkipList {
   //     list with the same key.
   //   pair.second stores whether the data is added successfully:
   //     0 means not added, otherwise reutrns the new size.
-  template<typename U>
+  template <typename U>
   std::pair<NodeType*, size_t> addOrGetData(U &&data) {
     NodeType *preds[MAX_HEIGHT], *succs[MAX_HEIGHT];
     NodeType *newNode;
@@ -328,9 +332,9 @@ class ConcurrentSkipList {
       // locks acquired and all valid, need to modify the links under the locks.
       newNode =
         NodeType::create(recycler_.alloc(), nodeHeight, std::forward<U>(data));
-      for (int layer = 0; layer < nodeHeight; ++layer) {
-        newNode->setSkip(layer, succs[layer]);
-        preds[layer]->setSkip(layer, newNode);
+      for (int k = 0; k < nodeHeight; ++k) {
+        newNode->setSkip(k, succs[k]);
+        preds[k]->setSkip(k, newNode);
       }
 
       newNode->setFullyLinked();
@@ -367,7 +371,9 @@ class ConcurrentSkipList {
         nodeToDelete = succs[layer];
         nodeHeight = nodeToDelete->height();
         nodeGuard = nodeToDelete->acquireGuard();
-        if (nodeToDelete->markedForRemoval()) return false;
+        if (nodeToDelete->markedForRemoval()) {
+          return false;
+        }
         nodeToDelete->setMarkedForRemoval();
         isMarked = true;
       }
@@ -378,8 +384,8 @@ class ConcurrentSkipList {
         continue;  // this will unlock all the locks
       }
 
-      for (int layer = nodeHeight - 1; layer >= 0; --layer) {
-        preds[layer]->setSkip(layer, nodeToDelete->skip(layer));
+      for (int k = nodeHeight - 1; k >= 0; --k) {
+        preds[k]->setSkip(k, nodeToDelete->skip(k));
       }
 
       incrementSize(-1);
@@ -400,7 +406,9 @@ class ConcurrentSkipList {
     for (int layer = maxLayer(); layer >= 0; --layer) {
       do {
         node = pred->skip(layer);
-        if (node) pred = node;
+        if (node) {
+          pred = node;
+        }
       } while (node != nullptr);
     }
     return pred == head_.load(std::memory_order_relaxed)
@@ -443,7 +451,9 @@ class ConcurrentSkipList {
     while (!found) {
       // stepping down
       for (; ht > 0 && less(data, node = pred->skip(ht - 1)); --ht) {}
-      if (ht == 0) return std::make_pair(node, 0);  // not found
+      if (ht == 0) {
+        return std::make_pair(node, 0); // not found
+      }
       // node <= data now, but we need to fix up ht
       --ht;
 
@@ -517,7 +527,7 @@ class ConcurrentSkipList {
   std::atomic<size_t> size_;
 };
 
-template<typename T, typename Comp, typename NodeAlloc, int MAX_HEIGHT>
+template <typename T, typename Comp, typename NodeAlloc, int MAX_HEIGHT>
 class ConcurrentSkipList<T, Comp, NodeAlloc, MAX_HEIGHT>::Accessor {
   typedef detail::SkipListNode<T> NodeType;
   typedef ConcurrentSkipList<T, Comp, NodeAlloc, MAX_HEIGHT> SkipListType;
@@ -592,8 +602,10 @@ class ConcurrentSkipList<T, Comp, NodeAlloc, MAX_HEIGHT>::Accessor {
   const_iterator cbegin() const { return begin(); }
   const_iterator cend() const { return end(); }
 
-  template<typename U,
-    typename=typename std::enable_if<std::is_convertible<U, T>::value>::type>
+  template <
+      typename U,
+      typename =
+          typename std::enable_if<std::is_convertible<U, T>::value>::type>
   std::pair<iterator, bool> insert(U&& data) {
     auto ret = sl_->addOrGetData(std::forward<U>(data));
     return std::make_pair(iterator(ret.first), ret.second);
@@ -651,7 +663,7 @@ class ConcurrentSkipList<T, Comp, NodeAlloc, MAX_HEIGHT>::Accessor {
 };
 
 // implements forward iterator concept.
-template<typename ValT, typename NodeT>
+template <typename ValT, typename NodeT>
 class detail::csl_iterator :
   public boost::iterator_facade<csl_iterator<ValT, NodeT>,
     ValT, boost::forward_traversal_tag> {
@@ -663,10 +675,12 @@ class detail::csl_iterator :
 
   explicit csl_iterator(NodeT* node = nullptr) : node_(node) {}
 
-  template<typename OtherVal, typename OtherNode>
-  csl_iterator(const csl_iterator<OtherVal, OtherNode> &other,
-      typename std::enable_if<std::is_convertible<OtherVal, ValT>::value>::type*
-      = 0) : node_(other.node_) {}
+  template <typename OtherVal, typename OtherNode>
+  csl_iterator(
+      const csl_iterator<OtherVal, OtherNode>& other,
+      typename std::enable_if<
+          std::is_convertible<OtherVal, ValT>::value>::type* = nullptr)
+      : node_(other.node_) {}
 
   size_t nodeSize() const {
     return node_ == nullptr ? 0 :
@@ -677,9 +691,9 @@ class detail::csl_iterator :
 
  private:
   friend class boost::iterator_core_access;
-  template<class,class> friend class csl_iterator;
+  template <class, class> friend class csl_iterator;
 
-  void increment() { node_ = node_->next(); };
+  void increment() { node_ = node_->next(); }
   bool equal(const csl_iterator& other) const { return node_ == other.node_; }
   value_type& dereference() const { return node_->data(); }
 
@@ -687,7 +701,7 @@ class detail::csl_iterator :
 };
 
 // Skipper interface
-template<typename T, typename Comp, typename NodeAlloc, int MAX_HEIGHT>
+template <typename T, typename Comp, typename NodeAlloc, int MAX_HEIGHT>
 class ConcurrentSkipList<T, Comp, NodeAlloc, MAX_HEIGHT>::Skipper {
   typedef detail::SkipListNode<T> NodeType;
   typedef ConcurrentSkipList<T, Comp, NodeAlloc, MAX_HEIGHT> SkipListType;
@@ -718,7 +732,7 @@ class ConcurrentSkipList<T, Comp, NodeAlloc, MAX_HEIGHT>::Skipper {
     }
     int max_layer = maxLayer();
     for (int i = 0; i < max_layer; ++i) {
-      hints_[i] = i + 1;
+      hints_[i] = uint8_t(i + 1);
     }
     hints_[max_layer] = max_layer;
   }
@@ -769,7 +783,9 @@ class ConcurrentSkipList<T, Comp, NodeAlloc, MAX_HEIGHT>::Skipper {
    */
   bool to(const value_type &data) {
     int layer = curHeight() - 1;
-    if (layer < 0) return false;   // reaches the end of the list
+    if (layer < 0) {
+      return false; // reaches the end of the list
+    }
 
     int lyr = hints_[layer];
     int max_layer = maxLayer();
@@ -780,7 +796,9 @@ class ConcurrentSkipList<T, Comp, NodeAlloc, MAX_HEIGHT>::Skipper {
 
     int foundLayer = SkipListType::
       findInsertionPoint(preds_[lyr], lyr, data, preds_, succs_);
-    if (foundLayer < 0) return false;
+    if (foundLayer < 0) {
+      return false;
+    }
 
     DCHECK(succs_[0] != nullptr) << "lyr=" << lyr
                                  << "; max_layer=" << max_layer;

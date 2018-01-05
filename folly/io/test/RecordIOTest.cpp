@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,6 @@
 #include <random>
 
 #include <glog/logging.h>
-#include <gtest/gtest.h>
 
 #include <folly/Conv.h>
 #include <folly/FBString.h>
@@ -29,11 +28,13 @@
 #include <folly/experimental/TestUtil.h>
 #include <folly/io/IOBufQueue.h>
 #include <folly/portability/GFlags.h>
+#include <folly/portability/GTest.h>
 #include <folly/portability/Unistd.h>
 
 DEFINE_int32(random_seed, folly::randomNumberSeed(), "random seed");
 
-namespace folly { namespace test {
+namespace folly {
+namespace test {
 
 namespace {
 // shortcut
@@ -49,7 +50,7 @@ std::unique_ptr<IOBuf> iobufs(std::initializer_list<T> ranges) {
   return queue.move();
 }
 
-}  // namespace
+} // namespace
 
 TEST(RecordIOTest, Simple) {
   TemporaryFile file;
@@ -189,7 +190,7 @@ void corrupt(int fd, off_t pos) {
   ++val;
   EXPECT_EQ(1, pwrite(fd, &val, 1, pos));
 }
-}  // namespace
+} // namespace
 
 TEST(RecordIOTest, Randomized) {
   SCOPED_TRACE(to<std::string>("Random seed is ", FLAGS_random_seed));
@@ -262,8 +263,9 @@ TEST(RecordIOTest, Randomized) {
     EXPECT_EQ(records.size(), i);
   }
 }
+} // namespace test
+} // namespace folly
 
-}}  // namespaces
 
 int main(int argc, char *argv[]) {
   testing::InitGoogleTest(&argc, argv);

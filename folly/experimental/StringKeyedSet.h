@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@
 #include <initializer_list>
 #include <memory>
 #include <set>
+
 #include <folly/Range.h>
 #include <folly/experimental/StringKeyedCommon.h>
 
@@ -33,14 +34,15 @@ namespace folly {
  * It uses kind of hack: string pointed by StringPiece is copied when
  * StringPiece is inserted into set
  */
-template <class Compare = std::less<StringPiece>,
-          class Alloc = std::allocator<StringPiece>>
+template <
+    class Compare = std::less<StringPiece>,
+    class Alloc = std::allocator<StringPiece>>
 class StringKeyedSetBase
     : private std::set<StringPiece, Compare, Alloc> {
-private:
+ private:
   using Base = std::set<StringPiece, Compare, Alloc>;
 
-public:
+ public:
   typedef typename Base::key_type key_type;
   typedef typename Base::value_type value_type;
   typedef typename Base::key_compare key_compare;
@@ -127,8 +129,15 @@ public:
   using Base::cbegin;
   using Base::cend;
   using Base::find;
+  using Base::count;
   using Base::lower_bound;
   using Base::upper_bound;
+
+  bool operator==(StringKeyedSetBase const& other) const {
+    Base const& lhs = *this;
+    Base const& rhs = static_cast<Base const&>(other);
+    return lhs == rhs;
+  }
 
   template <class... Args>
   std::pair<iterator, bool> emplace(Args&&... args) {
@@ -173,6 +182,10 @@ public:
 
   using Base::get_allocator;
 
+  void swap(StringKeyedSetBase& other) & {
+    return Base::swap(other);
+  }
+
   ~StringKeyedSetBase() {
     // Here we assume that set doesn't use keys in destructor
     for (auto it : *this) {
@@ -183,4 +196,4 @@ public:
 
 using StringKeyedSet = StringKeyedSetBase<>;
 
-} // folly
+} // namespace folly

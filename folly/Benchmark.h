@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,16 +19,17 @@
 #include <folly/Portability.h>
 #include <folly/Preprocessor.h> // for FB_ANONYMOUS_VARIABLE
 #include <folly/ScopeGuard.h>
+#include <folly/Traits.h>
 #include <folly/portability/GFlags.h>
-#include <folly/portability/Time.h>
 
 #include <cassert>
-#include <ctime>
-#include <boost/function_types/function_arity.hpp>
+#include <chrono>
 #include <functional>
-#include <glog/logging.h>
 #include <limits>
 #include <type_traits>
+
+#include <boost/function_types/function_arity.hpp>
+#include <glog/logging.h>
 
 DECLARE_bool(benchmark);
 
@@ -52,14 +53,21 @@ inline bool runBenchmarksOnFlag() {
 
 namespace detail {
 
-/**
- * This is the clock ID used for measuring time. On older kernels, the
- * resolution of this clock will be very coarse, which will cause the
- * benchmarks to fail.
- */
-enum Clock { DEFAULT_CLOCK_ID = CLOCK_REALTIME };
+using TimeIterPair =
+    std::pair<std::chrono::high_resolution_clock::duration, unsigned int>;
+using BenchmarkFun = std::function<detail::TimeIterPair(unsigned int)>;
 
-typedef std::pair<uint64_t, unsigned int> TimeIterPair;
+struct BenchmarkRegistration {
+  std::string file;
+  std::string name;
+  BenchmarkFun func;
+};
+
+struct BenchmarkResult {
+  std::string file;
+  std::string name;
+  double timeInNs;
+};
 
 /**
  * Adds a benchmark wrapped in a std::function. Only used
@@ -69,87 +77,51 @@ void addBenchmarkImpl(const char* file,
                       const char* name,
                       std::function<TimeIterPair(unsigned int)>);
 
-/**
- * Takes the difference between two timespec values. end is assumed to
- * occur after start.
- */
-inline uint64_t timespecDiff(timespec end, timespec start) {
-  if (end.tv_sec == start.tv_sec) {
-    assert(end.tv_nsec >= start.tv_nsec);
-    return end.tv_nsec - start.tv_nsec;
-  }
-  assert(end.tv_sec > start.tv_sec);
-  auto diff = uint64_t(end.tv_sec - start.tv_sec);
-  assert(diff <
-         std::numeric_limits<uint64_t>::max() / 1000000000UL);
-  return diff * 1000000000UL
-    + end.tv_nsec - start.tv_nsec;
-}
-
-/**
- * Takes the difference between two sets of timespec values. The first
- * two come from a high-resolution clock whereas the other two come
- * from a low-resolution clock. The crux of the matter is that
- * high-res values may be bogus as documented in
- * http://linux.die.net/man/3/clock_gettime. The trouble is when the
- * running process migrates from one CPU to another, which is more
- * likely for long-running processes. Therefore we watch for high
- * differences between the two timings.
- *
- * This function is subject to further improvements.
- */
-inline uint64_t timespecDiff(timespec end, timespec start,
-                             timespec endCoarse, timespec startCoarse) {
-  auto fine = timespecDiff(end, start);
-  auto coarse = timespecDiff(endCoarse, startCoarse);
-  if (coarse - fine >= 1000000) {
-    // The fine time is in all likelihood bogus
-    return coarse;
-  }
-  return fine;
-}
-
 } // namespace detail
 
 /**
  * Supporting type for BENCHMARK_SUSPEND defined below.
  */
 struct BenchmarkSuspender {
+  using Clock = std::chrono::high_resolution_clock;
+  using TimePoint = Clock::time_point;
+  using Duration = Clock::duration;
+
   BenchmarkSuspender() {
-    CHECK_EQ(0, clock_gettime(detail::DEFAULT_CLOCK_ID, &start));
+    start = Clock::now();
   }
 
   BenchmarkSuspender(const BenchmarkSuspender &) = delete;
   BenchmarkSuspender(BenchmarkSuspender && rhs) noexcept {
     start = rhs.start;
-    rhs.start.tv_nsec = rhs.start.tv_sec = 0;
+    rhs.start = {};
   }
 
   BenchmarkSuspender& operator=(const BenchmarkSuspender &) = delete;
   BenchmarkSuspender& operator=(BenchmarkSuspender && rhs) {
-    if (start.tv_nsec > 0 || start.tv_sec > 0) {
+    if (start != TimePoint{}) {
       tally();
     }
     start = rhs.start;
-    rhs.start.tv_nsec = rhs.start.tv_sec = 0;
+    rhs.start = {};
     return *this;
   }
 
   ~BenchmarkSuspender() {
-    if (start.tv_nsec > 0 || start.tv_sec > 0) {
+    if (start != TimePoint{}) {
       tally();
     }
   }
 
   void dismiss() {
-    assert(start.tv_nsec > 0 || start.tv_sec > 0);
+    assert(start != TimePoint{});
     tally();
-    start.tv_nsec = start.tv_sec = 0;
+    start = {};
   }
 
   void rehire() {
-    assert(start.tv_nsec == 0 || start.tv_sec == 0);
-    CHECK_EQ(0, clock_gettime(detail::DEFAULT_CLOCK_ID, &start));
+    assert(start == TimePoint{});
+    start = Clock::now();
   }
 
   template <class F>
@@ -168,20 +140,18 @@ struct BenchmarkSuspender {
   }
 
   /**
-   * Accumulates nanoseconds spent outside benchmark.
+   * Accumulates time spent outside benchmark.
    */
-  typedef uint64_t NanosecondsSpent;
-  static NanosecondsSpent nsSpent;
+  static Duration timeSpent;
 
-private:
+ private:
   void tally() {
-    timespec end;
-    CHECK_EQ(0, clock_gettime(detail::DEFAULT_CLOCK_ID, &end));
-    nsSpent += detail::timespecDiff(end, start);
+    auto end = Clock::now();
+    timeSpent += end - start;
     start = end;
   }
 
-  timespec start;
+  TimePoint start;
 };
 
 /**
@@ -198,22 +168,17 @@ typename std::enable_if<
 >::type
 addBenchmark(const char* file, const char* name, Lambda&& lambda) {
   auto execute = [=](unsigned int times) {
-    BenchmarkSuspender::nsSpent = 0;
-    timespec start, end;
+    BenchmarkSuspender::timeSpent = {};
     unsigned int niter;
 
     // CORE MEASUREMENT STARTS
-    auto const r1 = clock_gettime(detail::DEFAULT_CLOCK_ID, &start);
+    auto start = std::chrono::high_resolution_clock::now();
     niter = lambda(times);
-    auto const r2 = clock_gettime(detail::DEFAULT_CLOCK_ID, &end);
+    auto end = std::chrono::high_resolution_clock::now();
     // CORE MEASUREMENT ENDS
 
-    CHECK_EQ(0, r1);
-    CHECK_EQ(0, r2);
-
     return detail::TimeIterPair(
-      detail::timespecDiff(end, start) - BenchmarkSuspender::nsSpent,
-      niter);
+        (end - start) - BenchmarkSuspender::timeSpent, niter);
   };
 
   detail::addBenchmarkImpl(file, name,
@@ -242,35 +207,105 @@ addBenchmark(const char* file, const char* name, Lambda&& lambda) {
 }
 
 /**
- * Call doNotOptimizeAway(var) against variables that you use for
+ * Call doNotOptimizeAway(var) to ensure that var will be computed even
+ * post-optimization.  Use it for variables that are computed during
  * benchmarking but otherwise are useless. The compiler tends to do a
- * good job at eliminating unused variables, and this function fools
- * it into thinking var is in fact needed.
+ * good job at eliminating unused variables, and this function fools it
+ * into thinking var is in fact needed.
+ *
+ * Call makeUnpredictable(var) when you don't want the optimizer to use
+ * its knowledge of var to shape the following code.  This is useful
+ * when constant propagation or power reduction is possible during your
+ * benchmark but not in real use cases.
  */
+
 #ifdef _MSC_VER
 
 #pragma optimize("", off)
 
-template <class T>
-void doNotOptimizeAway(T&& datum) {
-  datum = datum;
-}
+inline void doNotOptimizeDependencySink(const void*) {}
 
 #pragma optimize("", on)
 
-#elif defined(__clang__)
-
 template <class T>
-__attribute__((__optnone__)) void doNotOptimizeAway(T&& /* datum */) {}
+void doNotOptimizeAway(const T& datum) {
+  doNotOptimizeDependencySink(&datum);
+}
+
+template <typename T>
+void makeUnpredictable(T& datum) {
+  doNotOptimizeDependencySink(&datum);
+}
 
 #else
 
-template <class T>
-void doNotOptimizeAway(T&& datum) {
-  asm volatile("" : "+r" (datum));
+namespace detail {
+template <typename T>
+struct DoNotOptimizeAwayNeedsIndirect {
+  using Decayed = typename std::decay<T>::type;
+
+  // First two constraints ensure it can be an "r" operand.
+  // std::is_pointer check is because callers seem to expect that
+  // doNotOptimizeAway(&x) is equivalent to doNotOptimizeAway(x).
+  constexpr static bool value = !folly::IsTriviallyCopyable<Decayed>::value ||
+      sizeof(Decayed) > sizeof(long) || std::is_pointer<Decayed>::value;
+};
+} // namespace detail
+
+template <typename T>
+auto doNotOptimizeAway(const T& datum) -> typename std::enable_if<
+    !detail::DoNotOptimizeAwayNeedsIndirect<T>::value>::type {
+  // The "r" constraint forces the compiler to make datum available
+  // in a register to the asm block, which means that it must have
+  // computed/loaded it.  We use this path for things that are <=
+  // sizeof(long) (they have to fit), trivial (otherwise the compiler
+  // doesn't want to put them in a register), and not a pointer (because
+  // doNotOptimizeAway(&foo) would otherwise be a foot gun that didn't
+  // necessarily compute foo).
+  //
+  // An earlier version of this method had a more permissive input operand
+  // constraint, but that caused unnecessary variation between clang and
+  // gcc benchmarks.
+  asm volatile("" ::"r"(datum));
+}
+
+template <typename T>
+auto doNotOptimizeAway(const T& datum) -> typename std::enable_if<
+    detail::DoNotOptimizeAwayNeedsIndirect<T>::value>::type {
+  // This version of doNotOptimizeAway tells the compiler that the asm
+  // block will read datum from memory, and that in addition it might read
+  // or write from any memory location.  If the memory clobber could be
+  // separated into input and output that would be preferrable.
+  asm volatile("" ::"m"(datum) : "memory");
+}
+
+template <typename T>
+auto makeUnpredictable(T& datum) -> typename std::enable_if<
+    !detail::DoNotOptimizeAwayNeedsIndirect<T>::value>::type {
+  asm volatile("" : "+r"(datum));
+}
+
+template <typename T>
+auto makeUnpredictable(T& datum) -> typename std::enable_if<
+    detail::DoNotOptimizeAwayNeedsIndirect<T>::value>::type {
+  asm volatile("" ::"m"(datum) : "memory");
 }
 
 #endif
+
+struct dynamic;
+
+void benchmarkResultsToDynamic(
+    const std::vector<detail::BenchmarkResult>& data,
+    dynamic&);
+
+void benchmarkResultsFromDynamic(
+    const dynamic&,
+    std::vector<detail::BenchmarkResult>&);
+
+void printResultComparison(
+    const std::vector<detail::BenchmarkResult>& base,
+    const std::vector<detail::BenchmarkResult>& test);
 
 } // namespace folly
 
@@ -430,7 +465,7 @@ void doNotOptimizeAway(T&& datum) {
 /**
  * Just like BENCHMARK, but prints the time relative to a
  * baseline. The baseline is the most recent BENCHMARK() seen in
- * lexical order. Example:
+ * the current scope. Example:
  *
  * // This is the baseline
  * BENCHMARK(insertVectorBegin, n) {

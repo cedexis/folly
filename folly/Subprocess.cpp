@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,8 +25,8 @@
 #endif
 #include <fcntl.h>
 
-#include <array>
 #include <algorithm>
+#include <array>
 #include <system_error>
 
 #include <boost/container/flat_set.hpp>
@@ -39,14 +39,25 @@
 #include <folly/ScopeGuard.h>
 #include <folly/String.h>
 #include <folly/io/Cursor.h>
-#include <folly/portability/Environment.h>
+#include <folly/lang/Assume.h>
 #include <folly/portability/Sockets.h>
+#include <folly/portability/Stdlib.h>
+#include <folly/portability/SysSyscall.h>
 #include <folly/portability/Unistd.h>
+#include <folly/system/Shell.h>
 
 constexpr int kExecFailure = 127;
 constexpr int kChildFailure = 126;
 
 namespace folly {
+
+ProcessReturnCode ProcessReturnCode::make(int status) {
+  if (!WIFEXITED(status) && !WIFSIGNALED(status)) {
+    throw std::runtime_error(
+        to<std::string>("Invalid ProcessReturnCode: ", status));
+  }
+  return ProcessReturnCode(status);
+}
 
 ProcessReturnCode::ProcessReturnCode(ProcessReturnCode&& p) noexcept
   : rawStatus_(p.rawStatus_) {
@@ -61,12 +72,19 @@ ProcessReturnCode& ProcessReturnCode::operator=(ProcessReturnCode&& p)
 }
 
 ProcessReturnCode::State ProcessReturnCode::state() const {
-  if (rawStatus_ == RV_NOT_STARTED) return NOT_STARTED;
-  if (rawStatus_ == RV_RUNNING) return RUNNING;
-  if (WIFEXITED(rawStatus_)) return EXITED;
-  if (WIFSIGNALED(rawStatus_)) return KILLED;
-  throw std::runtime_error(to<std::string>(
-      "Invalid ProcessReturnCode: ", rawStatus_));
+  if (rawStatus_ == RV_NOT_STARTED) {
+    return NOT_STARTED;
+  }
+  if (rawStatus_ == RV_RUNNING) {
+    return RUNNING;
+  }
+  if (WIFEXITED(rawStatus_)) {
+    return EXITED;
+  }
+  if (WIFSIGNALED(rawStatus_)) {
+    return KILLED;
+  }
+  assume_unreachable();
 }
 
 void ProcessReturnCode::enforce(State expected) const {
@@ -105,24 +123,28 @@ std::string ProcessReturnCode::str() const {
     return to<std::string>("killed by signal ", killSignal(),
                            (coreDumped() ? " (core dumped)" : ""));
   }
-  CHECK(false);  // unreached
-  return "";  // silence GCC warning
+  assume_unreachable();
 }
 
 CalledProcessError::CalledProcessError(ProcessReturnCode rc)
-  : returnCode_(rc),
-    what_(returnCode_.str()) {
+    : SubprocessError(rc.str()), returnCode_(rc) {}
+
+static inline std::string toSubprocessSpawnErrorMessage(
+    char const* executable,
+    int errCode,
+    int errnoValue) {
+  auto prefix = errCode == kExecFailure ? "failed to execute "
+                                        : "error preparing to execute ";
+  return to<std::string>(prefix, executable, ": ", errnoStr(errnoValue));
 }
 
-SubprocessSpawnError::SubprocessSpawnError(const char* executable,
-                                           int errCode,
-                                           int errnoValue)
-  : errnoValue_(errnoValue),
-    what_(to<std::string>(errCode == kExecFailure ?
-                            "failed to execute " :
-                            "error preparing to execute ",
-                          executable, ": ", errnoStr(errnoValue))) {
-}
+SubprocessSpawnError::SubprocessSpawnError(
+    const char* executable,
+    int errCode,
+    int errnoValue)
+    : SubprocessError(
+          toSubprocessSpawnErrorMessage(executable, errCode, errnoValue)),
+      errnoValue_(errnoValue) {}
 
 namespace {
 
@@ -144,7 +166,7 @@ void checkStatus(ProcessReturnCode returnCode) {
   }
 }
 
-}  // namespace
+} // namespace
 
 Subprocess::Options& Subprocess::Options::fd(int fd, int action) {
   if (action == Subprocess::PIPE) {
@@ -171,7 +193,9 @@ Subprocess::Subprocess(
   if (argv.empty()) {
     throw std::invalid_argument("argv must not be empty");
   }
-  if (!executable) executable = argv[0].c_str();
+  if (!executable) {
+    executable = argv[0].c_str();
+  }
   spawn(cloneStrings(argv), executable, options, env);
 }
 
@@ -182,17 +206,9 @@ Subprocess::Subprocess(
   if (options.usePath_) {
     throw std::invalid_argument("usePath() not allowed when running in shell");
   }
-  const char* shell = getenv("SHELL");
-  if (!shell) {
-    shell = "/bin/sh";
-  }
 
-  std::unique_ptr<const char*[]> argv(new const char*[4]);
-  argv[0] = shell;
-  argv[1] = "-c";
-  argv[2] = cmd.c_str();
-  argv[3] = nullptr;
-  spawn(std::move(argv), shell, options, env);
+  std::vector<std::string> argv = {"/bin/sh", "-c", cmd};
+  spawn(cloneStrings(argv), argv[0].c_str(), options, env);
 }
 
 Subprocess::~Subprocess() {
@@ -216,7 +232,7 @@ struct ChildErrorInfo {
   _exit(errCode);
 }
 
-}  // namespace
+} // namespace
 
 void Subprocess::setAllNonBlocking() {
   for (auto& p : pipes_) {
@@ -337,10 +353,10 @@ void Subprocess::spawnInternal(
       int cfd;
       if (p.second == PIPE_IN) {
         // Child gets reading end
-        pipe.pipe = folly::File(fds[1], /*owns_fd=*/ true);
+        pipe.pipe = folly::File(fds[1], /*ownsFd=*/true);
         cfd = fds[0];
       } else {
-        pipe.pipe = folly::File(fds[0], /*owns_fd=*/ true);
+        pipe.pipe = folly::File(fds[0], /*ownsFd=*/true);
         cfd = fds[1];
       }
       p.second = cfd;  // ensure it gets dup2()ed
@@ -396,7 +412,19 @@ void Subprocess::spawnInternal(
   // Call c_str() here, as it's not necessarily safe after fork.
   const char* childDir =
     options.childDir_.empty() ? nullptr : options.childDir_.c_str();
-  pid_t pid = vfork();
+
+  pid_t pid;
+#ifdef __linux__
+  if (options.cloneFlags_) {
+    pid = syscall(SYS_clone, *options.cloneFlags_, 0, nullptr, nullptr);
+    checkUnixError(pid, errno, "clone");
+  } else {
+#endif
+    pid = vfork();
+    checkUnixError(pid, errno, "vfork");
+#ifdef __linux__
+  }
+#endif
   if (pid == 0) {
     int errnoValue = prepareChild(options, &oldSignals, childDir);
     if (errnoValue != 0) {
@@ -407,8 +435,6 @@ void Subprocess::spawnInternal(
     // If we get here, exec() failed.
     childError(errFd, kExecFailure, errnoValue);
   }
-  // In parent.  Make sure vfork() succeeded.
-  checkUnixError(pid, errno, "vfork");
 
   // Child is alive.  We have to be very careful about throwing after this
   // point.  We are inside the constructor, so if we throw the Subprocess
@@ -418,7 +444,7 @@ void Subprocess::spawnInternal(
   // child has exited and can be immediately waited for.  In all other cases,
   // we have no way of cleaning up the child.
   pid_ = pid;
-  returnCode_ = ProcessReturnCode(RV_RUNNING);
+  returnCode_ = ProcessReturnCode::makeRunning();
 }
 
 int Subprocess::prepareChild(const Options& options,
@@ -541,11 +567,11 @@ void Subprocess::readChildErrorPipe(int pfd, const char* executable) {
   throw SubprocessSpawnError(executable, info.errCode, info.errnoValue);
 }
 
-ProcessReturnCode Subprocess::poll() {
+ProcessReturnCode Subprocess::poll(struct rusage* ru) {
   returnCode_.enforce(ProcessReturnCode::RUNNING);
   DCHECK_GT(pid_, 0);
   int status;
-  pid_t found = ::waitpid(pid_, &status, WNOHANG);
+  pid_t found = ::wait4(pid_, &status, WNOHANG, ru);
   // The spec guarantees that EINTR does not occur with WNOHANG, so the only
   // two remaining errors are ECHILD (other code reaped the child?), or
   // EINVAL (cosmic rays?), both of which merit an abort:
@@ -553,7 +579,7 @@ ProcessReturnCode Subprocess::poll() {
   if (found != 0) {
     // Though the child process had quit, this call does not close the pipes
     // since its descendants may still be using them.
-    returnCode_ = ProcessReturnCode(status);
+    returnCode_ = ProcessReturnCode::make(status);
     pid_ = -1;
   }
   return returnCode_;
@@ -581,7 +607,7 @@ ProcessReturnCode Subprocess::wait() {
   // Though the child process had quit, this call does not close the pipes
   // since its descendants may still be using them.
   DCHECK_EQ(found, pid_);
-  returnCode_ = ProcessReturnCode(status);
+  returnCode_ = ProcessReturnCode::make(status);
   pid_ = -1;
   return returnCode_;
 }
@@ -661,7 +687,7 @@ bool discardRead(int fd) {
   }
 }
 
-}  // namespace
+} // namespace
 
 std::pair<std::string, std::string> Subprocess::communicate(
     StringPiece input) {
@@ -832,7 +858,8 @@ std::vector<Subprocess::ChildPipe> Subprocess::takeOwnershipOfPipes() {
   for (auto& p : pipes_) {
     pipes.emplace_back(p.childFd, std::move(p.pipe));
   }
-  pipes_.clear();
+  // release memory
+  std::vector<Pipe>().swap(pipes_);
   return pipes;
 }
 
@@ -848,6 +875,6 @@ class Initializer {
 
 Initializer initializer;
 
-}  // namespace
+} // namespace
 
-}  // namespace folly
+} // namespace folly

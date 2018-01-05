@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,6 +37,6 @@
 #include <folly/MicroSpinLock.h>
 
 #include <folly/Portability.h>
-#if FOLLY_X64 || FOLLY_A64 || FOLLY_PPC64
+#if FOLLY_X64 || FOLLY_AARCH64 || FOLLY_PPC64
 #include <folly/PicoSpinLock.h>
 #endif

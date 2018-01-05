@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -45,4 +45,4 @@ class ThreadWheelTimekeeper : public Timekeeper {
   HHWheelTimer::UniquePtr wheelTimer_;
 };
 
-} // folly
+} // namespace folly

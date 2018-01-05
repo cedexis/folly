@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,18 +17,19 @@
 //
 // Author: andrei.alexandrescu@fb.com
 
+#include <list>
+#include <memory>
+
+#include <boost/random.hpp>
+
 #include <folly/Benchmark.h>
 #include <folly/FBString.h>
 #include <folly/FBVector.h>
-#include <folly/Foreach.h>
 #include <folly/Random.h>
 #include <folly/Traits.h>
+#include <folly/container/Foreach.h>
 #include <folly/portability/GFlags.h>
-
-#include <gtest/gtest.h>
-#include <list>
-#include <memory>
-#include <boost/random.hpp>
+#include <folly/portability/GTest.h>
 
 using namespace std;
 using namespace folly;
@@ -68,13 +69,13 @@ std::list<char> RandomList(unsigned int maxSize) {
   return lst;
 }
 
-template<class T> T randomObject();
+template <class T> T randomObject();
 
-template<> int randomObject<int>() {
+template <> int randomObject<int>() {
   return random(0, 1024);
 }
 
-template<> folly::fbstring randomObject<folly::fbstring>() {
+template <> folly::fbstring randomObject<folly::fbstring>() {
   folly::fbstring result;
   randomString(&result);
   return result;

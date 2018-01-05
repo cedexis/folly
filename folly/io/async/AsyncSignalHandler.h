@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 #pragma once
 
 #include <folly/io/async/EventBase.h>
-#include <event.h>
+#include <folly/portability/Event.h>
 #include <map>
 
 namespace folly {
@@ -24,17 +24,19 @@ namespace folly {
 /**
  * A handler to receive notification about POSIX signals.
  *
- * TAsyncSignalHandler allows code to process signals from within a EventBase
- * loop.  Standard signal handlers interrupt execution of the main thread, and
+ * AsyncSignalHandler allows code to process signals from within a EventBase
+ * loop.
+ *
+ * Standard signal handlers interrupt execution of the main thread, and
  * are run while the main thread is paused.  As a result, great care must be
  * taken to avoid race conditions if the signal handler has to access or modify
  * any data used by the main thread.
  *
- * TAsyncSignalHandler solves this problem by running the TAsyncSignalHandler
+ * AsyncSignalHandler solves this problem by running the AsyncSignalHandler
  * callback in normal thread of execution, as a EventBase callback.
  *
- * TAsyncSignalHandler may only be used in a single thread.  It will only
- * process signals received by the thread where the TAsyncSignalHandler is
+ * AsyncSignalHandler may only be used in a single thread.  It will only
+ * process signals received by the thread where the AsyncSignalHandler is
  * registered.  It is the user's responsibility to ensure that signals are
  * delivered to the desired thread in multi-threaded programs.
  */
@@ -47,13 +49,37 @@ class AsyncSignalHandler {
   virtual ~AsyncSignalHandler();
 
   /**
+   * Attach this AsyncSignalHandler to an EventBase.
+   *
+   * This should only be called if the AsyncSignalHandler is not currently
+   * registered for any signals and is not currently attached to an existing
+   * EventBase.
+   */
+  void attachEventBase(EventBase* eventBase);
+
+  /**
+   * Detach this AsyncSignalHandler from its EventBase.
+   *
+   * This should only be called if the AsyncSignalHandler is not currently
+   * registered for any signals.
+   */
+  void detachEventBase();
+
+  /**
+   * Get the EventBase used by this AsyncSignalHandler.
+   */
+  EventBase* getEventBase() const {
+    return eventBase_;
+  }
+
+  /**
    * Register to receive callbacks about the specified signal.
    *
    * Once the handler has been registered for a particular signal,
    * signalReceived() will be called each time this thread receives this
    * signal.
    *
-   * Throws a TException if an error occurs, or if this handler is already
+   * Throws if an error occurs or if this handler is already
    * registered for this signal.
    */
   void registerSignalHandler(int signum);
@@ -61,8 +87,7 @@ class AsyncSignalHandler {
   /**
    * Unregister for callbacks about the specified signal.
    *
-   * Throws a TException if an error occurs, or if this signal was not
-   * registered.
+   * Throws if an error occurs, or if this signal was not registered.
    */
   void unregisterSignalHandler(int signum);
 
@@ -85,8 +110,8 @@ class AsyncSignalHandler {
 
   static void libeventCallback(libevent_fd_t signum, short events, void* arg);
 
-  EventBase* eventBase_;
+  EventBase* eventBase_{nullptr};
   SignalEventMap signalEvents_;
 };
 
-} // folly
+} // namespace folly

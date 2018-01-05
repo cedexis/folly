@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,24 +14,28 @@
  * limitations under the License.
  */
 
-#include <stdexcept>
-#include <typeinfo>
-#include <thread>
-#include <mutex>
 #include <condition_variable>
+#include <mutex>
 #include <sstream>
-
-#include <gtest/gtest.h>
+#include <stdexcept>
+#include <thread>
 
 #include <folly/experimental/exception_tracer/ExceptionCounterLib.h>
+#include <folly/portability/GTest.h>
 
 struct MyException {};
 
-void bar() { throw std::runtime_error("hello"); }
+[[noreturn]] void bar() {
+  throw std::runtime_error("hello");
+}
 
-void foo() { throw MyException(); }
+[[noreturn]] void foo() {
+  throw MyException();
+}
 
-void baz() { foo(); }
+[[noreturn]] void baz() {
+  foo();
+}
 
 using namespace folly::exception_tracer;
 
@@ -46,7 +50,9 @@ void throwAndCatch(F f) {
 
 TEST(ExceptionCounter, oneThread) {
   throwAndCatch(foo);
-  for (int i = 0; i < 10; ++i) {
+
+  // Use volatile to prevent loop unrolling (it screws up stack frame grouping).
+  for (volatile int i = 0; i < 10; ++i) {
     throwAndCatch(bar);
   }
 
@@ -105,8 +111,8 @@ TEST(ExceptionCounter, multyThreads) {
 
   {
     std::unique_lock<std::mutex> lock(preparedMutex);
-    preparedBarrier.wait(lock,
-                         [&]() { return preparedThreads == kNumThreads; });
+    preparedBarrier.wait(
+        lock, [&]() { return preparedThreads == kNumThreads; });
   }
 
   auto stats = getExceptionStatistics();

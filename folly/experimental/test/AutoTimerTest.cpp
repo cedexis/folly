@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +14,9 @@
  * limitations under the License.
  */
 
-#include <gtest/gtest.h>
 #include <folly/experimental/AutoTimer.h>
+
+#include <folly/portability/GTest.h>
 
 using namespace folly;
 using namespace std;
@@ -44,8 +45,8 @@ struct StubClock {
 int StubClock::t = 0;
 
 TEST(TestAutoTimer, HandleBasicClosure) {
-  auto logger = [](StringPiece msg, auto sec) {
-    return StubLogger()(msg, sec);
+  auto logger = [](StringPiece mesg, auto sec) {
+    return StubLogger()(mesg, sec);
   };
   StubClock::t = 1;
   // Here decltype is needed. But since most users are expected to use this
@@ -92,8 +93,8 @@ TEST(TestAutoTimer, HandleRealTimerClosure) {
   auto t = makeAutoTimer(
       "Third message on destruction",
       std::chrono::duration<double>::zero(),
-      [](StringPiece msg, auto sec) {
-        GoogleLogger<GoogleLoggerStyle::PRETTY>()(msg, sec);
+      [](StringPiece mesg, auto sec) {
+        GoogleLogger<GoogleLoggerStyle::PRETTY>()(mesg, sec);
       });
   t.log("First message");
   t.log("Second message");

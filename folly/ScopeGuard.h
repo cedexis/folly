@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,8 +22,9 @@
 #include <type_traits>
 #include <utility>
 
+#include <folly/Portability.h>
 #include <folly/Preprocessor.h>
-#include <folly/detail/UncaughtExceptionCounter.h>
+#include <folly/UncaughtExceptions.h>
 
 namespace folly {
 
@@ -37,7 +38,8 @@ namespace folly {
  * a functor, or a void(*)() function pointer.
  *
  *
- * Usage example: Add a friend to memory iff it is also added to the db.
+ * Usage example: Add a friend to memory if and only if it is also added
+ * to the db.
  *
  * void User::addFriend(User& newFriend) {
  *   // add the friend to memory
@@ -74,6 +76,17 @@ class ScopeGuardImplBase {
     dismissed_ = true;
   }
 
+  template <typename T>
+  FOLLY_ALWAYS_INLINE static void runAndWarnAboutToCrashOnException(
+      T& function) noexcept {
+    try {
+      function();
+    } catch (...) {
+      warnAboutToCrash();
+      std::terminate();
+    }
+  }
+
  protected:
   ScopeGuardImplBase() noexcept : dismissed_(false) {}
 
@@ -87,6 +100,9 @@ class ScopeGuardImplBase {
   }
 
   bool dismissed_;
+
+ private:
+  static void warnAboutToCrash() noexcept;
 };
 
 template <typename FunctionType>
@@ -150,7 +166,9 @@ class ScopeGuardImpl : public ScopeGuardImplBase {
 
   void* operator new(std::size_t) = delete;
 
-  void execute() noexcept { function_(); }
+  void execute() noexcept {
+    runAndWarnAboutToCrashOnException(function_);
+  }
 
   FunctionType function_;
 };
@@ -184,27 +202,25 @@ namespace detail {
  * If the parameter is false, then the function is executed if no new uncaught
  * exceptions are present at the end of the scope.
  *
- * Used to implement SCOPE_FAIL and SCOPE_SUCCES below.
+ * Used to implement SCOPE_FAIL and SCOPE_SUCCESS below.
  */
-template <typename FunctionType, bool executeOnException>
+template <typename FunctionType, bool ExecuteOnException>
 class ScopeGuardForNewException {
  public:
-  explicit ScopeGuardForNewException(const FunctionType& fn)
-      : function_(fn) {
-  }
+  explicit ScopeGuardForNewException(const FunctionType& fn) : function_(fn) {}
 
   explicit ScopeGuardForNewException(FunctionType&& fn)
-      : function_(std::move(fn)) {
-  }
+      : function_(std::move(fn)) {}
 
-  ScopeGuardForNewException(ScopeGuardForNewException&& other)
-      : function_(std::move(other.function_))
-      , exceptionCounter_(std::move(other.exceptionCounter_)) {
-  }
+  ScopeGuardForNewException(ScopeGuardForNewException&& other) = default;
 
-  ~ScopeGuardForNewException() noexcept(executeOnException) {
-    if (executeOnException == exceptionCounter_.isNewUncaughtException()) {
-      function_();
+  ~ScopeGuardForNewException() noexcept(ExecuteOnException) {
+    if (ExecuteOnException == (exceptionCounter_ < uncaught_exceptions())) {
+      if (ExecuteOnException) {
+        ScopeGuardImplBase::runAndWarnAboutToCrashOnException(function_);
+      } else {
+        function_();
+      }
     }
   }
 
@@ -214,7 +230,7 @@ class ScopeGuardForNewException {
   void* operator new(std::size_t) = delete;
 
   FunctionType function_;
-  UncaughtExceptionCounter exceptionCounter_;
+  int exceptionCounter_{uncaught_exceptions()};
 };
 
 /**
@@ -258,7 +274,7 @@ operator+(detail::ScopeGuardOnExit, FunctionType&& fn) {
 }
 } // namespace detail
 
-} // folly
+} // namespace folly
 
 #define SCOPE_EXIT \
   auto FB_ANONYMOUS_VARIABLE(SCOPE_EXIT_STATE) \

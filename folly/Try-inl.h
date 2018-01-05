@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,10 @@
 
 #pragma once
 
+#include <folly/Utility.h>
+
 #include <stdexcept>
+#include <tuple>
 
 namespace folly {
 
@@ -25,7 +28,7 @@ Try<T>::Try(Try<T>&& t) noexcept : contains_(t.contains_) {
   if (contains_ == Contains::VALUE) {
     new (&value_)T(std::move(t.value_));
   } else if (contains_ == Contains::EXCEPTION) {
-    new (&e_)std::unique_ptr<exception_wrapper>(std::move(t.e_));
+    new (&e_) exception_wrapper(std::move(t.e_));
   }
 }
 
@@ -39,8 +42,7 @@ Try<T>::Try(typename std::enable_if<std::is_same<Unit, T2>::value,
     new (&value_) T();
   } else if (t.hasException()) {
     contains_ = Contains::EXCEPTION;
-    new (&e_) std::unique_ptr<exception_wrapper>(
-        folly::make_unique<exception_wrapper>(t.exception()));
+    new (&e_) exception_wrapper(t.exception());
   }
 }
 
@@ -55,7 +57,7 @@ Try<T>& Try<T>::operator=(Try<T>&& t) noexcept {
   if (contains_ == Contains::VALUE) {
     new (&value_)T(std::move(t.value_));
   } else if (contains_ == Contains::EXCEPTION) {
-    new (&e_)std::unique_ptr<exception_wrapper>(std::move(t.e_));
+    new (&e_) exception_wrapper(std::move(t.e_));
   }
   return *this;
 }
@@ -69,8 +71,7 @@ Try<T>::Try(const Try<T>& t) {
   if (contains_ == Contains::VALUE) {
     new (&value_)T(t.value_);
   } else if (contains_ == Contains::EXCEPTION) {
-    new (&e_)std::unique_ptr<exception_wrapper>();
-    e_ = folly::make_unique<exception_wrapper>(*(t.e_));
+    new (&e_) exception_wrapper(t.e_);
   }
 }
 
@@ -84,8 +85,7 @@ Try<T>& Try<T>::operator=(const Try<T>& t) {
   if (contains_ == Contains::VALUE) {
     new (&value_)T(t.value_);
   } else if (contains_ == Contains::EXCEPTION) {
-    new (&e_)std::unique_ptr<exception_wrapper>();
-    e_ = folly::make_unique<exception_wrapper>(*(t.e_));
+    new (&e_) exception_wrapper(t.e_);
   }
   return *this;
 }
@@ -95,7 +95,7 @@ Try<T>::~Try() {
   if (LIKELY(contains_ == Contains::VALUE)) {
     value_.~T();
   } else if (UNLIKELY(contains_ == Contains::EXCEPTION)) {
-    e_.~unique_ptr<exception_wrapper>();
+    e_.~exception_wrapper();
   }
 }
 
@@ -118,29 +118,27 @@ const T& Try<T>::value() const & {
 }
 
 template <class T>
+const T&& Try<T>::value() const && {
+  throwIfFailed();
+  return std::move(value_);
+}
+
+template <class T>
 void Try<T>::throwIfFailed() const {
-  if (contains_ != Contains::VALUE) {
-    if (contains_ == Contains::EXCEPTION) {
-      e_->throwException();
-    } else {
-      throw UsingUninitializedTry();
-    }
+  switch (contains_) {
+    case Contains::VALUE:
+      return;
+    case Contains::EXCEPTION:
+      e_.throw_exception();
+    default:
+      try_detail::throwUsingUninitializedTry();
   }
 }
 
 void Try<void>::throwIfFailed() const {
   if (!hasValue_) {
-    e_->throwException();
+    e_.throw_exception();
   }
-}
-
-template <typename T>
-inline T moveFromTry(Try<T>& t) {
-  return std::move(t.value());
-}
-
-inline void moveFromTry(Try<void>& t) {
-  return t.value();
 }
 
 template <typename F>
@@ -173,4 +171,31 @@ makeTryWith(F&& f) {
   }
 }
 
-} // folly
+namespace try_detail {
+
+/**
+ * Trait that removes the layer of Try abstractions from the passed in type
+ */
+template <typename Type>
+struct RemoveTry;
+template <template <typename...> class TupleType, typename... Types>
+struct RemoveTry<TupleType<folly::Try<Types>...>> {
+  using type = TupleType<Types...>;
+};
+
+template <std::size_t... Indices, typename Tuple>
+auto unwrapTryTupleImpl(folly::index_sequence<Indices...>, Tuple&& instance) {
+  using std::get;
+  using ReturnType = typename RemoveTry<typename std::decay<Tuple>::type>::type;
+  return ReturnType{(get<Indices>(std::forward<Tuple>(instance)).value())...};
+}
+} // namespace try_detail
+
+template <typename Tuple>
+auto unwrapTryTuple(Tuple&& instance) {
+  using TupleDecayed = typename std::decay<Tuple>::type;
+  using Seq = folly::make_index_sequence<std::tuple_size<TupleDecayed>::value>;
+  return try_detail::unwrapTryTupleImpl(Seq{}, std::forward<Tuple>(instance));
+}
+
+} // namespace folly

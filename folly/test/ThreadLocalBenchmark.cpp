@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,14 +20,11 @@
 
 #include <array>
 #include <atomic>
-#include <chrono>
 #include <condition_variable>
-#include <limits.h>
 #include <map>
 #include <mutex>
 #include <set>
 #include <thread>
-#include <unordered_map>
 
 #include <boost/thread/tss.hpp>
 #include <glog/logging.h>
@@ -35,7 +32,6 @@
 #include <folly/Benchmark.h>
 #include <folly/experimental/io/FsUtil.h>
 #include <folly/portability/GFlags.h>
-#include <folly/portability/Unistd.h>
 
 using namespace folly;
 
@@ -66,7 +62,7 @@ DEFINE_int32(numThreads, 8, "Number simultaneous threads for benchmarks.");
     for (int i = 0; i < FLAGS_numThreads; ++i) {         \
       threads.push_back(std::thread([&]() {              \
         var.reset(new int(0));                           \
-        for (int i = 0; i < itersPerThread; ++i) {       \
+        for (int j = 0; j < itersPerThread; ++j) {       \
           ++(*var.get());                                \
         }                                                \
       }));                                               \
@@ -84,6 +80,43 @@ boost::thread_specific_ptr<int> boost_tsp;
 REG(boost_tsp);
 BENCHMARK_DRAW_LINE();
 
+struct foo {
+  int a{0};
+  int b{0};
+};
+
+template <typename TL>
+void run_multi(uint32_t iters) {
+  const int itersPerThread = iters / FLAGS_numThreads;
+  std::vector<std::thread> threads;
+  TL var;
+  for (int i = 0; i < FLAGS_numThreads; ++i) {
+    threads.push_back(std::thread([&]() {
+      var.reset(new foo);
+      for (int j = 0; j < itersPerThread; ++j) {
+        ++var.get()->a;
+        var.get()->b += var.get()->a;
+        --var.get()->a;
+        var.get()->b += var.get()->a;
+      }
+    }));
+  }
+  for (auto& t : threads) {
+    t.join();
+  }
+}
+
+BENCHMARK(BM_mt_tlp_multi, iters) {
+  run_multi<ThreadLocalPtr<foo>>(iters);
+}
+BENCHMARK(BM_mt_pthread_get_specific_multi, iters) {
+  run_multi<PThreadGetSpecific<foo>>(iters);
+}
+BENCHMARK(BM_mt_boost_tsp_multi, iters) {
+  run_multi<boost::thread_specific_ptr<foo>>(iters);
+}
+BENCHMARK_DRAW_LINE();
+
 int main(int argc, char** argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
   gflags::SetCommandLineOptionWithMode(
@@ -93,12 +126,19 @@ int main(int argc, char** argv) {
 }
 
 /*
-Ran with 24 threads on dual 12-core Xeon(R) X5650 @ 2.67GHz with 12-MB caches
+./buck-out/gen/folly/test/thread_local_benchmark --bm_min_iters=10000000
+--numThreads=1
 
-Benchmark                               Iters   Total t    t/iter iter/sec
-------------------------------------------------------------------------------
-*       BM_mt_tlp                   100000000  39.88 ms  398.8 ps  2.335 G
- +5.91% BM_mt_pthread_get_specific  100000000  42.23 ms  422.3 ps  2.205 G
- + 295% BM_mt_boost_tsp             100000000  157.8 ms  1.578 ns  604.5 M
-------------------------------------------------------------------------------
+============================================================================
+folly/test/ThreadLocalBenchmark.cpp             relative  time/iter  iters/s
+============================================================================
+BM_mt_tlp                                                    1.92ns  520.02M
+BM_mt_pthread_get_specific                                   2.69ns  372.15M
+BM_mt_boost_tsp                                             11.81ns   84.67M
+----------------------------------------------------------------------------
+BM_mt_tlp_multi                                              7.53ns  132.79M
+BM_mt_pthread_get_specific_multi                            15.80ns   63.29M
+BM_mt_boost_tsp_multi                                       71.70ns   13.95M
+----------------------------------------------------------------------------
+============================================================================
 */

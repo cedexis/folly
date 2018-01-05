@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2012-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,11 +16,10 @@
 
 #pragma once
 
-#include <gtest/gtest.h>
-
-#include <folly/Foreach.h>
 #include <folly/Random.h>
 #include <folly/Synchronized.h>
+#include <folly/container/Foreach.h>
+#include <folly/portability/GTest.h>
 #include <glog/logging.h>
 #include <algorithm>
 #include <condition_variable>
@@ -42,6 +41,7 @@ inline std::mt19937& getRNG() {
 void randomSleep(std::chrono::milliseconds min, std::chrono::milliseconds max) {
   std::uniform_int_distribution<> range(min.count(), max.count());
   std::chrono::milliseconds duration(range(getRNG()));
+  /* sleep override */
   std::this_thread::sleep_for(duration);
 }
 
@@ -354,6 +354,104 @@ testWithLock() {
   });
 }
 
+template <class Mutex>
+void testUnlockCommon() {
+  folly::Synchronized<int, Mutex> value{7};
+  const auto& cv = value;
+
+  {
+    auto lv = value.contextualLock();
+    EXPECT_EQ(7, *lv);
+    *lv = 5;
+    lv.unlock();
+    EXPECT_TRUE(lv.isNull());
+    EXPECT_FALSE(lv);
+
+    auto rlv = cv.contextualLock();
+    EXPECT_EQ(5, *rlv);
+    rlv.unlock();
+    EXPECT_TRUE(rlv.isNull());
+    EXPECT_FALSE(rlv);
+
+    auto rlv2 = cv.contextualRLock();
+    EXPECT_EQ(5, *rlv2);
+    rlv2.unlock();
+
+    lv = value.contextualLock();
+    EXPECT_EQ(5, *lv);
+    *lv = 9;
+  }
+
+  EXPECT_EQ(9, *value.contextualRLock());
+}
+
+// testUnlock() version for shared lock types
+template <class Mutex>
+typename std::enable_if<folly::LockTraits<Mutex>::is_shared>::type
+testUnlock() {
+  folly::Synchronized<int, Mutex> value{10};
+  {
+    auto lv = value.wlock();
+    EXPECT_EQ(10, *lv);
+    *lv = 5;
+    lv.unlock();
+    EXPECT_FALSE(lv);
+    EXPECT_TRUE(lv.isNull());
+
+    auto rlv = value.rlock();
+    EXPECT_EQ(5, *rlv);
+    rlv.unlock();
+    EXPECT_FALSE(rlv);
+    EXPECT_TRUE(rlv.isNull());
+
+    auto lv2 = value.wlock();
+    EXPECT_EQ(5, *lv2);
+    *lv2 = 7;
+
+    lv = std::move(lv2);
+    EXPECT_FALSE(lv2);
+    EXPECT_TRUE(lv2.isNull());
+    EXPECT_FALSE(lv.isNull());
+    EXPECT_EQ(7, *lv);
+  }
+
+  testUnlockCommon<Mutex>();
+}
+
+// testUnlock() version for non-shared lock types
+template <class Mutex>
+typename std::enable_if<!folly::LockTraits<Mutex>::is_shared>::type
+testUnlock() {
+  folly::Synchronized<int, Mutex> value{10};
+  {
+    auto lv = value.lock();
+    EXPECT_EQ(10, *lv);
+    *lv = 5;
+    lv.unlock();
+    EXPECT_TRUE(lv.isNull());
+    EXPECT_FALSE(lv);
+
+    auto lv2 = value.lock();
+    EXPECT_EQ(5, *lv2);
+    *lv2 = 6;
+    lv2.unlock();
+    EXPECT_TRUE(lv2.isNull());
+    EXPECT_FALSE(lv2);
+
+    lv = value.lock();
+    EXPECT_EQ(6, *lv);
+    *lv = 7;
+
+    lv2 = std::move(lv);
+    EXPECT_TRUE(lv.isNull());
+    EXPECT_FALSE(lv);
+    EXPECT_FALSE(lv2.isNull());
+    EXPECT_EQ(7, *lv2);
+  }
+
+  testUnlockCommon<Mutex>();
+}
+
 // Testing the deprecated SYNCHRONIZED and SYNCHRONIZED_CONST APIs
 template <class Mutex>
 void testDeprecated() {
@@ -369,17 +467,10 @@ void testDeprecated() {
     EXPECT_EQ(1001, obj.size());
     EXPECT_EQ(10, obj.back());
     EXPECT_EQ(1000, obj2->size());
-
-    UNSYNCHRONIZED(obj) {
-      EXPECT_EQ(1001, obj->size());
-    }
   }
 
   SYNCHRONIZED_CONST (obj) {
     EXPECT_EQ(1001, obj.size());
-    UNSYNCHRONIZED(obj) {
-      EXPECT_EQ(1001, obj->size());
-    }
   }
 
   SYNCHRONIZED (lockedObj, *&obj) {
@@ -407,7 +498,7 @@ template <class Mutex> void testConcurrency() {
     // Test lock()
     for (size_t n = 0; n < itersPerThread; ++n) {
       v.contextualLock()->push_back((itersPerThread * threadIdx) + n);
-      sched_yield();
+      std::this_thread::yield();
     }
   };
   runParallel(numThreads, pushNumbers);
@@ -598,7 +689,7 @@ void testTimed() {
   // Make sure we can lock with various timeout duration units
   {
     auto lv = v.contextualLock(std::chrono::milliseconds(5));
-    EXPECT_TRUE(lv);
+    EXPECT_TRUE(bool(lv));
     EXPECT_FALSE(lv.isNull());
     auto lv2 = v.contextualLock(std::chrono::microseconds(5));
     // We may or may not acquire lv2 successfully, depending on whether
@@ -606,7 +697,7 @@ void testTimed() {
   }
   {
     auto lv = v.contextualLock(std::chrono::seconds(1));
-    EXPECT_TRUE(lv);
+    EXPECT_TRUE(bool(lv));
   }
 }
 
@@ -672,7 +763,7 @@ template <class Mutex> void testTimedSynchronized() {
     v->push_back(2 * threadIdx);
 
     // Aaand test the TIMED_SYNCHRONIZED macro
-    for (;;)
+    for (;;) {
       TIMED_SYNCHRONIZED(5, lv, v) {
         if (lv) {
           // Sleep for a random time to ensure we trigger timeouts
@@ -685,6 +776,7 @@ template <class Mutex> void testTimedSynchronized() {
 
         ++(*numTimeouts.contextualLock());
       }
+    }
   };
 
   static const size_t numThreads = 100;
@@ -782,10 +874,8 @@ struct NotCopiableNotMovable {
 };
 
 template <class Mutex> void testInPlaceConstruction() {
-  // This won't compile without construct_in_place
-  folly::Synchronized<NotCopiableNotMovable> a(
-    folly::construct_in_place, 5, "a"
-  );
+  // This won't compile without in_place
+  folly::Synchronized<NotCopiableNotMovable> a(folly::in_place, 5, "a");
 }
-}
-}
+} // namespace sync_tests
+} // namespace folly

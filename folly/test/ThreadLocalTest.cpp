@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,28 +16,33 @@
 
 #include <folly/ThreadLocal.h>
 
+#ifndef _WIN32
 #include <dlfcn.h>
-#include <sys/types.h>
 #include <sys/wait.h>
+#endif
+
+#include <sys/types.h>
 
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <climits>
 #include <condition_variable>
-#include <limits.h>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <thread>
 #include <unordered_map>
 
 #include <glog/logging.h>
-#include <gtest/gtest.h>
 
-#include <folly/Baton.h>
 #include <folly/Memory.h>
 #include <folly/experimental/io/FsUtil.h>
+#include <folly/portability/GTest.h>
 #include <folly/portability/Unistd.h>
+#include <folly/synchronization/Baton.h>
+#include <folly/system/ThreadId.h>
 
 using namespace folly;
 
@@ -99,7 +104,7 @@ TEST(ThreadLocalPtr, DefaultDeleterOwnershipTransfer) {
   Widget::totalVal_ = 0;
   {
     ThreadLocalPtr<Widget> w;
-    auto source = folly::make_unique<Widget>();
+    auto source = std::make_unique<Widget>();
     std::thread([&w, &source]() {
       w.reset(std::move(source));
       w.get()->val_ += 10;
@@ -265,7 +270,7 @@ TEST(ThreadLocal, InterleavedDestructors) {
     {
       std::lock_guard<std::mutex> g(lock);
       thIterPrev = thIter;
-      w.reset(new ThreadLocal<Widget>());
+      w = std::make_unique<ThreadLocal<Widget>>();
       ++wVersion;
     }
     while (true) {
@@ -309,10 +314,12 @@ TEST(ThreadLocalPtr, AccessAllThreadsCounter) {
   std::atomic<int> totalAtomic(0);
   std::vector<std::thread> threads;
   for (int i = 0; i < kNumThreads; ++i) {
-    threads.push_back(std::thread([&,i]() {
+    threads.push_back(std::thread([&]() {
       stci.add(1);
       totalAtomic.fetch_add(1);
-      while (run.load()) { usleep(100); }
+      while (run.load()) {
+        usleep(100);
+      }
     }));
   }
   while (totalAtomic.load() != kNumThreads) { usleep(100); }
@@ -339,7 +346,7 @@ struct Tag {};
 struct Foo {
   folly::ThreadLocal<int, Tag> tl;
 };
-}  // namespace
+} // namespace
 
 TEST(ThreadLocal, Movable1) {
   Foo a;
@@ -402,27 +409,26 @@ class FillObject {
 
  private:
   uint64_t val() const {
-    return (idx_ << 40) | uint64_t(pthread_self());
+    return (idx_ << 40) | folly::getCurrentThreadID();
   }
 
   uint64_t idx_;
   uint64_t data_[kFillObjectSize];
 };
 
-}  // namespace
+} // namespace
 
-#if FOLLY_HAVE_STD_THIS_THREAD_SLEEP_FOR
 TEST(ThreadLocal, Stress) {
-  constexpr size_t numFillObjects = 250;
+  static constexpr size_t numFillObjects = 250;
   std::array<ThreadLocalPtr<FillObject>, numFillObjects> objects;
 
-  constexpr size_t numThreads = 32;
-  constexpr size_t numReps = 20;
+  static constexpr size_t numThreads = 32;
+  static constexpr size_t numReps = 20;
 
   std::vector<std::thread> threads;
   threads.reserve(numThreads);
 
-  for (size_t i = 0; i < numThreads; ++i) {
+  for (size_t k = 0; k < numThreads; ++k) {
     threads.emplace_back([&objects] {
       for (size_t rep = 0; rep < numReps; ++rep) {
         for (size_t i = 0; i < objects.size(); ++i) {
@@ -442,7 +448,6 @@ TEST(ThreadLocal, Stress) {
 
   EXPECT_EQ(numFillObjects * numThreads * numReps, gDestroyed);
 }
-#endif
 
 // Yes, threads and fork don't mix
 // (http://cppwisdom.quora.com/Why-threads-and-fork-dont-mix) but if you're
@@ -469,7 +474,7 @@ int totalValue() {
   return value;
 }
 
-}  // namespace
+} // namespace
 
 #ifdef FOLLY_HAVE_PTHREAD_ATFORK
 TEST(ThreadLocal, Fork) {
@@ -526,7 +531,7 @@ TEST(ThreadLocal, Fork) {
     EXPECT_TRUE(WIFEXITED(status));
     EXPECT_EQ(0, WEXITSTATUS(status));
   } else {
-    EXPECT_TRUE(false) << "fork failed";
+    ADD_FAILURE() << "fork failed";
   }
 
   EXPECT_EQ(2, totalValue());
@@ -543,6 +548,7 @@ TEST(ThreadLocal, Fork) {
 }
 #endif
 
+#ifndef _WIN32
 struct HoldsOneTag2 {};
 
 TEST(ThreadLocal, Fork2) {
@@ -568,7 +574,7 @@ TEST(ThreadLocal, Fork2) {
     EXPECT_TRUE(WIFEXITED(status));
     EXPECT_EQ(0, WEXITSTATUS(status));
   } else {
-    EXPECT_TRUE(false) << "fork failed";
+    ADD_FAILURE() << "fork failed";
   }
 }
 
@@ -580,7 +586,7 @@ TEST(ThreadLocal, Fork2) {
 
 TEST(ThreadLocal, SharedLibrary) {
   auto exe = fs::executable_path();
-  auto lib = exe.parent_path() / "lib_thread_local_test.so";
+  auto lib = exe.parent_path() / "thread_local_test_lib.so";
   auto handle = dlopen(lib.string().c_str(), RTLD_LAZY);
   EXPECT_NE(nullptr, handle);
 
@@ -620,13 +626,15 @@ TEST(ThreadLocal, SharedLibrary) {
 }
 
 #endif
+#endif
 
 namespace folly { namespace threadlocal_detail {
 struct PthreadKeyUnregisterTester {
   PthreadKeyUnregister p;
   constexpr PthreadKeyUnregisterTester() = default;
 };
-}}
+} // namespace threadlocal_detail
+} // namespace folly
 
 TEST(ThreadLocal, UnregisterClassHasConstExprCtor) {
   folly::threadlocal_detail::PthreadKeyUnregisterTester x;

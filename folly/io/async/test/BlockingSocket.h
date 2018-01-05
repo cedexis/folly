@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -56,6 +56,7 @@ class BlockingSocket : public folly::AsyncSocket::ConnectCallback,
       throw err_.value();
     }
   }
+
   void close() {
     sock_->close();
   }
@@ -84,6 +85,14 @@ class BlockingSocket : public folly::AsyncSocket::ConnectCallback,
 
   int getSocketFD() const {
     return sock_->getFd();
+  }
+
+  folly::AsyncSocket* getSocket() {
+    return sock_.get();
+  }
+
+  folly::AsyncSSLSocket* getSSLSocket() {
+    return dynamic_cast<folly::AsyncSSLSocket*>(sock_.get());
   }
 
  private:

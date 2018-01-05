@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,9 +24,6 @@ implementation (such as FBVector).
 GCC 4.7 is required.
 
 */
-
-// only compile if GCC is at least 4.7
-#if __GNUC__ > 4 || __GNUC__ == 4 && __GNUC_MINOR__ >= 7
 
 #if 0
 #define USING_STD_VECTOR
@@ -171,26 +168,33 @@ THOUGHTS:
 
 //#define USING_STD_VECTOR
 
-#include <iostream>
-#include <sstream>
-#include <typeinfo>
-#include <type_traits>
-#include <map>
-#include <set>
-#include <string>
-#include <stdexcept>
-#include <exception>
 #include <climits>
 #include <cstddef>
+#include <exception>
 #include <iomanip>
+#include <iostream>
+#include <map>
+#include <set>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <type_traits>
+#include <typeinfo>
 
-#include <gtest/gtest.h>
 #include <boost/iterator/iterator_adaptor.hpp>
 #include <boost/preprocessor.hpp>
 
 #include <folly/Conv.h>
+#include <folly/Portability.h>
 #include <folly/ScopeGuard.h>
 #include <folly/portability/GFlags.h>
+#include <folly/portability/GTest.h>
+
+// We use some pre-processor magic to auto-generate setup and destruct code,
+// but it also means we have some parameters that may not be used.
+FOLLY_PUSH_WARNING
+FOLLY_GCC_DISABLE_WARNING("-Wunused-parameter")
+FOLLY_GCC_DISABLE_WARNING("-Wunused-variable")
 
 using namespace std;
 using namespace folly;
@@ -336,23 +340,23 @@ template <> struct D4<true> {
 };
 
 template <Flags f>
-struct Delete : D0<f & DC_DELETE>
-              , D1<f & CC_DELETE>
-              , D2<f & MC_DELETE>
-              , D3<f & CA_DELETE>
-              , D4<f & MA_DELETE> {
+struct Delete : D0<(f & DC_DELETE) != 0>,
+              D1<(f & CC_DELETE) != 0>,
+              D2<(f & MC_DELETE) != 0>,
+              D3<(f & CA_DELETE) != 0>,
+              D4<(f & MA_DELETE) != 0> {
   Delete() = default;
   Delete(const Delete&) = default;
   Delete(Delete&&) = default;
   Delete& operator=(const Delete&) = default;
   Delete& operator=(Delete&&) = default;
 
-  explicit Delete(std::nullptr_t)
-      : D0<f & DC_DELETE>(nullptr)
-      , D1<f & CC_DELETE>(nullptr)
-      , D2<f & MC_DELETE>(nullptr)
-      , D3<f & CA_DELETE>(nullptr)
-      , D4<f & MA_DELETE>(nullptr)
+  explicit Delete(std::nullptr_t) :
+      D0<(f & DC_DELETE) != 0>(nullptr),
+      D1<(f & CC_DELETE) != 0>(nullptr),
+      D2<(f & MC_DELETE) != 0>(nullptr),
+      D3<(f & CA_DELETE) != 0>(nullptr),
+      D4<(f & MA_DELETE) != 0>(nullptr)
       {}
 };
 
@@ -368,7 +372,9 @@ struct Ticker {
   static int CountTicks;
   static int TicksLeft;
   static void Tick(const std::string& s) {
-    if (TicksLeft == 0) throw TickException(s);
+    if (TicksLeft == 0) {
+      throw TickException(s);
+    }
     CountTicks++;
     TicksLeft--;
   }
@@ -380,23 +386,35 @@ int Ticker::TicksLeft = -1;
 template <Flags f>
 struct DataTicker : Ticker {
   DataTicker() noexcept(f & DC_NOEXCEPT) {
-    if (!(f & DC_NOEXCEPT)) Tick("Data()");
+    if (!(f & DC_NOEXCEPT)) {
+      Tick("Data()");
+    }
   }
-  DataTicker(const DataTicker&) noexcept(f & CC_NOEXCEPT) {
-    if (!(f & CC_NOEXCEPT)) Tick("Data(const Data&)");
+  DataTicker(const DataTicker&) noexcept((f & CC_NOEXCEPT) != 0) {
+    if (!(f & CC_NOEXCEPT)) {
+      Tick("Data(const Data&)");
+    }
   }
-  DataTicker(DataTicker&&) noexcept(f & MC_NOEXCEPT) {
-    if (!(f & MC_NOEXCEPT)) Tick("Data(Data&&)");
+  DataTicker(DataTicker&&) noexcept((f & MC_NOEXCEPT) != 0) {
+    if (!(f & MC_NOEXCEPT)) {
+      Tick("Data(Data&&)");
+    }
   }
-  explicit DataTicker(std::nullptr_t) noexcept(f & OC_NOEXCEPT) {
-    if (!(f & OC_NOEXCEPT)) Tick("Data(int)");
+  explicit DataTicker(std::nullptr_t) noexcept((f & OC_NOEXCEPT) != 0) {
+    if (!(f & OC_NOEXCEPT)) {
+      Tick("Data(int)");
+    }
   }
   ~DataTicker() noexcept {}
-  void operator=(const DataTicker&) noexcept(f & CA_NOEXCEPT) {
-    if (!(f & CA_NOEXCEPT)) Tick("op=(const Data&)");
+  void operator=(const DataTicker&) noexcept((f & CA_NOEXCEPT) != 0) {
+    if (!(f & CA_NOEXCEPT)) {
+      Tick("op=(const Data&)");
+    }
   }
-  void operator=(DataTicker&&) noexcept(f & MA_NOEXCEPT) {
-    if (!(f & MA_NOEXCEPT)) Tick("op=(Data&&)");
+  void operator=(DataTicker&&) noexcept((f & MA_NOEXCEPT) != 0) {
+    if (!(f & MA_NOEXCEPT)) {
+      Tick("op=(Data&&)");
+    }
   }
 };
 
@@ -404,16 +422,44 @@ struct DataTicker : Ticker {
 // Operation counter
 
 struct Counter {
-  static int CountDC, CountCC, CountMC, CountOC, CountCA, CountMA;
-  static int CountDestroy, CountTotalOps, CountLoggedConstruction;
+  static int CountDC;
+  static int CountCC;
+  static int CountMC;
+  static int CountOC;
+  static int CountCA;
+  static int CountMA;
+  static int CountDestroy;
+  static int CountTotalOps;
+  static int CountLoggedConstruction;
 
-  Counter()                         noexcept { CountTotalOps++; CountDC++; }
-  Counter(const Counter&)           noexcept { CountTotalOps++; CountCC++; }
-  Counter(Counter&&)                noexcept { CountTotalOps++; CountMC++; }
-  explicit Counter(std::nullptr_t)  noexcept { CountTotalOps++; CountOC++; }
-  void operator=(const Counter&)    noexcept { CountTotalOps++; CountCA++; }
-  void operator=(Counter&&)         noexcept { CountTotalOps++; CountMA++; }
-  ~Counter()                      noexcept { CountTotalOps++; CountDestroy++; }
+  Counter() noexcept {
+    CountTotalOps++;
+    CountDC++;
+  }
+  Counter(const Counter&) noexcept {
+    CountTotalOps++;
+    CountCC++;
+  }
+  Counter(Counter&&) noexcept {
+    CountTotalOps++;
+    CountMC++;
+  }
+  explicit Counter(std::nullptr_t) noexcept {
+    CountTotalOps++;
+    CountOC++;
+  }
+  void operator=(const Counter&) noexcept {
+    CountTotalOps++;
+    CountCA++;
+  }
+  void operator=(Counter&&) noexcept {
+    CountTotalOps++;
+    CountMA++;
+  }
+  ~Counter() noexcept {
+    CountTotalOps++;
+    CountDestroy++;
+  }
 };
 
 int Counter::CountDC = 0;
@@ -447,33 +493,43 @@ struct DataTracker : Tracker {
   DataTracker() noexcept : Tracker(this, UID++) {
     UIDCount[uid]++;
     UIDTotal++;
-    if (!isRelocatable) Locations[self] = uid;
+    if (!isRelocatable) {
+      Locations[self] = uid;
+    }
     print("Data()");
   }
   DataTracker(const DataTracker& o) noexcept : Tracker(this, o.uid) {
     UIDCount[uid]++;
     UIDTotal++;
-    if (!isRelocatable) Locations[self] = uid;
+    if (!isRelocatable) {
+      Locations[self] = uid;
+    }
     print("Data(const Data&)");
   }
   DataTracker(DataTracker&& o) noexcept : Tracker(this, o.uid) {
     UIDCount[uid]++;
     UIDTotal++;
-    if (!isRelocatable) Locations[self] = uid;
+    if (!isRelocatable) {
+      Locations[self] = uid;
+    }
     print("Data(Data&&)");
   }
 
   explicit DataTracker(int uid) noexcept : Tracker(this, uid) {
     UIDCount[uid]++;
     UIDTotal++;
-    if (!isRelocatable) Locations[self] = uid;
+    if (!isRelocatable) {
+      Locations[self] = uid;
+    }
     print("Data(int)");
   }
 
   ~DataTracker() noexcept {
     UIDCount[uid]--;
     UIDTotal--;
-    if (!isRelocatable) Locations.erase(self);
+    if (!isRelocatable) {
+      Locations.erase(self);
+    }
     print("~Data()");
     uid = 0xdeadbeef;
     self = (DataTracker*)0xfeebdaed;
@@ -483,7 +539,9 @@ struct DataTracker : Tracker {
     UIDCount[uid]--;
     uid = o.uid;
     UIDCount[uid]++;
-    if (!isRelocatable) Locations[self] = uid;
+    if (!isRelocatable) {
+      Locations[self] = uid;
+    }
     print("op=(const Data&)");
     return *this;
   }
@@ -491,7 +549,9 @@ struct DataTracker : Tracker {
     UIDCount[uid]--;
     uid = o.uid;
     UIDCount[uid]++;
-    if (!isRelocatable) Locations[self] = uid;
+    if (!isRelocatable) {
+      Locations[self] = uid;
+    }
     print("op=(Data&&)");
     return *this;
   }
@@ -499,7 +559,9 @@ struct DataTracker : Tracker {
   void print(const std::string& fun) {
     if (Print) {
       std::cerr << std::setw(20) << fun << ": uid = " << std::setw(3) << uid;
-      if (!isRelocatable) std::cerr << ", self = " << self;
+      if (!isRelocatable) {
+        std::cerr << ", self = " << self;
+      }
       std::cerr << std::endl;
     }
   }
@@ -516,7 +578,7 @@ bool Tracker::Print = false;
 // Data
 
 template <Flags f = 0, size_t pad = 0>
-struct Data : DataTracker<f & IS_RELOCATABLE>,
+struct Data : DataTracker<(f & IS_RELOCATABLE) != 0>,
               Counter, DataTicker<f>, Delete<f> {
   static const Flags flags = f;
   char spacehog[pad ? pad : 1];
@@ -524,16 +586,17 @@ struct Data : DataTracker<f & IS_RELOCATABLE>,
   Data() = default;
   Data(const Data&) = default;
   Data(Data&&) = default;
-  /* implicit */ Data(int i)
-    : DataTracker<f & IS_RELOCATABLE>(i), Counter()
-    , DataTicker<f>(nullptr)
-    , Delete<f>(nullptr)
+  /* implicit */ Data(int i) :
+    DataTracker<(f & IS_RELOCATABLE) != 0>(i),
+    Counter(),
+    DataTicker<f>(nullptr),
+    Delete<f>(nullptr)
   {}
   ~Data() = default;
   Data& operator=(const Data&) = default;
   Data& operator=(Data&&) = default;
 
-private:
+ private:
   int operator&() const;
 };
 
@@ -541,9 +604,9 @@ namespace folly {
 template <Flags f, size_t pad>
 struct IsRelocatable<Data<f, pad>>
   : std::integral_constant<bool,
-      f & IS_RELOCATABLE
+      (f & IS_RELOCATABLE) != 0
     > {};
-};
+} // namespace folly
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
@@ -553,19 +616,19 @@ template <typename T>
 struct isPropCopy : true_type {};
 template <Flags f, size_t pad>
 struct isPropCopy<Data<f, pad>> :
-  std::integral_constant<bool, f & PROP_COPY> {};
+  std::integral_constant<bool, (f & PROP_COPY) != 0> {};
 
 template <typename T>
 struct isPropMove : true_type {};
 template <Flags f, size_t pad>
 struct isPropMove<Data<f, pad>> :
-  std::integral_constant<bool, f & PROP_MOVE> {};
+  std::integral_constant<bool, (f & PROP_MOVE) != 0> {};
 
 template <typename T>
 struct isPropSwap : true_type {};
 template <Flags f, size_t pad>
 struct isPropSwap<Data<f, pad>> :
-  std::integral_constant<bool, f & PROP_SWAP> {};
+  std::integral_constant<bool, (f & PROP_SWAP) != 0> {};
 
 
 struct AllocTracker {
@@ -583,6 +646,7 @@ template <class T>
 struct Alloc : AllocTracker, Ticker {
   typedef typename std::allocator<T>::pointer pointer;
   typedef typename std::allocator<T>::const_pointer const_pointer;
+  typedef typename std::allocator<T>::difference_type difference_type;
   typedef typename std::allocator<T>::size_type size_type;
   typedef typename std::allocator<T>::value_type value_type;
 
@@ -593,9 +657,9 @@ struct Alloc : AllocTracker, Ticker {
   int id;
   explicit Alloc(int i = 8) : a(), id(i) {}
   Alloc(const Alloc& o) : a(o.a), id(o.id) {}
-  Alloc(Alloc&& o) : a(move(o.a)), id(o.id) {}
+  Alloc(Alloc&& o) noexcept : a(move(o.a)), id(o.id) {}
   Alloc& operator=(const Alloc&) = default;
-  Alloc& operator=(Alloc&&) = default;
+  Alloc& operator=(Alloc&&) noexcept = default;
   bool operator==(const Alloc& o) const { return a == o.a && id == o.id; }
   bool operator!=(const Alloc& o) const { return !(*this == o); }
 
@@ -621,9 +685,13 @@ struct Alloc : AllocTracker, Ticker {
     }
     if (Allocated[p] != n) {
       cerr << "deallocate(" << p << ", " << n << ") invalid: ";
-      if (Allocated[p] == 0) cerr << "never allocated";
-      else if (Allocated[p] == -1) cerr << "already deallocated";
-      else cerr << "wrong number (want " << Allocated[p] << ")";
+      if (Allocated[p] == 0) {
+        cerr << "never allocated";
+      } else if (Allocated[p] == size_t(-1)) {
+        cerr << "already deallocated";
+      } else {
+        cerr << "wrong number (want " << Allocated[p] << ")";
+      }
       cerr << endl;
       FAIL() << "deallocate failed";
     }
@@ -767,6 +835,9 @@ struct special_move_assignable<Data<f, pad>>
 // Timing
 
 uint64_t ReadTSC() {
+#ifdef _MSC_VER
+   return __rdtsc();
+#else
    unsigned reslo, reshi;
 
     __asm__ __volatile__  (
@@ -780,6 +851,7 @@ uint64_t ReadTSC() {
      ::: "%eax", "%ebx", "%ecx", "%edx");
 
    return ((uint64_t)reshi << 32) | reslo;
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -795,8 +867,8 @@ uint64_t ReadTSC() {
   e25, e26, e27, e28, e29, e30, e31, e32, e33, e34, e35, e36, e37, e38, e39,  \
   e40, e41, e42, e43, e44, e45, e46, e47, e48, e49, e50, e51, e52, e53, e54,  \
   e55, e56, e57, e58, e59, e60, e61, e62, e63, size, ...) size
-#define IBOOST_PP_VARIADIC_TO_SEQ(args...) \
-  BOOST_PP_TUPLE_TO_SEQ(IBOOST_PP_VARIADIC_SIZE(args), (args))
+#define IBOOST_PP_VARIADIC_TO_SEQ(...) \
+  BOOST_PP_TUPLE_TO_SEQ(IBOOST_PP_VARIADIC_SIZE(__VA_ARGS__), (__VA_ARGS__))
 
 //-----------------------------------------------------------------------------
 // STL_TEST
@@ -823,19 +895,25 @@ uint64_t ReadTSC() {
 #define TYPIFY(r, d, name) BOOST_PP_CAT(TYPIFY_, name)
 #define ARGIFY(r, d, name) TYPIFY(r, d, name) name
 
-#define MAKE_TEST(ref, name, types, restriction, argseq, rawargs...)     \
+#define MAKE_TEST(ref, name, types, restriction, argseq, ...)            \
   template <class Vector> void test_ ## name ## 2 (std::false_type) {}   \
   template <class Vector> void test_ ## name ## 2 (std::true_type) {     \
     BOOST_PP_SEQ_FOR_EACH(GEN_LOOPER, _, argseq)                         \
-    { SETUP {                                                            \
-    BOOST_PP_SEQ_FOR_EACH(GEN_VMAKER, _, argseq)                         \
     {                                                                    \
-    test_ ## name <Vector, typename Vector::value_type,                  \
-      typename Vector::allocator_type> ( rawargs );                      \
-    if (::testing::Test::HasFatalFailure()) return;                      \
+      SETUP                                                              \
+      {                                                                  \
+        BOOST_PP_SEQ_FOR_EACH(GEN_VMAKER, _, argseq)                     \
+        {                                                                \
+          test_ ## name <Vector, typename Vector::value_type,            \
+            typename Vector::allocator_type> ( __VA_ARGS__ );            \
+          if (::testing::Test::HasFatalFailure()) {                      \
+            return;                                                      \
+          }                                                              \
+        }                                                                \
+        BOOST_PP_SEQ_FOR_EACH(GEN_UMAKER, _, BOOST_PP_SEQ_REVERSE(argseq)) \
+      }                                                                  \
+      TEARDOWN                                                           \
     }                                                                    \
-    BOOST_PP_SEQ_FOR_EACH(GEN_UMAKER, _, BOOST_PP_SEQ_REVERSE(argseq))   \
-    } TEARDOWN }                                                         \
     BOOST_PP_SEQ_FOR_EACH(GEN_CLOSER, _, BOOST_PP_SEQ_REVERSE(argseq))   \
   }                                                                      \
   template <class Vector> void test_ ## name ## 3 () {                   \
@@ -851,6 +929,7 @@ uint64_t ReadTSC() {
     return true;                                                         \
     auto f = test_ ## name <Vector,                                      \
       typename Vector::value_type, typename Vector::allocator_type>;     \
+    (void)f;                                                             \
     return true;                                                         \
   }                                                                      \
   template <class Vector> bool test_I_ ## name ## 3 () {                 \
@@ -865,22 +944,24 @@ uint64_t ReadTSC() {
     BOOST_PP_SEQ_FOR_EACH(GEN_TYPE_TEST, name, INTERFACE_TYPES)          \
     bool one = false;                                                    \
     BOOST_PP_SEQ_FOR_EACH(GEN_RUNNABLE_TEST, name, types)                \
-    if (!one) FAIL() << "No tests qualified to run";                     \
+    if (!one) {                                                          \
+       FAIL() << "No tests qualified to run";                            \
+    }                                                                    \
   }
 
-#define DECL(name, args...)                                                   \
+#define DECL(name, ...)                                                       \
   template <class Vector, typename T, typename Allocator>                     \
   void test_ ## name (BOOST_PP_SEQ_ENUM(BOOST_PP_SEQ_TRANSFORM(               \
-    ARGIFY, _, IBOOST_PP_VARIADIC_TO_SEQ(args))))
+    ARGIFY, _, IBOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__))))
 
-#define STL_TEST_I(ref, name, restriction, args...)                           \
-  DECL(name, args);                                                           \
+#define STL_TEST_I(ref, name, restriction, ...)                               \
+  DECL(name, __VA_ARGS__);                                                    \
   MAKE_TEST(ref, name, TEST_TYPES, restriction,                               \
-    IBOOST_PP_VARIADIC_TO_SEQ(args), args)                                    \
-  DECL(name, args)
+    IBOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__), __VA_ARGS__)                      \
+  DECL(name, __VA_ARGS__)
 
-#define STL_TEST(ref, name, restriction, args...) \
-  STL_TEST_I(ref, name, restriction, z, ## args, ticks)
+#define STL_TEST(ref, name, restriction, ...) \
+  STL_TEST_I(ref, name, restriction, z, ## __VA_ARGS__, ticks)
 
 //-----------------------------------------------------------------------------
 // Test Types
@@ -933,9 +1014,15 @@ typedef VECTOR_<DDSMA, Alloc<DDSMA>> _TSpecialMA;
 template <typename T>
 struct PrettyType {
   string operator()() {
-    if (is_same<T, int>::value) return "int";
-    if (is_same<T, char>::value) return "char";
-    if (is_same<T, uint64_t>::value) return "uint64_t";
+    if (is_same<T, int>::value) {
+      return "int";
+    }
+    if (is_same<T, char>::value) {
+      return "char";
+    }
+    if (is_same<T, uint64_t>::value) {
+      return "uint64_t";
+    }
     return typeid(T).name();
   }
 };
@@ -952,11 +1039,21 @@ struct PrettyType<Data<f, pad>> {
         (f & CA_DELETE) ||
         (f & MA_DELETE)) {
       tpe << "[^";
-      if (f & DC_DELETE) tpe << " DC,";
-      if (f & CC_DELETE) tpe << " CC,";
-      if (f & MC_DELETE) tpe << " MC,";
-      if (f & CA_DELETE) tpe << " CA,";
-      if (f & MA_DELETE) tpe << " MA,";
+      if (f & DC_DELETE) {
+        tpe << " DC,";
+      }
+      if (f & CC_DELETE) {
+        tpe << " CC,";
+      }
+      if (f & MC_DELETE) {
+        tpe << " MC,";
+      }
+      if (f & CA_DELETE) {
+        tpe << " CA,";
+      }
+      if (f & MA_DELETE) {
+        tpe << " MA,";
+      }
       tpe << "]";
     }
 
@@ -966,11 +1063,21 @@ struct PrettyType<Data<f, pad>> {
         (f & CA_NOEXCEPT) ||
         (f & MA_NOEXCEPT)) {
       tpe << "[safe";
-      if (f & DC_NOEXCEPT) tpe << " DC,";
-      if (f & CC_NOEXCEPT) tpe << " CC,";
-      if (f & MC_NOEXCEPT) tpe << " MC,";
-      if (f & CA_NOEXCEPT) tpe << " CA,";
-      if (f & MA_NOEXCEPT) tpe << " MA,";
+      if (f & DC_NOEXCEPT) {
+        tpe << " DC,";
+      }
+      if (f & CC_NOEXCEPT) {
+        tpe << " CC,";
+      }
+      if (f & MC_NOEXCEPT) {
+        tpe << " MC,";
+      }
+      if (f & CA_NOEXCEPT) {
+        tpe << " CA,";
+      }
+      if (f & MA_NOEXCEPT) {
+        tpe << " MA,";
+      }
       tpe << "]";
     }
 
@@ -1024,7 +1131,9 @@ struct PrettyType<Alloc<T>> {
 #define VMAKER_z std::nullptr_t z = nullptr;
 #define UMAKER_z                                                      \
   verify<Vector>(0);                                                  \
-  if (::testing::Test::HasFatalFailure()) return;
+  if (::testing::Test::HasFatalFailure()) {                           \
+    return;                                                           \
+  }
 #define CLOSER_z
 
 //------
@@ -1070,7 +1179,9 @@ static const vector<pair<int, int>> VectorSizes = {
   {  1, -1},
   {  2, -1},
   { 10, -1}, { 10, 1}, { 10, 0},
+#if !FOLLY_SANITIZE_ADDRESS
   {100, -1}, {100, 1},
+#endif
 
   //{   10, -1}, {   10, 0}, {   10, 1}, {   10, 2}, {   10, 10},
   //{  100, -1}, {  100, 0}, {  100, 1}, {  100, 2}, {  100, 10}, {  100, 100},
@@ -1086,7 +1197,7 @@ void populate(Vector& v, const pair<int, int>& ss) {
     v.emplace_back(populateIndex++);
   }
   if (ss.second >= 0) {
-    while (v.capacity() - v.size() != ss.second) {
+    while (v.capacity() - v.size() != size_t(ss.second)) {
       v.emplace_back(populateIndex++);
     }
   }
@@ -1185,26 +1296,26 @@ iterSpotter(Vector& v, int i) {
 
   switch(i) {
   case 1:
-    if (v.empty()) ; // fall through
-    else {
+    if (!v.empty()) {
       it = v.begin();
       ++it;
       msg = "a[1]";
       break;
     }
+    FOLLY_FALLTHROUGH;
   case 0:
     it = v.begin();
     msg = "a.begin";
     break;
 
   case 2:
-    if (v.empty()) ; // fall through
-    else {
+    if (!v.empty()) {
       it = v.end();
       --it;
       msg = "a[-1]";
       break;
     }
+    FOLLY_FALLTHROUGH;
   case 3:
     it = v.end();
     msg = "a.end";
@@ -1283,8 +1394,8 @@ template <class Vector>
 void verifyVector(const Vector& v) {
   ASSERT_TRUE(v.begin() <= v.end()) << "end is before begin";
   ASSERT_TRUE(v.empty() == (v.begin() == v.end())) << "empty != (begin == end)";
-  ASSERT_TRUE(v.size() == distance(v.begin(), v.end()))
-    << "size != end - begin";
+  ASSERT_TRUE(v.size() == size_t(distance(v.begin(), v.end())))
+      << "size != end - begin";
   ASSERT_TRUE(v.size() <= v.capacity()) << "size > capacity";
   ASSERT_TRUE(v.capacity() <= v.max_size()) << "capacity > max_size";
   ASSERT_TRUE(v.data() || true); // message won't print - it will just crash
@@ -1296,8 +1407,11 @@ void verifyAllocator(int ele, int cap) {
   ASSERT_EQ(ele, AllocTracker::Constructed - AllocTracker::Destroyed);
 
   int tot = 0;
-  for (auto kv : AllocTracker::Allocated)
-    if (kv.second != -1) tot += kv.second;
+  for (auto kv : AllocTracker::Allocated) {
+    if (kv.second != size_t(-1)) {
+      tot += kv.second;
+    }
+  }
   ASSERT_EQ(cap, tot) << "the allocator counts " << tot << " space, "
     "but the vector(s) have (combined) capacity " << cap;
 }
@@ -1305,21 +1419,31 @@ void verifyAllocator(int ele, int cap) {
 // Master verifier
 template <class Vector>
 void verify(int extras) {
-  if (!is_arithmetic<typename Vector::value_type>::value)
+  if (!is_arithmetic<typename Vector::value_type>::value) {
     ASSERT_EQ(0 + extras, getTotal()) << "there exist Data but no vectors";
+  }
   isSane();
-  if (::testing::Test::HasFatalFailure()) return;
-  if (customAllocator<Vector>::value) verifyAllocator(0, 0);
+  if (::testing::Test::HasFatalFailure()) {
+    return;
+  }
+  if (customAllocator<Vector>::value) {
+    verifyAllocator(0, 0);
+  }
 }
 template <class Vector>
 void verify(int extras, const Vector& v) {
   verifyVector(v);
-  if (!is_arithmetic<typename Vector::value_type>::value)
+  if (!is_arithmetic<typename Vector::value_type>::value) {
     ASSERT_EQ(v.size() + extras, getTotal())
       << "not all Data are in the vector";
+  }
   isSane();
-  if (::testing::Test::HasFatalFailure()) return;
-  if (customAllocator<Vector>::value) verifyAllocator(v.size(), v.capacity());
+  if (::testing::Test::HasFatalFailure()) {
+    return;
+  }
+  if (customAllocator<Vector>::value) {
+    verifyAllocator(v.size(), v.capacity());
+  }
 }
 template <class Vector>
 void verify(int extras, const Vector& v1, const Vector& v2) {
@@ -1331,11 +1455,16 @@ void verify(int extras, const Vector& v1, const Vector& v2) {
     size += v2.size();
     cap += v2.capacity();
   }
-  if (!is_arithmetic<typename Vector::value_type>::value)
+  if (!is_arithmetic<typename Vector::value_type>::value) {
     ASSERT_EQ(size + extras, getTotal()) << "not all Data are in the vector(s)";
+  }
   isSane();
-  if (::testing::Test::HasFatalFailure()) return;
-  if (customAllocator<Vector>::value) verifyAllocator(size, cap);
+  if (::testing::Test::HasFatalFailure()) {
+    return;
+  }
+  if (customAllocator<Vector>::value) {
+    verifyAllocator(size, cap);
+  }
 }
 
 //=============================================================================
@@ -1363,7 +1492,8 @@ class DataState {
   typedef typename Vector::size_type size_type;
   size_type size_;
   int* data_;
-public:
+
+ public:
   /* implicit */ DataState(const Vector& v) {
     size_ = v.size();
     if (size_ != 0) {
@@ -1380,9 +1510,13 @@ public:
   }
 
   bool operator==(const DataState& o) const {
-    if (size_ != o.size_) return false;
+    if (size_ != o.size_) {
+      return false;
+    }
     for (size_type i = 0; i < size_; ++i) {
-      if (data_[i] != o.data_[i]) return false;
+      if (data_[i] != o.data_[i]) {
+        return false;
+      }
     }
     return true;
   }
@@ -1409,7 +1543,7 @@ class Transformer : public boost::iterator_adaptor<
   friend class boost::iterator_core_access;
   shared_ptr<set<It>> dereferenced;
 
-public:
+ public:
   explicit Transformer(const It& it)
     : Transformer::iterator_adaptor_(it)
     , dereferenced(new set<It>()) {}
@@ -1435,14 +1569,20 @@ Transformer<It, input_iterator_tag> makeInputIterator(const It& it) {
 
 // mutate a value (in contract only)
 void mutate(int& i) {
-  if (false) i = 0;
+  if ((false)) {
+    i = 0;
+  }
 }
 void mutate(uint64_t& i) {
-  if (false) i = 0;
+  if ((false)) {
+    i = 0;
+  }
 }
 template <Flags f, size_t pad>
 void mutate(Data<f, pad>& ds) {
-  if (false) ds.uid = 0;
+  if ((false)) {
+    ds.uid = 0;
+  }
 }
 
 //=============================================================================
@@ -1566,8 +1706,8 @@ STL_TEST("23.2.1 Table 96.10-11", copyConstruction,
   ) << "only a shallow copy was made";
 
   if (false) {
-    Vector(ca);
-    Vector u = ca;
+    Vector(ca2);
+    Vector u2 = ca2;
   }
 }
 
@@ -1583,7 +1723,7 @@ STL_TEST("23.2.1 Table 96.12", moveConstruction, is_destructible, a) {
   ASSERT_TRUE(dsa == u);
 
   if (false) {
-    Vector u = move(a);
+    Vector u2 = move(a);
   }
 }
 
@@ -1635,8 +1775,8 @@ STL_TEST("23.2.1 Table 96.15-18", iterators, is_destructible, a) {
     ASSERT_TRUE(Citb != Cite) << "cbegin == cend when non-empty";
   }
 
-  auto  dist = std::distance( itb,  ite);
-  auto Cdist = std::distance(Citb, Cite);
+  auto dist = size_t(std::distance(itb, ite));
+  auto Cdist = size_t(std::distance(Citb, Cite));
   ASSERT_TRUE( dist == ca.size()) << "distance(begin, end) != size";
   ASSERT_TRUE(Cdist == ca.size()) << "distance(cbegin, cend) != size";
 }
@@ -1802,8 +1942,8 @@ STL_TEST("23.2.1 Table 97.3-5", reversibleIterators, is_destructible, a) {
     ASSERT_TRUE(Critb != Crite) << "crbegin == crend when non-empty";
   }
 
-  auto  dist = std::distance( ritb,  rite);
-  auto Cdist = std::distance(Critb, Crite);
+  auto dist = size_t(std::distance(ritb, rite));
+  auto Cdist = size_t(std::distance(Critb, Crite));
   ASSERT_TRUE( dist == ca.size()) << "distance(rbegin, rend) != size";
   ASSERT_TRUE(Cdist == ca.size()) << "distance(crbegin, crend) != size";
 }
@@ -1851,7 +1991,7 @@ STL_TEST("23.2.1 Table 99.4", customAllocator, is_destructible, m) {
   ASSERT_TRUE(u.get_allocator() == m);
 
   if (false) {
-    Vector(m);
+    Vector t(m);
   }
 }
 
@@ -1950,7 +2090,9 @@ STL_TEST("23.2.1-7", inputIteratorAllocConstruction,
 
 STL_TEST("23.2.1-7", ilAllocConstruction, is_arithmetic, m) {
   // gcc fail
-  if (Ticker::TicksLeft >= 0) return;
+  if (Ticker::TicksLeft >= 0) {
+    return;
+  }
 
   const auto& cm = m;
 
@@ -2002,8 +2144,10 @@ STL_TEST("23.2.3 Table 100.1", nCopyConstruction,
 
   ASSERT_TRUE(Allocator() == u.get_allocator());
   ASSERT_EQ(n, u.size()) << "Vector(n, t).size() != n" << endl;
-  for (const auto& val : u) ASSERT_EQ(convertToInt(t), convertToInt(val))
-    << "not all elements of Vector(n, t) are equal to t";
+  for (const auto& val : u) {
+    ASSERT_EQ(convertToInt(t), convertToInt(val))
+        << "not all elements of Vector(n, t) are equal to t";
+  }
 }
 
 STL_TEST("23.2.3 Table 100.2", forwardIteratorConstruction,
@@ -2022,8 +2166,9 @@ STL_TEST("23.2.3 Table 100.2", forwardIteratorConstruction,
   ASSERT_LE(Counter::CountTotalOps, j-i);
 
   ASSERT_EQ(j - i, u.size()) << "u(i,j).size() != j-i";
-  for (auto it = u.begin(); it != u.end(); ++it, ++i)
+  for (auto it = u.begin(); it != u.end(); ++it, ++i) {
     ASSERT_EQ(*i, convertToInt(*it)) << "u(i,j) constructed incorrectly";
+}
 }
 
 STL_TEST("23.2.3 Table 100.2", inputIteratorConstruction,
@@ -2041,8 +2186,9 @@ STL_TEST("23.2.3 Table 100.2", inputIteratorConstruction,
 
   ASSERT_TRUE(Allocator() == u.get_allocator());
   ASSERT_EQ(j - i, u.size()) << "u(i,j).size() != j-i";
-  for (auto it = u.begin(); it != u.end(); ++it, ++i)
+  for (auto it = u.begin(); it != u.end(); ++it, ++i) {
     ASSERT_EQ(*i, convertToInt(*it)) << "u(i,j) constructed incorrectly";
+}
 }
 
 STL_TEST("23.2.3 Table 100.3", ilConstruction, is_arithmetic) {
@@ -2050,7 +2196,9 @@ STL_TEST("23.2.3 Table 100.3", ilConstruction, is_arithmetic) {
   // Vector(il.begin(), il.end())
 
   // gcc fail
-  if (Ticker::TicksLeft >= 0) return;
+  if (Ticker::TicksLeft >= 0) {
+    return;
+  }
 
   Vector u = { 1, 4, 7 };
 
@@ -2058,8 +2206,9 @@ STL_TEST("23.2.3 Table 100.3", ilConstruction, is_arithmetic) {
   ASSERT_EQ(3, u.size()) << "u(il).size() fail";
   int i = 1;
   auto it = u.begin();
-  for (; it != u.end(); ++it, i += 3)
+  for (; it != u.end(); ++it, i += 3) {
     ASSERT_EQ(i, convertToInt(*it)) << "u(il) constructed incorrectly";
+}
 }
 
 STL_TEST("23.2.3 Table 100.4", ilAssignment,
@@ -2068,7 +2217,9 @@ STL_TEST("23.2.3 Table 100.4", ilAssignment,
   // assign(il.begin(), il.end())
 
   // gcc fail
-  if (Ticker::TicksLeft >= 0) return;
+  if (Ticker::TicksLeft >= 0) {
+    return;
+  }
 
   auto am = a.get_allocator();
 
@@ -2080,8 +2231,9 @@ STL_TEST("23.2.3 Table 100.4", ilAssignment,
   ASSERT_EQ(3, a.size()) << "u(il).size() fail";
   int i = 1;
   auto it = a.begin();
-  for (; it != a.end(); ++it, i += 3)
+  for (; it != a.end(); ++it, i += 3) {
     ASSERT_EQ(i, convertToInt(*it)) << "u(il) constructed incorrectly";
+}
 }
 
 //----------------------------
@@ -2098,7 +2250,7 @@ void insertNTCheck(const Vector& a, DataState<Vector>& dsa,
   for (; i < idx + n; ++i) {
     ASSERT_EQ(val, convertToInt(a.data()[i])) << i;
   }
-  for (; i < a.size(); ++i) {
+  for (; size_t(i) < a.size(); ++i) {
     ASSERT_EQ(dsa[i-n], convertToInt(a.data()[i])) << i;
   }
 }
@@ -2134,7 +2286,9 @@ STL_TEST("23.2.3 Table 100.6", iteratorInsertion,
 STL_TEST("23.2.3 Table 100.7", iteratorInsertionRV,
          is_move_constructibleAndAssignable, a, p, t) {
   // rvalue-references cannot have their address checked for aliased inserts
-  if (a.data() <= addressof(t) && addressof(t) < a.data() + a.size()) return;
+  if (a.data() <= addressof(t) && addressof(t) < a.data() + a.size()) {
+    return;
+  }
 
   DataState<Vector> dsa(a);
   int idx = distance(a.begin(), p);
@@ -2181,7 +2335,7 @@ void insertItCheck(const Vector& a, DataState<Vector>& dsa,
   for (; i < idx + (e - b); ++i) {
     ASSERT_EQ(*(b + i - idx), convertToInt(a.data()[i]));
   }
-  for (; i < a.size(); ++i) {
+  for (; size_t(i) < a.size(); ++i) {
     ASSERT_EQ(dsa[i - (e - b)], convertToInt(a.data()[i]));
   }
 }
@@ -2239,7 +2393,9 @@ STL_TEST("23.2.3 Table 100.9", iteratorInsertionInputIterator,
 STL_TEST("23.2.3 Table 100.10", iteratorInsertIL,
          is_arithmetic, a, p) {
   // gcc fail
-  if (Ticker::TicksLeft >= 0) return;
+  if (Ticker::TicksLeft >= 0) {
+    return;
+  }
 
   // whitebox: ensure that insert(p, il) is implemented in terms of
   // insert(p, il.begin(), il.end())
@@ -2268,16 +2424,20 @@ STL_TEST("23.2.3 Table 100.10", iteratorInsertIL,
 template <class Vector>
 void eraseCheck(Vector& a, DataState<Vector>& dsa, int idx, int n) {
   ASSERT_EQ(dsa.size() - n, a.size());
-  size_t i = 0;
+  int i = 0;
   auto it = a.begin();
   for (; it != a.end(); ++it, ++i) {
-    if (i == idx) i += n;
+    if (i == idx) {
+      i += n;
+    }
     ASSERT_EQ(dsa[i], convertToInt(*it));
   }
 }
 
 STL_TEST("23.2.3 Table 100.11", iteratorErase, is_move_assignable, a, p) {
-  if (p == a.end()) return;
+  if (p == a.end()) {
+    return;
+  }
 
   DataState<Vector> dsa(a);
   int idx = distance(a.begin(), p);
@@ -2292,7 +2452,9 @@ STL_TEST("23.2.3 Table 100.11", iteratorErase, is_move_assignable, a, p) {
 
 STL_TEST("23.2.3 Table 100.12", iteratorEraseRange,
          is_move_assignable, a, p, q) {
-  if (p == a.end()) return;
+  if (p == a.end()) {
+    return;
+  }
 
   DataState<Vector> dsa(a);
   int idx = distance(a.begin(), p);
@@ -2333,8 +2495,9 @@ STL_TEST("23.2.3 Table 100.14", assignRange, is_move_assignable, a, i, j) {
 
   ASSERT_TRUE(am == a.get_allocator());
   ASSERT_EQ(distance(i, j), a.size());
-  for (auto it = a.begin(); it != a.end(); ++it, ++i)
+  for (auto it = a.begin(); it != a.end(); ++it, ++i) {
     ASSERT_EQ(*i, convertToInt(*it));
+}
 }
 
 STL_TEST("23.2.3 Table 100.14", assignInputRange,
@@ -2349,8 +2512,9 @@ STL_TEST("23.2.3 Table 100.14", assignInputRange,
 
   ASSERT_TRUE(am == a.get_allocator());
   ASSERT_EQ(distance(i, j), a.size());
-  for (auto it = a.begin(); it != a.end(); ++it, ++i)
+  for (auto it = a.begin(); it != a.end(); ++it, ++i) {
     ASSERT_EQ(*i, convertToInt(*it));
+}
 }
 
 STL_TEST("23.2.3 Table 100.15", assignIL,
@@ -2360,7 +2524,9 @@ STL_TEST("23.2.3 Table 100.15", assignIL,
   // assign(il.begin(), il.end())
 
   // gcc fail
-  if (Ticker::TicksLeft >= 0) return;
+  if (Ticker::TicksLeft >= 0) {
+    return;
+  }
 
   auto am = a.get_allocator();
 
@@ -2371,8 +2537,9 @@ STL_TEST("23.2.3 Table 100.15", assignIL,
   int* i = ila;
 
   ASSERT_EQ(3, a.size());
-  for (auto it = a.begin(); it != a.end(); ++it, ++i)
+  for (auto it = a.begin(); it != a.end(); ++it, ++i) {
     ASSERT_EQ(*i, convertToInt(*it));
+}
 }
 
 STL_TEST("23.2.3 Table 100.16", assignN,
@@ -2385,12 +2552,15 @@ STL_TEST("23.2.3 Table 100.16", assignN,
 
   ASSERT_TRUE(am == a.get_allocator());
   ASSERT_EQ(n, a.size());
-  for (auto it = a.begin(); it != a.end(); ++it)
+  for (auto it = a.begin(); it != a.end(); ++it) {
     ASSERT_EQ(tval, convertToInt(*it));
+}
 }
 
 STL_TEST("23.2.3 Table 101.1", front, is_destructible, a) {
-  if (a.empty()) return;
+  if (a.empty()) {
+    return;
+  }
 
   ASSERT_TRUE(addressof(a.front()) == a.data());
 
@@ -2404,7 +2574,9 @@ STL_TEST("23.2.3 Table 101.1", front, is_destructible, a) {
 }
 
 STL_TEST("23.2.3 Table 101.2", back, is_destructible, a) {
-  if (a.empty()) return;
+  if (a.empty()) {
+    return;
+  }
 
   ASSERT_TRUE(addressof(a.back()) == a.data() + a.size() - 1);
 
@@ -2432,12 +2604,15 @@ STL_TEST("23.2.3 Table 101.4", emplaceBack,
   }
 
   ASSERT_TRUE(am == a.get_allocator());
-  if (excess > 0) ASSERT_TRUE(a.data() == adata) << "unnecessary relocation";
+  if (excess > 0) {
+    ASSERT_TRUE(a.data() == adata) << "unnecessary relocation";
+  }
   ASSERT_EQ(dsa.size() + 1, a.size());
   size_t i = 0;
   auto it = a.begin();
-  for (; i < dsa.size(); ++i, ++it)
+  for (; i < dsa.size(); ++i, ++it) {
     ASSERT_EQ(dsa[i], convertToInt(*it));
+  }
   ASSERT_EQ(44, convertToInt(a.back()));
 }
 
@@ -2457,12 +2632,15 @@ STL_TEST("23.2.3 Table 101.7", pushBack, is_copy_constructible, a, t) {
   }
 
   ASSERT_TRUE(am == a.get_allocator());
-  if (excess > 0) ASSERT_TRUE(a.data() == adata) << "unnecessary relocation";
+  if (excess > 0) {
+    ASSERT_TRUE(a.data() == adata) << "unnecessary relocation";
+  }
   ASSERT_EQ(dsa.size() + 1, a.size());
   size_t i = 0;
   auto it = a.begin();
-  for (; i < dsa.size(); ++i, ++it)
+  for (; i < dsa.size(); ++i, ++it) {
     ASSERT_EQ(dsa[i], convertToInt(*it));
+  }
   ASSERT_EQ(tval, convertToInt(a.back()));
 }
 
@@ -2482,17 +2660,22 @@ STL_TEST("23.2.3 Table 101.8", pushBackRV,
   }
 
   ASSERT_TRUE(am == a.get_allocator());
-  if (excess > 0) ASSERT_TRUE(a.data() == adata) << "unnecessary relocation";
+  if (excess > 0) {
+    ASSERT_TRUE(a.data() == adata) << "unnecessary relocation";
+  }
   ASSERT_EQ(dsa.size() + 1, a.size());
   size_t i = 0;
   auto it = a.begin();
-  for (; i < dsa.size(); ++i, ++it)
+  for (; i < dsa.size(); ++i, ++it) {
     ASSERT_EQ(dsa[i], convertToInt(*it));
+  }
   ASSERT_EQ(tval, convertToInt(a.back()));
 }
 
 STL_TEST("23.2.3 Table 100.10", popBack, is_destructible, a) {
-  if (a.empty()) return;
+  if (a.empty()) {
+    return;
+  }
 
   DataState<Vector> dsa(a);
   auto am = a.get_allocator();
@@ -2503,14 +2686,16 @@ STL_TEST("23.2.3 Table 100.10", popBack, is_destructible, a) {
   ASSERT_EQ(dsa.size() - 1, a.size());
   size_t i = 0;
   auto it = a.begin();
-  for (; it != a.end(); ++it, ++i)
+  for (; it != a.end(); ++it, ++i) {
     ASSERT_EQ(dsa[i], convertToInt(*it));
+}
 }
 
 STL_TEST("23.2.3 Table 100.11", operatorBrace, is_destructible, a) {
   const auto& ca = a;
-  for (int i = 0; i < ca.size(); ++i)
+  for (size_t i = 0; i < ca.size(); ++i) {
     ASSERT_TRUE(addressof(ca[i]) == ca.data()+i);
+  }
 
   ASSERT_EQ(0, Counter::CountTotalOps);
 
@@ -2521,8 +2706,9 @@ STL_TEST("23.2.3 Table 100.11", operatorBrace, is_destructible, a) {
 
 STL_TEST("23.2.3 Table 100.12", at, is_destructible, a) {
   const auto& ca = a;
-  for (int i = 0; i < ca.size(); ++i)
+  for (size_t i = 0; i < ca.size(); ++i) {
     ASSERT_TRUE(addressof(ca.at(i)) == ca.data()+i);
+  }
 
   ASSERT_EQ(0, Counter::CountTotalOps);
 
@@ -2577,11 +2763,11 @@ STL_TEST("23.3.6.3", reserve, is_move_constructible, a, n) {
   a.reserve(n);
 
   ASSERT_TRUE(am == a.get_allocator());
-  if (n <= ocap) {
+  if (size_t(n) <= ocap) {
     ASSERT_EQ(0, Counter::CountTotalOps);
     ASSERT_TRUE(adata == a.data());
   } else {
-    ASSERT_TRUE(a.capacity() >= n);
+    ASSERT_TRUE(a.capacity() >= size_t(n));
     ASSERT_LE(Counter::CountTotalOps, 2*a.size()); // move and delete
   }
 }
@@ -2589,7 +2775,9 @@ STL_TEST("23.3.6.3", reserve, is_move_constructible, a, n) {
 STL_TEST("23.3.6.3", lengthError, is_move_constructible) {
   auto mx = Vector().max_size();
   auto big = mx+1;
-  if (mx >= big) return; // max_size is the biggest size_type; overflowed
+  if (mx >= big) {
+    return; // max_size is the biggest size_type; overflowed
+  }
 
   Vector u;
   try {
@@ -2698,10 +2886,18 @@ STL_TEST("relinquish", relinquish, is_destructible, a) {
   ASSERT_EQ(0, a.capacity());
 
   auto alloc = a.get_allocator();
-  for (size_t i = 0; i < sz; ++i)
+  for (size_t i = 0; i < sz; ++i) {
     std::allocator_traits<decltype(alloc)>::destroy(alloc, guts + i);
-  if (guts != nullptr)
-    std::allocator_traits<decltype(alloc)>::deallocate(alloc, guts, cap);
+  }
+  if (guts != nullptr) {
+    if (std::is_same<
+            decltype(alloc),
+            std::allocator<typename decltype(alloc)::value_type>>::value) {
+      free(guts);
+    } else {
+      std::allocator_traits<decltype(alloc)>::deallocate(alloc, guts, cap);
+    }
+  }
 }
 
 STL_TEST("attach", attach, is_destructible, a) {
@@ -2728,16 +2924,4 @@ int main(int argc, char** argv) {
   return RUN_ALL_TESTS();
 }
 
-#else // GCC 4.7 guard
-
-// do nothing
-TEST(placeholder, gccversion) {}
-
-int main(int argc, char** argv) {
-  testing::InitGoogleTest(&argc, argv);
-  gflags::ParseCommandLineFlags(&argc, &argv, true);
-
-  return RUN_ALL_TESTS();
-}
-
-#endif // GCC 4.7 guard
+FOLLY_POP_WARNING

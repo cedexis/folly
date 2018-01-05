@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2011-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,6 +25,7 @@
 
 #pragma once
 
+#include <folly/Likely.h>
 #include <folly/LockTraits.h>
 #include <folly/Preprocessor.h>
 #include <folly/SharedMutex.h>
@@ -43,12 +44,29 @@ template <class LockedType, class LockPolicy = LockPolicyExclusive>
 class LockedGuardPtr;
 
 /**
+ * Public version of LockInterfaceDispatcher that contains the MutexLevel enum
+ * for the passed in mutex type
+ *
+ * This is decoupled from MutexLevelValueImpl in LockTraits.h because this
+ * ensures that a heterogenous mutex with a different API can be used.  For
+ * example - if a mutex does not have a lock_shared() method but the
+ * LockTraits specialization for it supports a static non member
+ * lock_shared(Mutex&) it can be used as a shared mutex and will provide
+ * rlock() and wlock() functions.
+ */
+template <class Mutex>
+using MutexLevelValue = detail::MutexLevelValueImpl<
+    true,
+    LockTraits<Mutex>::is_shared,
+    LockTraits<Mutex>::is_upgrade>;
+
+/**
  * SynchronizedBase is a helper parent class for Synchronized<T>.
  *
  * It provides wlock() and rlock() methods for shared mutex types,
  * or lock() methods for purely exclusive mutex types.
  */
-template <class Subclass, bool is_shared>
+template <class Subclass, detail::MutexLevel level>
 class SynchronizedBase;
 
 /**
@@ -58,7 +76,7 @@ class SynchronizedBase;
  * accessing the data.
  */
 template <class Subclass>
-class SynchronizedBase<Subclass, true> {
+class SynchronizedBase<Subclass, detail::MutexLevel::SHARED> {
  public:
   using LockedPtr = ::folly::LockedPtr<Subclass, LockPolicyExclusive>;
   using ConstWLockedPtr =
@@ -192,13 +210,109 @@ class SynchronizedBase<Subclass, true> {
 };
 
 /**
+ * SynchronizedBase specialization for upgrade mutex types.
+ *
+ * This class provides all the functionality provided by the SynchronizedBase
+ * specialization for shared mutexes and a ulock() method that returns an
+ * upgradable lock RAII proxy
+ */
+template <class Subclass>
+class SynchronizedBase<Subclass, detail::MutexLevel::UPGRADE>
+    : public SynchronizedBase<Subclass, detail::MutexLevel::SHARED> {
+ public:
+  using UpgradeLockedPtr = ::folly::LockedPtr<Subclass, LockPolicyUpgrade>;
+  using ConstUpgradeLockedPtr =
+      ::folly::LockedPtr<const Subclass, LockPolicyUpgrade>;
+  using UpgradeLockedGuardPtr =
+      ::folly::LockedGuardPtr<Subclass, LockPolicyUpgrade>;
+  using ConstUpgradeLockedGuardPtr =
+      ::folly::LockedGuardPtr<const Subclass, LockPolicyUpgrade>;
+
+  /**
+   * Acquire an upgrade lock and return a LockedPtr that can be used to safely
+   * access the datum
+   *
+   * And the const version
+   */
+  UpgradeLockedPtr ulock() {
+    return UpgradeLockedPtr(static_cast<Subclass*>(this));
+  }
+  ConstUpgradeLockedPtr ulock() const {
+    return ConstUpgradeLockedPtr(static_cast<const Subclass*>(this));
+  }
+
+  /**
+   * Acquire an upgrade lock and return a LockedPtr that can be used to safely
+   * access the datum
+   *
+   * And the const version
+   */
+  template <class Rep, class Period>
+  UpgradeLockedPtr ulock(const std::chrono::duration<Rep, Period>& timeout) {
+    return UpgradeLockedPtr(static_cast<Subclass*>(this), timeout);
+  }
+  template <class Rep, class Period>
+  UpgradeLockedPtr ulock(
+      const std::chrono::duration<Rep, Period>& timeout) const {
+    return ConstUpgradeLockedPtr(static_cast<const Subclass*>(this), timeout);
+  }
+
+  /**
+   * Invoke a function while holding the lock.
+   *
+   * A reference to the datum will be passed into the function as its only
+   * argument.
+   *
+   * This can be used with a lambda argument for easily defining small critical
+   * sections in the code.  For example:
+   *
+   *   auto value = obj.withULock([](auto& data) {
+   *     data.doStuff();
+   *     return data.getValue();
+   *   });
+   *
+   * This is probably not the function you want.  If the intent is to read the
+   * data object and determine whether you should upgrade to a write lock then
+   * the withULockPtr() method should be called instead, since it gives access
+   * to the LockedPtr proxy (which can be upgraded via the
+   * moveFromUpgradeToWrite() method)
+   */
+  template <class Function>
+  auto withULock(Function&& function) const {
+    ConstUpgradeLockedGuardPtr guardPtr(static_cast<const Subclass*>(this));
+    return function(*guardPtr);
+  }
+
+  /**
+   * Invoke a function while holding the lock exclusively.
+   *
+   * This is similar to withULock(), but the function will be passed a
+   * LockedPtr rather than a reference to the data itself.
+   *
+   * This allows scopedUnlock() and getUniqueLock() to be called on the
+   * LockedPtr argument.
+   *
+   * This also allows you to upgrade the LockedPtr proxy to a write state so
+   * that changes can be made to the underlying data
+   */
+  template <class Function>
+  auto withULockPtr(Function&& function) {
+    return function(ulock());
+  }
+  template <class Function>
+  auto withULockPtr(Function&& function) const {
+    return function(ulock());
+  }
+};
+
+/**
  * SynchronizedBase specialization for non-shared mutex types.
  *
  * This class provides lock() methods for acquiring the lock and accessing the
  * data.
  */
 template <class Subclass>
-class SynchronizedBase<Subclass, false> {
+class SynchronizedBase<Subclass, detail::MutexLevel::UNIQUE> {
  public:
   using LockedPtr = ::folly::LockedPtr<Subclass, LockPolicyExclusive>;
   using ConstLockedPtr =
@@ -320,14 +434,17 @@ class SynchronizedBase<Subclass, false> {
 template <class T, class Mutex = SharedMutex>
 struct Synchronized : public SynchronizedBase<
                           Synchronized<T, Mutex>,
-                          LockTraits<Mutex>::is_shared> {
+                          MutexLevelValue<Mutex>::value> {
  private:
   using Base =
-      SynchronizedBase<Synchronized<T, Mutex>, LockTraits<Mutex>::is_shared>;
+      SynchronizedBase<Synchronized<T, Mutex>, MutexLevelValue<Mutex>::value>;
   static constexpr bool nxCopyCtor{
       std::is_nothrow_copy_constructible<T>::value};
   static constexpr bool nxMoveCtor{
       std::is_nothrow_move_constructible<T>::value};
+
+  // used to disable copy construction and assignment
+  class NonImplementedType;
 
  public:
   using LockedPtr = typename Base::LockedPtr;
@@ -345,15 +462,28 @@ struct Synchronized : public SynchronizedBase<
    * Copy constructor copies the data (with locking the source and
    * all) but does NOT copy the mutex. Doing so would result in
    * deadlocks.
+   *
+   * Note that the copy constructor may throw because it acquires a lock in
+   * the contextualRLock() method
    */
-  Synchronized(const Synchronized& rhs) noexcept(nxCopyCtor)
+ public:
+  /* implicit */ Synchronized(typename std::conditional<
+                              std::is_copy_constructible<T>::value,
+                              const Synchronized&,
+                              NonImplementedType>::type rhs) /* may throw */
       : Synchronized(rhs, rhs.contextualRLock()) {}
 
   /**
    * Move constructor moves the data (with locking the source and all)
    * but does not move the mutex.
+   *
+   * Note that the move constructor may throw because it acquires a lock.
+   * Since the move constructor is not declared noexcept, when objects of this
+   * class are used as elements in a vector or a similar container.  The
+   * elements might not be moved around when resizing.  They might be copied
+   * instead.  You have been warned.
    */
-  Synchronized(Synchronized&& rhs) noexcept(nxMoveCtor)
+  Synchronized(Synchronized&& rhs) /* may throw */
       : Synchronized(std::move(rhs), rhs.contextualLock()) {}
 
   /**
@@ -371,10 +501,10 @@ struct Synchronized : public SynchronizedBase<
 
   /**
    * Lets you construct non-movable types in-place. Use the constexpr
-   * instance `construct_in_place` as the first argument.
+   * instance `in_place` as the first argument.
    */
   template <typename... Args>
-  explicit Synchronized(construct_in_place_t, Args&&... args)
+  explicit Synchronized(in_place_t, Args&&... args)
       : datum_(std::forward<Args>(args)...) {}
 
   /**
@@ -382,7 +512,10 @@ struct Synchronized : public SynchronizedBase<
    * mutex. It locks the two objects in ascending order of their
    * addresses.
    */
-  Synchronized& operator=(const Synchronized& rhs) {
+  Synchronized& operator=(typename std::conditional<
+                          std::is_copy_assignable<T>::value,
+                          const Synchronized&,
+                          NonImplementedType>::type rhs) {
     if (this == &rhs) {
       // Self-assignment, pass.
     } else if (this < &rhs) {
@@ -503,7 +636,7 @@ struct Synchronized : public SynchronizedBase<
 
   /**
    * Attempts to acquire for a given number of milliseconds. If
-   * acquisition is unsuccessful, the returned LockedPtr is NULL.
+   * acquisition is unsuccessful, the returned LockedPtr is nullptr.
    *
    * NOTE: This API is deprecated.  Use lock(), wlock(), or rlock() instead.
    * In the future it will be marked with a deprecation attribute to emit
@@ -515,7 +648,7 @@ struct Synchronized : public SynchronizedBase<
 
   /**
    * Attempts to acquire for a given number of milliseconds. If
-   * acquisition is unsuccessful, the returned ConstLockedPtr is NULL.
+   * acquisition is unsuccessful, the returned ConstLockedPtr is nullptr.
    *
    * NOTE: This API is deprecated.  Use lock(), wlock(), or rlock() instead.
    * In the future it will be marked with a deprecation attribute to emit
@@ -634,7 +767,7 @@ using LockedPtrType = typename std::conditional<
     std::is_const<SynchronizedType>::value,
     typename SynchronizedType::ConstLockedPtr,
     typename SynchronizedType::LockedPtr>::type;
-} // detail
+} // namespace detail
 
 /**
  * A helper base class for implementing LockedPtr.
@@ -667,6 +800,20 @@ class LockedPtrBase {
     if (parent_) {
       LockPolicy::unlock(parent_->mutex_);
     }
+  }
+
+  /**
+   * Unlock the synchronized data.
+   *
+   * The LockedPtr can no longer be dereferenced after unlock() has been
+   * called.  isValid() will return false on an unlocked LockedPtr.
+   *
+   * unlock() can only be called on a LockedPtr that is valid.
+   */
+  void unlock() {
+    DCHECK(parent_ != nullptr);
+    LockPolicy::unlock(parent_->mutex_);
+    parent_ = nullptr;
   }
 
  protected:
@@ -709,6 +856,7 @@ class LockedPtrBase {
   }
 
   UnlockerData releaseLock() {
+    DCHECK(parent_ != nullptr);
     auto current = parent_;
     parent_ = nullptr;
     LockPolicy::unlock(current->mutex_);
@@ -769,6 +917,20 @@ class LockedPtrBase<SynchronizedType, std::mutex, LockPolicy> {
     return lock_;
   }
 
+  /**
+   * Unlock the synchronized data.
+   *
+   * The LockedPtr can no longer be dereferenced after unlock() has been
+   * called.  isValid() will return false on an unlocked LockedPtr.
+   *
+   * unlock() can only be called on a LockedPtr that is valid.
+   */
+  void unlock() {
+    DCHECK(parent_ != nullptr);
+    lock_.unlock();
+    parent_ = nullptr;
+  }
+
  protected:
   LockedPtrBase() {}
   explicit LockedPtrBase(SynchronizedType* parent)
@@ -782,6 +944,7 @@ class LockedPtrBase<SynchronizedType, std::mutex, LockPolicy> {
   }
 
   UnlockerData releaseLock() {
+    DCHECK(parent_ != nullptr);
     UnlockerData data(std::move(lock_), parent_);
     parent_ = nullptr;
     data.first.unlock();
@@ -962,6 +1125,74 @@ class LockedPtr : public LockedPtrBase<
   ScopedUnlocker<SynchronizedType, LockPolicy> scopedUnlock() {
     return ScopedUnlocker<SynchronizedType, LockPolicy>(this);
   }
+
+  /***************************************************************************
+   * Upgradable lock methods.
+   * These are disabled via SFINAE when the mutex is not upgradable
+   **************************************************************************/
+  /**
+   * Move the locked ptr from an upgrade state to an exclusive state.  The
+   * current lock is left in a null state.
+   */
+  template <
+      typename SyncType = SynchronizedType,
+      typename = typename std::enable_if<
+          LockTraits<typename SyncType::MutexType>::is_upgrade>::type>
+  LockedPtr<SynchronizedType, LockPolicyFromUpgradeToExclusive>
+  moveFromUpgradeToWrite() {
+    auto* parent_to_pass_on = this->parent_;
+    this->parent_ = nullptr;
+    return LockedPtr<SynchronizedType, LockPolicyFromUpgradeToExclusive>(
+        parent_to_pass_on);
+  }
+
+  /**
+   * Move the locked ptr from an exclusive state to an upgrade state.  The
+   * current lock is left in a null state.
+   */
+  template <
+      typename SyncType = SynchronizedType,
+      typename = typename std::enable_if<
+          LockTraits<typename SyncType::MutexType>::is_upgrade>::type>
+  LockedPtr<SynchronizedType, LockPolicyFromExclusiveToUpgrade>
+  moveFromWriteToUpgrade() {
+    auto* parent_to_pass_on = this->parent_;
+    this->parent_ = nullptr;
+    return LockedPtr<SynchronizedType, LockPolicyFromExclusiveToUpgrade>(
+        parent_to_pass_on);
+  }
+
+  /**
+   * Move the locked ptr from an upgrade state to a shared state.  The
+   * current lock is left in a null state.
+   */
+  template <
+      typename SyncType = SynchronizedType,
+      typename = typename std::enable_if<
+          LockTraits<typename SyncType::MutexType>::is_upgrade>::type>
+  LockedPtr<SynchronizedType, LockPolicyFromUpgradeToShared>
+  moveFromUpgradeToRead() {
+    auto* parent_to_pass_on = this->parent_;
+    this->parent_ = nullptr;
+    return LockedPtr<SynchronizedType, LockPolicyFromUpgradeToShared>(
+        parent_to_pass_on);
+  }
+
+  /**
+   * Move the locked ptr from an exclusive state to a shared state.  The
+   * current lock is left in a null state.
+   */
+  template <
+      typename SyncType = SynchronizedType,
+      typename = typename std::enable_if<
+          LockTraits<typename SyncType::MutexType>::is_upgrade>::type>
+  LockedPtr<SynchronizedType, LockPolicyFromExclusiveToShared>
+  moveFromWriteToRead() {
+    auto* parent_to_pass_on = this->parent_;
+    this->parent_ = nullptr;
+    return LockedPtr<SynchronizedType, LockPolicyFromExclusiveToShared>(
+        parent_to_pass_on);
+  }
 };
 
 /**
@@ -1072,6 +1303,15 @@ void swap(Synchronized<T, M>& lhs, Synchronized<T, M>& rhs) {
 }
 
 /**
+ * Disambiguate the name var by concatenating the line number of the original
+ * point of expansion. This avoids shadowing warnings for nested
+ * SYNCHRONIZEDs. The name is consistent if used multiple times within
+ * another macro.
+ * Only for internal use.
+ */
+#define SYNCHRONIZED_VAR(var) FB_CONCATENATE(SYNCHRONIZED_##var##_, __LINE__)
+
+/**
  * SYNCHRONIZED is the main facility that makes Synchronized<T>
  * helpful. It is a pseudo-statement that introduces a scope where the
  * object is locked. Inside that scope you get to access the unadorned
@@ -1090,32 +1330,38 @@ void swap(Synchronized<T, M>& lhs, Synchronized<T, M>& rhs) {
  */
 #define SYNCHRONIZED(...)                                             \
   FOLLY_PUSH_WARNING                                                  \
-  FOLLY_GCC_DISABLE_WARNING(shadow)                                   \
-  if (bool SYNCHRONIZED_state = false) {                              \
+  FOLLY_GCC_DISABLE_WARNING("-Wshadow")                               \
+  FOLLY_MSVC_DISABLE_WARNING(4189) /* initialized but unreferenced */ \
+  FOLLY_MSVC_DISABLE_WARNING(4456) /* declaration hides local */      \
+  FOLLY_MSVC_DISABLE_WARNING(4457) /* declaration hides parameter */  \
+  FOLLY_MSVC_DISABLE_WARNING(4458) /* declaration hides member */     \
+  FOLLY_MSVC_DISABLE_WARNING(4459) /* declaration hides global */     \
+  FOLLY_GCC_DISABLE_NEW_SHADOW_WARNINGS                               \
+  if (bool SYNCHRONIZED_VAR(state) = false) {                         \
   } else                                                              \
-    for (auto SYNCHRONIZED_lockedPtr =                                \
+    for (auto SYNCHRONIZED_VAR(lockedPtr) =                           \
              (FB_VA_GLUE(FB_ARG_2_OR_1, (__VA_ARGS__))).operator->(); \
-         !SYNCHRONIZED_state;                                         \
-         SYNCHRONIZED_state = true)                                   \
+         !SYNCHRONIZED_VAR(state);                                    \
+         SYNCHRONIZED_VAR(state) = true)                              \
       for (auto& FB_VA_GLUE(FB_ARG_1, (__VA_ARGS__)) =                \
-               *SYNCHRONIZED_lockedPtr.operator->();                  \
-           !SYNCHRONIZED_state;                                       \
-           SYNCHRONIZED_state = true)                                 \
+               *SYNCHRONIZED_VAR(lockedPtr).operator->();             \
+           !SYNCHRONIZED_VAR(state);                                  \
+           SYNCHRONIZED_VAR(state) = true)                            \
   FOLLY_POP_WARNING
 
 #define TIMED_SYNCHRONIZED(timeout, ...)                                       \
-  if (bool SYNCHRONIZED_state = false) {                                       \
+  if (bool SYNCHRONIZED_VAR(state) = false) {                                  \
   } else                                                                       \
-    for (auto SYNCHRONIZED_lockedPtr =                                         \
+    for (auto SYNCHRONIZED_VAR(lockedPtr) =                                    \
              (FB_VA_GLUE(FB_ARG_2_OR_1, (__VA_ARGS__))).timedAcquire(timeout); \
-         !SYNCHRONIZED_state;                                                  \
-         SYNCHRONIZED_state = true)                                            \
+         !SYNCHRONIZED_VAR(state);                                             \
+         SYNCHRONIZED_VAR(state) = true)                                       \
       for (auto FB_VA_GLUE(FB_ARG_1, (__VA_ARGS__)) =                          \
-               (!SYNCHRONIZED_lockedPtr                                        \
+               (!SYNCHRONIZED_VAR(lockedPtr)                                   \
                     ? nullptr                                                  \
-                    : SYNCHRONIZED_lockedPtr.operator->());                    \
-           !SYNCHRONIZED_state;                                                \
-           SYNCHRONIZED_state = true)
+                    : SYNCHRONIZED_VAR(lockedPtr).operator->());               \
+           !SYNCHRONIZED_VAR(state);                                           \
+           SYNCHRONIZED_VAR(state) = true)
 
 /**
  * Similar to SYNCHRONIZED, but only uses a read lock.
@@ -1135,38 +1381,20 @@ void swap(Synchronized<T, M>& lhs, Synchronized<T, M>& rhs) {
       (FB_VA_GLUE(FB_ARG_2_OR_1, (__VA_ARGS__))).asConst())
 
 /**
- * Temporarily disables synchronization inside a SYNCHRONIZED block.
- *
- * Note: This macro is deprecated, and kind of broken.  The input parameter
- * does not control what it unlocks--it always unlocks the lock acquired by the
- * most recent SYNCHRONIZED scope.  If you have two nested SYNCHRONIZED blocks,
- * UNSYNCHRONIZED always unlocks the inner-most, even if you pass in the
- * variable name used in the outer SYNCHRONIZED block.
- *
- * This macro will be removed soon in a subsequent diff.
- */
-#define UNSYNCHRONIZED(name)                                             \
-  for (auto SYNCHRONIZED_state3 = SYNCHRONIZED_lockedPtr.scopedUnlock(); \
-       !SYNCHRONIZED_state;                                              \
-       SYNCHRONIZED_state = true)                                        \
-    for (auto& name = *SYNCHRONIZED_state3.getSynchronized();            \
-         !SYNCHRONIZED_state;                                            \
-         SYNCHRONIZED_state = true)
-
-/**
  * Synchronizes two Synchronized objects (they may encapsulate
  * different data). Synchronization is done in increasing address of
  * object order, so there is no deadlock risk.
  */
-#define SYNCHRONIZED_DUAL(n1, e1, n2, e2)                               \
-  if (bool SYNCHRONIZED_state = false) {                                \
-  } else                                                                \
-    for (auto SYNCHRONIZED_ptrs = acquireLockedPair(e1, e2);            \
-         !SYNCHRONIZED_state;                                           \
-         SYNCHRONIZED_state = true)                                     \
-      for (auto& n1 = *SYNCHRONIZED_ptrs.first; !SYNCHRONIZED_state;    \
-           SYNCHRONIZED_state = true)                                   \
-        for (auto& n2 = *SYNCHRONIZED_ptrs.second; !SYNCHRONIZED_state; \
-             SYNCHRONIZED_state = true)
+#define SYNCHRONIZED_DUAL(n1, e1, n2, e2)                                      \
+  if (bool SYNCHRONIZED_VAR(state) = false) {                                  \
+  } else                                                                       \
+    for (auto SYNCHRONIZED_VAR(ptrs) = acquireLockedPair(e1, e2);              \
+         !SYNCHRONIZED_VAR(state);                                             \
+         SYNCHRONIZED_VAR(state) = true)                                       \
+      for (auto& n1 = *SYNCHRONIZED_VAR(ptrs).first; !SYNCHRONIZED_VAR(state); \
+           SYNCHRONIZED_VAR(state) = true)                                     \
+        for (auto& n2 = *SYNCHRONIZED_VAR(ptrs).second;                        \
+             !SYNCHRONIZED_VAR(state);                                         \
+             SYNCHRONIZED_VAR(state) = true)
 
 } /* namespace folly */

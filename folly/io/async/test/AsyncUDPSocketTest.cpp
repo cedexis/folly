@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,19 +14,17 @@
  * limitations under the License.
  */
 
-#include <folly/io/async/AsyncUDPSocket.h>
-#include <folly/io/async/AsyncUDPServerSocket.h>
-#include <folly/io/async/AsyncTimeout.h>
-#include <folly/io/async/EventBase.h>
-#include <folly/SocketAddress.h>
-
-#include <boost/thread/barrier.hpp>
-
-#include <folly/io/IOBuf.h>
-
 #include <thread>
 
-#include <gtest/gtest.h>
+#include <folly/Conv.h>
+#include <folly/SocketAddress.h>
+#include <folly/io/IOBuf.h>
+#include <folly/io/async/AsyncTimeout.h>
+#include <folly/io/async/AsyncUDPServerSocket.h>
+#include <folly/io/async/AsyncUDPSocket.h>
+#include <folly/io/async/EventBase.h>
+#include <folly/portability/GMock.h>
+#include <folly/portability/GTest.h>
 
 using folly::AsyncUDPSocket;
 using folly::AsyncUDPServerSocket;
@@ -34,6 +32,7 @@ using folly::AsyncTimeout;
 using folly::EventBase;
 using folly::SocketAddress;
 using folly::IOBuf;
+using namespace testing;
 
 class UDPAcceptor
     : public AsyncUDPServerSocket::Callback {
@@ -88,9 +87,7 @@ class UDPServer {
   void start() {
     CHECK(evb_->isInEventBaseThread());
 
-    socket_ = folly::make_unique<AsyncUDPServerSocket>(
-        evb_,
-        1500);
+    socket_ = std::make_unique<AsyncUDPServerSocket>(evb_, 1500);
 
     try {
       socket_->bind(addr_);
@@ -111,11 +108,7 @@ class UDPServer {
         evb.loopForever();
       });
 
-      auto r = std::make_shared<boost::barrier>(2);
-      evb.runInEventBaseThread([r] () {
-        r->wait();
-      });
-      r->wait();
+      evb.waitUntilRunning();
 
       socket_->addListener(&evb, &acceptors_[i]);
       threads_.emplace_back(std::move(t));
@@ -166,7 +159,7 @@ class UDPClient
     CHECK(evb_->isInEventBaseThread());
 
     server_ = server;
-    socket_ = folly::make_unique<AsyncUDPSocket>(evb_);
+    socket_ = std::make_unique<AsyncUDPSocket>(evb_);
 
     try {
       socket_->bind(folly::SocketAddress("127.0.0.1", 0));
@@ -256,7 +249,6 @@ class UDPClient
 TEST(AsyncSocketTest, PingPong) {
   folly::EventBase sevb;
   UDPServer server(&sevb, folly::SocketAddress("127.0.0.1", 0), 4);
-  boost::barrier barrier(2);
 
   // Start event loop in a separate thread
   auto serverThread = std::thread([&sevb] () {
@@ -264,12 +256,10 @@ TEST(AsyncSocketTest, PingPong) {
   });
 
   // Wait for event loop to start
-  sevb.runInEventBaseThread([&] () { barrier.wait(); });
-  barrier.wait();
+  sevb.waitUntilRunning();
 
   // Start the server
-  sevb.runInEventBaseThread([&] () { server.start(); barrier.wait(); });
-  barrier.wait();
+  sevb.runInEventBaseThreadAndWait([&]() { server.start(); });
 
   folly::EventBase cevb;
   UDPClient client(&cevb);
@@ -280,8 +270,7 @@ TEST(AsyncSocketTest, PingPong) {
   });
 
   // Wait for event loop to start
-  cevb.runInEventBaseThread([&] () { barrier.wait(); });
-  barrier.wait();
+  cevb.waitUntilRunning();
 
   // Send ping
   cevb.runInEventBaseThread([&] () { client.start(server.address(), 1000); });
@@ -302,3 +291,10 @@ TEST(AsyncSocketTest, PingPong) {
   // Wait for server thread to joib
   serverThread.join();
 }
+
+class TestAsyncUDPSocket : public AsyncUDPSocket {
+ public:
+  explicit TestAsyncUDPSocket(EventBase* evb) : AsyncUDPSocket(evb) {}
+
+  MOCK_METHOD3(sendmsg, ssize_t(int, const struct msghdr*, int));
+};

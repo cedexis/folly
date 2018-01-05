@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,18 +21,18 @@
 #include <atomic>
 #include <memory>
 #include <set>
-#include <vector>
-#include <thread>
 #include <system_error>
+#include <thread>
+#include <vector>
 
 #include <glog/logging.h>
-#include <gtest/gtest.h>
 
-#include <folly/Arena.h>
-#include <folly/Foreach.h>
 #include <folly/Memory.h>
 #include <folly/String.h>
+#include <folly/container/Foreach.h>
+#include <folly/memory/Arena.h>
 #include <folly/portability/GFlags.h>
+#include <folly/portability/GTest.h>
 
 DEFINE_int32(num_threads, 12, "num concurrent threads to test");
 
@@ -58,12 +58,12 @@ struct ParanoidArenaAlloc {
   ParentAlloc* arena_;
   std::set<void*> allocated_;
 };
-}
+} // namespace
 
 namespace folly {
 template <>
 struct IsArenaAllocator<ParanoidArenaAlloc<SysArena>> : std::true_type {};
-}
+} // namespace folly
 
 namespace {
 
@@ -115,7 +115,9 @@ static void concurrentSkip(const vector<ValueType> *values,
   int64_t sum = 0;
   SkipListAccessor::Skipper skipper(skipList);
   FOR_EACH(it, *values) {
-    if (skipper.to(*it)) sum += *it;
+    if (skipper.to(*it)) {
+      sum += *it;
+    }
   }
   VLOG(20) << "sum = " << sum;
 }
@@ -218,8 +220,8 @@ TEST(ConcurrentSkipList, SequentialAccess) {
     skipList.add(3);
     CHECK(skipList.contains(3));
     int pos = 0;
-    FOR_EACH(it, skipList) {
-      LOG(INFO) << "pos= " << pos++ << " value= " << *it;
+    for (auto entry : skipList) {
+      LOG(INFO) << "pos= " << pos++ << " value= " << entry;
     }
   }
 
@@ -266,8 +268,12 @@ TEST(ConcurrentSkipList, TestStringType) {
 struct UniquePtrComp {
   bool operator ()(
       const std::unique_ptr<int> &x, const std::unique_ptr<int> &y) const {
-    if (!x) return false;
-    if (!y) return true;
+    if (!x) {
+      return false;
+    }
+    if (!y) {
+      return true;
+    }
     return *x < *y;
   }
 };
@@ -280,7 +286,7 @@ TEST(ConcurrentSkipList, TestMovableData) {
 
   static const int N = 10;
   for (int i = 0; i < N; ++i) {
-    accessor.insert(std::unique_ptr<int>(new int(i)));
+    accessor.insert(std::make_unique<int>(i));
   }
 
   for (int i = 0; i < N; ++i) {
@@ -468,11 +474,11 @@ void TestNonTrivialDeallocation(SkipListPtrType& list) {
 template <typename ParentAlloc>
 void NonTrivialDeallocationWithParanoid() {
   using Alloc = ParanoidArenaAlloc<ParentAlloc>;
-  using SkipListType =
+  using ParanoidSkipListType =
       ConcurrentSkipList<NonTrivialValue, std::less<NonTrivialValue>, Alloc>;
   ParentAlloc parentAlloc;
   Alloc paranoidAlloc(&parentAlloc);
-  auto list = SkipListType::createInstance(10, paranoidAlloc);
+  auto list = ParanoidSkipListType::createInstance(10, paranoidAlloc);
   TestNonTrivialDeallocation(list);
   EXPECT_TRUE(paranoidAlloc.isEmpty());
 }
@@ -486,13 +492,13 @@ TEST(ConcurrentSkipList, NonTrivialDeallocationWithParanoidSysArena) {
 }
 
 TEST(ConcurrentSkipList, NonTrivialDeallocationWithSysArena) {
-  using SkipListType =
+  using SysArenaSkipListType =
       ConcurrentSkipList<NonTrivialValue, std::less<NonTrivialValue>, SysArena>;
-  auto list = SkipListType::createInstance(10);
+  auto list = SysArenaSkipListType::createInstance(10);
   TestNonTrivialDeallocation(list);
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char* argv[]) {
   testing::InitGoogleTest(&argc, argv);

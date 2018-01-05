@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,14 +31,9 @@
 
 namespace folly {
 
-File::File()
-  : fd_(-1)
-  , ownsFd_(false)
-{}
+File::File() noexcept : fd_(-1), ownsFd_(false) {}
 
-File::File(int fd, bool ownsFd)
-  : fd_(fd)
-  , ownsFd_(ownsFd) {
+File::File(int fd, bool ownsFd) noexcept : fd_(fd), ownsFd_(ownsFd) {
   CHECK_GE(fd, -1) << "fd must be -1 or non-negative";
   CHECK(fd != -1 || !ownsFd) << "cannot own -1";
 }
@@ -143,7 +138,9 @@ void File::doLock(int op) {
 bool File::doTryLock(int op) {
   int r = flockNoInt(fd_, op | LOCK_NB);
   // flock returns EWOULDBLOCK if already locked
-  if (r == -1 && errno == EWOULDBLOCK) return false;
+  if (r == -1 && errno == EWOULDBLOCK) {
+    return false;
+  }
   checkUnixError(r, "flock() failed (try_lock)");
   return true;
 }
@@ -153,4 +150,4 @@ void File::unlock() {
 }
 void File::unlock_shared() { unlock(); }
 
-}  // namespace folly
+} // namespace folly

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2012-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,8 @@
 
 #include <folly/Format.h>
 
-#include <folly/portability/Constexpr.h>
+#include <folly/ConstexprMath.h>
+#include <folly/CppAttributes.h>
 
 #include <double-conversion/double-conversion.h>
 
@@ -26,7 +27,7 @@ namespace detail {
 extern const FormatArg::Align formatAlignTable[];
 extern const FormatArg::Sign formatSignTable[];
 
-}  // namespace detail
+} // namespace detail
 
 using namespace folly::detail;
 
@@ -50,14 +51,14 @@ void FormatValue<double>::formatHelper(
   }
 
   // 2+: for null terminator and optional sign shenanigans.
-  constexpr size_t bufLen =
+  constexpr int bufLen =
       2 + constexpr_max(
               2 + DoubleToStringConverter::kMaxFixedDigitsBeforePoint +
                   DoubleToStringConverter::kMaxFixedDigitsAfterPoint,
               constexpr_max(8 + DoubleToStringConverter::kMaxExponentialDigits,
                             7 + DoubleToStringConverter::kMaxPrecisionDigits));
   char buf[bufLen];
-  StringBuilder builder(buf + 1, static_cast<int> (sizeof(buf) - 1));
+  StringBuilder builder(buf + 1, bufLen - 1);
 
   char plusSign;
   switch (arg.sign) {
@@ -81,6 +82,7 @@ void FormatValue<double>::formatHelper(
   switch (arg.presentation) {
   case '%':
     val *= 100;
+    FOLLY_FALLTHROUGH;
   case 'f':
   case 'F':
     {
@@ -159,7 +161,7 @@ void FormatValue<double>::formatHelper(
     prefixLen = 1;
   }
 
-  piece = fbstring(p, len);
+  piece = fbstring(p, size_t(len));
 }
 
 
@@ -168,7 +170,7 @@ void FormatArg::initSlow() {
   auto end = fullArgString.end();
 
   // Parse key
-  auto p = static_cast<const char*>(memchr(b, ':', end - b));
+  auto p = static_cast<const char*>(memchr(b, ':', size_t(end - b)));
   if (!p) {
     key_ = StringPiece(b, end);
     return;
@@ -177,7 +179,9 @@ void FormatArg::initSlow() {
 
   if (*p == ':') {
     // parse format spec
-    if (++p == end) return;
+    if (++p == end) {
+      return;
+    }
 
     // fill/align, or just align
     Align a;
@@ -187,30 +191,40 @@ void FormatArg::initSlow() {
       fill = *p;
       align = a;
       p += 2;
-      if (p == end) return;
+      if (p == end) {
+        return;
+      }
     } else if ((a = formatAlignTable[static_cast<unsigned char>(*p)]) !=
                Align::INVALID) {
       align = a;
-      if (++p == end) return;
+      if (++p == end) {
+        return;
+      }
     }
 
     Sign s;
     unsigned char uSign = static_cast<unsigned char>(*p);
     if ((s = formatSignTable[uSign]) != Sign::INVALID) {
       sign = s;
-      if (++p == end) return;
+      if (++p == end) {
+        return;
+      }
     }
 
     if (*p == '#') {
       basePrefix = true;
-      if (++p == end) return;
+      if (++p == end) {
+        return;
+      }
     }
 
     if (*p == '0') {
       enforce(align == Align::DEFAULT, "alignment specified twice");
       fill = '0';
       align = Align::PAD_AFTER_SIGN;
-      if (++p == end) return;
+      if (++p == end) {
+        return;
+      }
     }
 
     auto readInt = [&] {
@@ -225,20 +239,30 @@ void FormatArg::initSlow() {
       width = kDynamicWidth;
       ++p;
 
-      if (p == end) return;
+      if (p == end) {
+        return;
+      }
 
-      if (*p >= '0' && *p <= '9') widthIndex = readInt();
+      if (*p >= '0' && *p <= '9') {
+        widthIndex = readInt();
+      }
 
-      if (p == end) return;
+      if (p == end) {
+        return;
+      }
     } else if (*p >= '0' && *p <= '9') {
       width = readInt();
 
-      if (p == end) return;
+      if (p == end) {
+        return;
+      }
     }
 
     if (*p == ',') {
       thousandsSeparator = true;
-      if (++p == end) return;
+      if (++p == end) {
+        return;
+      }
     }
 
     if (*p == '.') {
@@ -256,11 +280,15 @@ void FormatArg::initSlow() {
         trailingDot = true;
       }
 
-      if (p == end) return;
+      if (p == end) {
+        return;
+      }
     }
 
     presentation = *p;
-    if (++p == end) return;
+    if (++p == end) {
+      return;
+    }
   }
 
   error("extra characters in format string");
@@ -294,7 +322,7 @@ void FormatArg::validate(Type type) const {
 
 namespace detail {
 void insertThousandsGroupingUnsafe(char* start_buffer, char** end_buffer) {
-  uint32_t remaining_digits = *end_buffer - start_buffer;
+  uint32_t remaining_digits = uint32_t(*end_buffer - start_buffer);
   uint32_t separator_size = (remaining_digits - 1) / 3;
   uint32_t result_size = remaining_digits + separator_size;
   *end_buffer = *end_buffer + separator_size;
@@ -326,6 +354,17 @@ void insertThousandsGroupingUnsafe(char* start_buffer, char** end_buffer) {
     remaining_digits -= current_group_size;
   }
 }
-} // detail
+} // namespace detail
 
-}  // namespace folly
+FormatKeyNotFoundException::FormatKeyNotFoundException(StringPiece key)
+    : std::out_of_range(kMessagePrefix.str() + key.str()) {}
+
+constexpr StringPiece const FormatKeyNotFoundException::kMessagePrefix;
+
+namespace detail {
+[[noreturn]] void throwFormatKeyNotFoundException(StringPiece key) {
+  throw FormatKeyNotFoundException(key);
+}
+} // namespace detail
+
+} // namespace folly

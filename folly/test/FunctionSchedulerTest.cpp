@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 #include <atomic>
-#include <gtest/gtest.h>
 
 #include <folly/experimental/FunctionScheduler.h>
+#include <folly/portability/GTest.h>
 
 namespace folly {
 
@@ -318,4 +318,4 @@ TEST(FunctionScheduler, SteadyCatchup) {
   EXPECT_NEAR(100, ticks.load(), 10);
 }
 
-}
+} // namespace folly

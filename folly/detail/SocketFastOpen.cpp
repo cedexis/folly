@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,15 +16,15 @@
 
 #include <folly/detail/SocketFastOpen.h>
 
+#include <folly/portability/Sockets.h>
+
 #include <cerrno>
+#include <cstdio>
 
 namespace folly {
 namespace detail {
 
-#if FOLLY_ALLOW_TFO
-
-#include <netinet/tcp.h>
-#include <stdio.h>
+#if FOLLY_ALLOW_TFO && defined(__linux__)
 
 // Sometimes these flags are not present in the headers,
 // so define them if not present.
@@ -62,16 +62,39 @@ bool tfo_succeeded(int sockfd) {
   return info.tcpi_options & TCPI_OPT_SYN_DATA;
 }
 
-#else
+#elif FOLLY_ALLOW_TFO && defined(__APPLE__)
 
 ssize_t tfo_sendmsg(int sockfd, const struct msghdr* msg, int flags) {
-  errno = EOPNOTSUPP;
-  return -1;
+  sa_endpoints_t endpoints;
+  endpoints.sae_srcif = 0;
+  endpoints.sae_srcaddr = nullptr;
+  endpoints.sae_srcaddrlen = 0;
+  endpoints.sae_dstaddr = (struct sockaddr*)msg->msg_name;
+  endpoints.sae_dstaddrlen = msg->msg_namelen;
+  int ret = connectx(
+      sockfd,
+      &endpoints,
+      SAE_ASSOCID_ANY,
+      CONNECT_RESUME_ON_READ_WRITE | CONNECT_DATA_IDEMPOTENT,
+      nullptr,
+      0,
+      nullptr,
+      nullptr);
+
+  if (ret != 0) {
+    return ret;
+  }
+  ret = sendmsg(sockfd, msg, flags);
+  return ret;
 }
 
 int tfo_enable(int sockfd, size_t max_queue_size) {
-  errno = ENOPROTOOPT;
-  return -1;
+  return setsockopt(
+      sockfd,
+      IPPROTO_TCP,
+      TCP_FASTOPEN,
+      &max_queue_size,
+      sizeof(max_queue_size));
 }
 
 bool tfo_succeeded(int sockfd) {
@@ -79,6 +102,24 @@ bool tfo_succeeded(int sockfd) {
   return false;
 }
 
+#else
+
+ssize_t
+tfo_sendmsg(int /* sockfd */, const struct msghdr* /* msg */, int /* flags */) {
+  errno = EOPNOTSUPP;
+  return -1;
+}
+
+int tfo_enable(int /* sockfd */, size_t /* max_queue_size */) {
+  errno = ENOPROTOOPT;
+  return -1;
+}
+
+bool tfo_succeeded(int /* sockfd */) {
+  errno = EOPNOTSUPP;
+  return false;
+}
+
 #endif
-}
-}
+} // namespace detail
+} // namespace folly

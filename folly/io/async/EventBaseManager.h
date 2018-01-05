@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,10 +16,11 @@
 
 #pragma once
 
+#include <list>
+#include <set>
+
 #include <folly/ThreadLocal.h>
 #include <folly/io/async/EventBase.h>
-#include <set>
-#include <list>
 
 namespace folly {
 
@@ -101,7 +102,7 @@ class EventBaseManager {
    * this moment in time.  Locks a mutex so that these EventBase set cannot
    * be changed, and also the caller can rely on no instances being destructed.
    */
-  template<typename FunctionType>
+  template <typename FunctionType>
   void withEventBaseSet(const FunctionType& runnable) {
     // grab the mutex for the caller
     std::lock_guard<std::mutex> g(*&eventBaseSetMutex_);
@@ -157,4 +158,4 @@ class EventBaseManager {
   std::shared_ptr<folly::EventBaseObserver> observer_;
 };
 
-} // folly
+} // namespace folly

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Facebook, Inc.
+ * Copyright 2017 Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-#include <gtest/gtest.h>
-
+#include <folly/executors/InlineExecutor.h>
 #include <folly/futures/Future.h>
+#include <folly/portability/GTest.h>
 
 using namespace folly;
 
@@ -27,12 +27,51 @@ TEST(SelfDestruct, then) {
     return x + 1;
   });
   p->setValue(123);
-  EXPECT_EQ(future.get(), 124);
+  EXPECT_EQ(124, future.get());
 }
 
 TEST(SelfDestruct, ensure) {
   auto* p = new Promise<int>();
   auto future = p->getFuture().ensure([p] { delete p; });
   p->setValue(123);
-  EXPECT_EQ(future.get(), 123);
+  EXPECT_EQ(123, future.get());
+}
+
+class ThrowingExecutorError : public std::runtime_error {
+ public:
+  using std::runtime_error::runtime_error;
+};
+
+class ThrowingExecutor : public folly::Executor {
+ public:
+  void add(folly::Func) override {
+    throw ThrowingExecutorError("ThrowingExecutor::add");
+  }
+};
+
+TEST(SelfDestruct, throwingExecutor) {
+  ThrowingExecutor executor;
+  auto* p = new Promise<int>();
+  auto future =
+      p->getFuture().via(&executor).onError([p](ThrowingExecutorError const&) {
+        delete p;
+        return 456;
+      });
+  p->setValue(123);
+  EXPECT_EQ(456, future.get());
+}
+
+TEST(SelfDestruct, throwingInlineExecutor) {
+  folly::InlineExecutor executor;
+
+  auto* p = new Promise<int>();
+  auto future = p->getFuture()
+                    .via(&executor)
+                    .then([p]() -> int {
+                      delete p;
+                      throw ThrowingExecutorError("callback throws");
+                    })
+                    .onError([](ThrowingExecutorError const&) { return 456; });
+  p->setValue(123);
+  EXPECT_EQ(456, future.get());
 }
