@@ -12,8 +12,8 @@ but the main differences are the following
    external package name (1.4.0) to the version
    embedded in the shared library files
 
- * Vagrantfile, Dockerfile
-   Setup for vagrant and docker, respectively
+ * Vagrantfile
+   Setup for vagrant
 
  * build_preq.sh
    Build Dependencies
@@ -37,21 +37,23 @@ it statically linked to proxygen.
 
 BUILDING
 
+Care must be taken to update the build b/c upstream
+requirements change.
+
 The `Vagrant` file in each of the projects is
 identical.  One can use a different vagrant for
 each or just the same one (recommended).  You'll
 want to update the version file in each project.
 
-folly# make -f Makefile.cdxs package
+Basically:
+  - vagrant up
+  - sudo bash build_preq.sh
+  - make -f Makefile.cdxs package
 
-then install folly from the generated package
+Do folly first, then install folly from the
+generated package, build wangle, install package
+then build proxygen.
 
-wange# make -f Makefile.cdxs package
-
-then install wangle from the generated package
-
-proxygen# make -f Makefile.cdxs package
-
-the proxygen & folly packages should be uploaded
-to our `apt` service
+Then the packages should be uploaded to our
+`apt` service
 

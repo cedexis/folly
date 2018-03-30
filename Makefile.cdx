@@ -9,7 +9,7 @@ package : build
 	DESTDIR=`pwd`/build.cdx/install make -C folly install
 	cd build.cdx; fpm -f -C install -n cdx-folly \
 		--deb-no-default-config-files \
-		--version 1.4.1 \
+		--version 1.6.0 \
 		--description "Git Commit: $(GIT_HASH)" \
 		-s dir -t deb usr
 
@@ -27,12 +27,15 @@ folly/Makefile: folly/VERSION
 	cd folly; autoreconf -ivf
 	cd folly; ./configure
 
-gtest : folly/test/gtest-1.7.0
-folly/test/gtest-1.7.0 :
+gtest : folly/test/gtest
+folly/test/gtest:
 	mkdir -p build
-	cd /tmp; wget https://googletest.googlecode.com/files/gtest-1.7.0.zip
-	cd folly/test; unzip /tmp/gtest-1.7.0.zip
-	rm /tmp/gtest-1.7.0.zip
+	(cd folly/test && \
+		 rm -rf gtest && \
+		  wget https://github.com/google/googletest/archive/release-1.8.0.tar.gz && \
+			 tar zxf release-1.8.0.tar.gz && \
+			  rm -f release-1.8.0.tar.gz && \
+				 mv googletest-release-1.8.0 gtest)
 
 # ================
 # Vagrant machinery
