@@ -13,7 +13,7 @@ package : build
 	docker rm -f $(LABEL)_exfiltrate
 	
 	# Build our FPM docker and use it
-	cd build.cdx && docker build -f ../Dockerfile.cdx -t $(LABEL)_fpm .
+	docker build -f Dockerfile.cdx -t $(LABEL)_fpm .
 	docker run -it -v $$(pwd)/build.cdx:/build -w /build \
 		$(LABEL)_fpm \
 		fpm -f -C /install -n cdx-folly \

@@ -8,4 +8,4 @@ RUN apt-get install -y make git-core ruby-all-dev
 RUN apt-get install -y libffi-dev pkg-config
 RUN gem install fpm --no-ri --no-rdoc
 
-COPY install /install/usr/local
+COPY build.cdx/install /install/usr/local
