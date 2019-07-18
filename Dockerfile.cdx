@@ -1,0 +1,11 @@
+FROM ubuntu:16.04
+
+# We literally just need fpm and make
+# But we need other stuff to build the gem :(
+# pkg-config pulls everything we need in
+RUN apt-get update
+RUN apt-get install -y make git-core ruby-all-dev
+RUN apt-get install -y libffi-dev pkg-config
+RUN gem install fpm --no-ri --no-rdoc
+
+COPY install /install/usr/local

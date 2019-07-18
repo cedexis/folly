@@ -1,31 +1,37 @@
-DIR=/vagrant/folly
+VAGRANT_DIR=/vagrant/folly
 LABEL=cdx-folly
 
 default : package
 
 package : GIT_HASH := $(shell git rev-parse HEAD)
 package : build
-	mkdir -p build.cdx/install
-	DESTDIR=`pwd`/build.cdx/install make -C folly install
-	cd build.cdx; fpm -f -C install -n cdx-folly \
+	docker rm -f $(LABEL)_exfiltrate || true
+	docker create -it --name $(LABEL)_exfiltrate $$(cat build.cdx/docker_image_id) bash
+	docker cp $(LABEL)_exfiltrate:/home/install build.cdx
+	docker rm -fv $(LABEL)_exfiltrate
+	cd build.cdx && docker build -f ../Dockerfile.cdx -t $(LABEL)_fpm .
+	docker run -it -v $$(pwd)/build.cdx:/build -w /build \
+		$(LABEL)_fpm \
+		fpm -f -C /install -n cdx-folly \
 		--deb-no-default-config-files \
-		--version 1.6.0 \
+		--version 1.6.5 \
 		--description "Git Commit: $(GIT_HASH)" \
 		-s dir -t deb usr
 
 .PHONY: clean
 clean :
 	rm -rf build.cdx
-	make -C folly clean
-	rm -f folly/Makefile
-	@echo "Consider git -xn clean followed by git -xf clean"
 
-build : folly/Makefile gtest
-	cd folly; make -j4
+# Based on travis_docker_build.sh
+build : build.cdx/docker_dir
+	echo Preparing $$(cat build.cdx/docker_dir)
+	cp build/fbcode_builder/docker_build_with_ccache.sh $$(cat build.cdx/docker_dir)
+	(cd $$(cat build.cdx/docker_dir) && ./docker_build_with_ccache.sh "") > build.cdx/docker_log
+	awk -F' ' '/Successfully built/ { print $$3 }' build.cdx/docker_log > build.cdx/docker_image_id
 
-folly/Makefile: folly/VERSION
-	cd folly; autoreconf -ivf
-	cd folly; ./configure
+build.cdx/docker_dir: folly/VERSION
+	mkdir -p build.cdx
+	cd build && ./fbcode_builder/make_docker_context.py > ../build.cdx/docker_dir
 
 gtest : folly/test/gtest
 folly/test/gtest:
@@ -42,34 +48,29 @@ folly/test/gtest:
 
 vagrant-up : clean
 	vagrant up
-	vagrant ssh -c "cd $(DIR) && make docker-up"
+	vagrant ssh -c "cd $(VAGRANT_DIR) && make docker-up"
 
 vagrant-bash:
-	vagrant ssh -c "cd $(DIR) && make docker-bash"
+	vagrant ssh -c "cd $(VAGRANT_DIR) && make docker-bash"
 
 vagrant-destroy:
 	vagrant destroy
 
 vagrant-build:
-	vagrant ssh -c "cd $(DIR) && sudo docker run -v /vagrant:/repo -w /repo $(LABEL) make"
+	vagrant ssh -c "cd $(VAGRANT_DIR) && make docker-build"
 
 vagrant-package:
-	vagrant ssh -c "cd ($DIR) && sudo docker run -v /vagrant:/repo -w /repo $(LABEL) make package"
+	vagrant ssh -c "cd $(VAGRANT_DIR) && make docker-package"
 
 # ================
 # Build directly in docker if we're running on a compatible host
 
-docker-up:
-	sudo docker build --no-cache --rm -t $(LABEL) .
+docker-build: build
 
-docker-build:
-	sudo docker run -v `pwd`/..:/repo -w /repo $(LABEL) make BAMBOO_BUILD_NUMBER=$(BAMBOO_BUILD_NUMBER)
+docker-package: package
 
-docker-package:
-	sudo docker run -v `pwd`/..:/repo -w /repo $(LABEL) make package BAMBOO_BUILD_NUMBER=$(BAMBOO_BUILD_NUMBER)
-
-docker-bash:
-	sudo docker run -i -t -v `pwd`/..:/repo -w /repo $(LABEL) /bin/bash
+docker-bash: build
+	docker run -it $$(cat build.cdx/docker_image_id) /bin/bash
 
 # ================
 #
