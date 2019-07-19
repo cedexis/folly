@@ -28,13 +28,14 @@ clean :
 
 build : build.cdx/docker_dir
 	echo Building from docker in $$(cat build.cdx/docker_dir)
-	# If we don't care about ccache, I think the next two lines could just be:
-	#(cd $$(cat build.cdx/docker_dir) && docker build . 2>&1) | tee build.cdx/docker_log
-	cp build/fbcode_builder/docker_build_with_ccache.sh $$(cat build.cdx/docker_dir)
-	(CCACHE=$$(pwd)/ccache; cd $$(cat build.cdx/docker_dir) && ./docker_build_with_ccache.sh $$CCACHE) | tee build.cdx/docker_log
+	(cd $$(cat build.cdx/docker_dir) && docker build . 2>&1) | tee build.cdx/docker_log
+	# These are more complicated, but jumps through hoops to preserve the ccache. Worth it?
+	#cp build/fbcode_builder/docker_build_with_ccache.sh $$(cat build.cdx/docker_dir)
+	#(CCACHE=$$(pwd)/ccache; cd $$(cat build.cdx/docker_dir) && ./docker_build_with_ccache.sh $$CCACHE) | tee build.cdx/docker_log
 	awk -F' ' '/Successfully built/ { print $$3 }' build.cdx/docker_log > build.cdx/docker_image_id
+	awk -F' ' '/--->/ { last_id=$$2 } /RUN ctest/ { print last_id }' build.cdx/docker_log > build.cdx/docker_pretest_id
 
-build.cdx/docker_dir: folly/VERSION
+build.cdx/docker_dir: folly/VERSION build/fbcode_builder_config.py
 	# Bootstrap ccache with an empty tar if need be
 	# (This is adapted from travis_docker_build.sh)
 	[ -e "$(CCACHE)" ] || tar -T /dev/null -czf $(CCACHE)
@@ -42,8 +43,9 @@ build.cdx/docker_dir: folly/VERSION
 	mkdir -p build.cdx
 	cd build && ./fbcode_builder/make_docker_context.py \
 		--local-repo-dir $$(pwd)/.. \
-		--ccache-tgz $$(pwd)/../$(CCACHE) \
 		> ../build.cdx/docker_dir
+		# Add this arg above to enable ccache stuff in build
+		#--ccache-tgz $$(pwd)/../$(CCACHE) \
 
 # ================
 # Vagrant machinery
@@ -70,8 +72,8 @@ docker-build: build
 
 docker-package: package
 
-docker-bash: build
-	docker run -it $$(cat build.cdx/docker_image_id) /bin/bash
+docker-bash: build.cdx/docker_pretest_id
+	docker run -it $$(cat build.cdx/docker_pretest_id) /bin/bash
 
 # ================
 #
