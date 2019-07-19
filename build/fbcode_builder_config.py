@@ -16,8 +16,6 @@ def fbcode_builder_spec(builder):
     builder.add_option(
         'folly/_build:cmake_defines',
         {
-            'CXX_STD': 'c++17',
-            'CMAKE_INTERPROCEDURAL_OPTIMIZATION': 'TRUE',
             'CMAKE_BUILD_TYPE': 'Release',
             'BUILD_SHARED_LIBS': 'OFF',
             'BUILD_TESTS': 'ON',
