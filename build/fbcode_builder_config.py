@@ -16,6 +16,7 @@ def fbcode_builder_spec(builder):
     builder.add_option(
         'folly/_build:cmake_defines',
         {
+            'CMAKE_BUILD_TYPE': 'Release',
             'BUILD_SHARED_LIBS': 'OFF',
             'BUILD_TESTS': 'ON',
         }

@@ -1,75 +1,80 @@
-DIR=/vagrant/folly
+VAGRANT_DIR=/vagrant/folly
 LABEL=cdx-folly
+CCACHE=ccache/ccache.tgz
+DOCKER_CONTEXT=/tmp/$(LABEL)_docker-context
 
 default : package
 
 package : GIT_HASH := $(shell git rev-parse HEAD)
 package : build
-	mkdir -p build.cdx/install
-	DESTDIR=`pwd`/build.cdx/install make -C folly install
-	cd build.cdx; fpm -f -C install -n cdx-folly \
+	# Pull out our built files from the docker
+	docker rm -f $(LABEL)_exfiltrate || true
+	docker create -it --name $(LABEL)_exfiltrate $$(cat build.cdx/docker_image_id) bash
+	docker cp $(LABEL)_exfiltrate:/home/install build.cdx
+	docker rm -f $(LABEL)_exfiltrate
+	
+	# Build our FPM docker and use it
+	docker build -f Dockerfile.cdx -t $(LABEL)_fpm .
+	docker run -v $$(pwd)/build.cdx:/build -w /build \
+		$(LABEL)_fpm \
+		fpm -f -C /install -n cdx-folly \
 		--deb-no-default-config-files \
-		--version 1.6.0 \
+		--version 1.6.5 \
 		--description "Git Commit: $(GIT_HASH)" \
 		-s dir -t deb usr
 
 .PHONY: clean
 clean :
 	rm -rf build.cdx
-	make -C folly clean
-	rm -f folly/Makefile
-	@echo "Consider git -xn clean followed by git -xf clean"
 
-build : folly/Makefile gtest
-	cd folly; make -j4
+build : $(DOCKER_CONTEXT)/Dockerfile
+	echo Building from docker in $(DOCKER_CONTEXT)
+	(cd $(DOCKER_CONTEXT) && docker build . 2>&1) | tee build.cdx/docker_log
+	# These are more complicated, but jumps through hoops to preserve the ccache. Worth it?
+	#cp build/fbcode_builder/docker_build_with_ccache.sh $$(cat build.cdx/docker_dir)
+	#(CCACHE=$$(pwd)/ccache; cd $$(cat build.cdx/docker_dir) && ./docker_build_with_ccache.sh $$CCACHE) | tee build.cdx/docker_log
+	awk -F' ' '/Successfully built/ { print $$3 }' build.cdx/docker_log > build.cdx/docker_image_id
+	awk -F' ' '/--->/ { last_id=$$2 } /RUN ctest/ { print last_id }' build.cdx/docker_log > build.cdx/docker_pretest_id
 
-folly/Makefile: folly/VERSION
-	cd folly; autoreconf -ivf
-	cd folly; ./configure
-
-gtest : folly/test/gtest
-folly/test/gtest:
-	mkdir -p build
-	(cd folly/test && \
-		 rm -rf gtest && \
-		  wget https://github.com/google/googletest/archive/release-1.8.0.tar.gz && \
-			 tar zxf release-1.8.0.tar.gz && \
-			  rm -f release-1.8.0.tar.gz && \
-				 mv googletest-release-1.8.0 gtest)
+$(DOCKER_CONTEXT)/Dockerfile: folly/VERSION build/fbcode_builder_config.py
+	# Bootstrap ccache with an empty tar if need be
+	# (This is adapted from travis_docker_build.sh)
+	[ -e "$(CCACHE)" ] || tar -T /dev/null -czf $(CCACHE)
+	# Build our docker context
+	mkdir -p build.cdx
+	cd build && ./fbcode_builder/make_docker_context.py \
+		--docker-context-dir $(DOCKER_CONTEXT)
+		--local-repo-dir $$(pwd)/..
+		# Add this arg above to enable ccache stuff in build
+		#--ccache-tgz $$(pwd)/../$(CCACHE) \
 
 # ================
 # Vagrant machinery
 
 vagrant-up : clean
 	vagrant up
-	vagrant ssh -c "cd $(DIR) && make docker-up"
 
 vagrant-bash:
-	vagrant ssh -c "cd $(DIR) && make docker-bash"
+	vagrant ssh -c "cd $(VAGRANT_DIR) && make docker-bash"
 
 vagrant-destroy:
 	vagrant destroy
 
 vagrant-build:
-	vagrant ssh -c "cd $(DIR) && sudo docker run -v /vagrant:/repo -w /repo $(LABEL) make"
+	vagrant ssh -c "cd $(VAGRANT_DIR) && make docker-build"
 
 vagrant-package:
-	vagrant ssh -c "cd ($DIR) && sudo docker run -v /vagrant:/repo -w /repo $(LABEL) make package"
+	vagrant ssh -c "cd $(VAGRANT_DIR) && make docker-package"
 
 # ================
 # Build directly in docker if we're running on a compatible host
 
-docker-up:
-	sudo docker build --no-cache --rm -t $(LABEL) .
+docker-build: build
 
-docker-build:
-	sudo docker run -v `pwd`/..:/repo -w /repo $(LABEL) make BAMBOO_BUILD_NUMBER=$(BAMBOO_BUILD_NUMBER)
+docker-package: package
 
-docker-package:
-	sudo docker run -v `pwd`/..:/repo -w /repo $(LABEL) make package BAMBOO_BUILD_NUMBER=$(BAMBOO_BUILD_NUMBER)
-
-docker-bash:
-	sudo docker run -i -t -v `pwd`/..:/repo -w /repo $(LABEL) /bin/bash
+docker-bash: build.cdx/docker_pretest_id
+	docker run -it $$(cat build.cdx/docker_pretest_id) /bin/bash
 
 # ================
 #
