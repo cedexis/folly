@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2017-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,10 +28,10 @@ class LifoSemMPMCQueue : public BlockingQueue<T> {
   // Note: The queue pre-allocates all memory for max_capacity
   explicit LifoSemMPMCQueue(size_t max_capacity) : queue_(max_capacity) {}
 
-  void add(T item) override {
+  BlockingQueueAddResult add(T item) override {
     switch (kBehavior) { // static
       case QueueBehaviorIfFull::THROW:
-        if (!queue_.write(std::move(item))) {
+        if (!queue_.writeIfNotFull(std::move(item))) {
           throw QueueFullException("LifoSemMPMCQueue full, can't add item");
         }
         break;
@@ -39,13 +39,23 @@ class LifoSemMPMCQueue : public BlockingQueue<T> {
         queue_.blockingWrite(std::move(item));
         break;
     }
-    sem_.post();
+    return sem_.post();
   }
 
   T take() override {
     T item;
     while (!queue_.readIfNotEmpty(item)) {
       sem_.wait();
+    }
+    return item;
+  }
+
+  folly::Optional<T> try_take_for(std::chrono::milliseconds time) override {
+    T item;
+    while (!queue_.readIfNotEmpty(item)) {
+      if (!sem_.try_wait_for(time)) {
+        return folly::none;
+      }
     }
     return item;
   }

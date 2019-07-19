@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -77,26 +77,17 @@ TEST_F(UtilityTest, as_const) {
   EXPECT_TRUE(noexcept(folly::as_const(s)));
 }
 
-TEST(FollyIntegerSequence, core) {
-  constexpr auto seq = folly::integer_sequence<int, 0, 3, 2>();
-  static_assert(seq.size() == 3, "");
-  EXPECT_EQ(3, seq.size());
+template <typename T>
+static T& as_mutable(T const& t) {
+  return const_cast<T&>(t);
+}
 
-  auto seq2 = folly::index_sequence<0, 4, 3>();
-  EXPECT_EQ(3, seq2.size());
-
-  constexpr auto seq3 = folly::make_index_sequence<3>();
-  static_assert(seq3.size() == 3, "");
-  EXPECT_EQ(3, seq3.size());
-
-  // check our own implementation even when the builtin is available
-  using seq4 = typename folly::utility_detail::make_seq<5>::template apply<
-      folly::integer_sequence<int>,
-      folly::integer_sequence<int, 0>>;
-  EXPECT_EQ(5, seq4{}.size());
-  EXPECT_TRUE((std::is_same<seq4::value_type, int>::value));
-  using seq4_expected = folly::integer_sequence<int, 0, 1, 2, 3, 4>;
-  EXPECT_TRUE((std::is_same<seq4, seq4_expected>::value));
+TEST_F(UtilityTest, forward_like) {
+  int x = 0;
+  // just show that it may be invoked, and that it is purely a cast
+  // the real work is done by like_t, in terms of which forward_like is defined
+  EXPECT_EQ(&x, std::addressof(folly::forward_like<char&>(x)));
+  EXPECT_EQ(&x, std::addressof(as_mutable(folly::forward_like<char const>(x))));
 }
 
 TEST_F(UtilityTest, MoveOnly) {
@@ -118,4 +109,30 @@ TEST_F(UtilityTest, MoveOnly) {
   static_assert(
       std::is_nothrow_move_constructible<FooBar>::value,
       "Should have noexcept move constructor");
+}
+
+TEST_F(UtilityTest, to_signed) {
+  {
+    constexpr auto actual = folly::to_signed(int32_t(-12));
+    EXPECT_TRUE(std::is_signed<decltype(actual)>::value);
+    EXPECT_EQ(-12, actual);
+  }
+  {
+    constexpr auto actual = folly::to_signed(uint32_t(-12));
+    EXPECT_TRUE(std::is_signed<decltype(actual)>::value);
+    EXPECT_EQ(-12, actual);
+  }
+}
+
+TEST_F(UtilityTest, to_unsigned) {
+  {
+    constexpr auto actual = folly::to_unsigned(int32_t(-12));
+    EXPECT_TRUE(!std::is_signed<decltype(actual)>::value);
+    EXPECT_EQ(-12, actual);
+  }
+  {
+    constexpr auto actual = folly::to_unsigned(uint32_t(-12));
+    EXPECT_TRUE(!std::is_signed<decltype(actual)>::value);
+    EXPECT_EQ(-12, actual);
+  }
 }

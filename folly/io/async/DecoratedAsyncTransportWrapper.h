@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2015-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,8 +26,8 @@ namespace folly {
 template <class T>
 class DecoratedAsyncTransportWrapper : public folly::AsyncTransportWrapper {
  public:
-  explicit DecoratedAsyncTransportWrapper(typename T::UniquePtr transport):
-    transport_(std::move(transport)) {}
+  explicit DecoratedAsyncTransportWrapper(typename T::UniquePtr transport)
+      : transport_(std::move(transport)) {}
 
   const AsyncTransportWrapper* getWrappedTransport() const override {
     return transport_.get();
@@ -120,10 +120,6 @@ class DecoratedAsyncTransportWrapper : public folly::AsyncTransportWrapper {
     return transport_->getPeerAddress(address);
   }
 
-  folly::ssl::X509UniquePtr getPeerCert() const override {
-    return transport_->getPeerCert();
-  }
-
   size_t getRawBytesReceived() const override {
     return transport_->getRawBytesReceived();
   }
@@ -172,7 +168,7 @@ class DecoratedAsyncTransportWrapper : public folly::AsyncTransportWrapper {
     transport_->shutdownWriteNow();
   }
 
-  std::string getApplicationProtocol() noexcept override {
+  std::string getApplicationProtocol() const noexcept override {
     return transport_->getApplicationProtocol();
   }
 
@@ -187,6 +183,14 @@ class DecoratedAsyncTransportWrapper : public folly::AsyncTransportWrapper {
   void setReplaySafetyCallback(
       folly::AsyncTransport::ReplaySafetyCallback* callback) override {
     transport_->setReplaySafetyCallback(callback);
+  }
+
+  const AsyncTransportCertificate* getPeerCertificate() const override {
+    return transport_->getPeerCertificate();
+  }
+
+  const AsyncTransportCertificate* getSelfCertificate() const override {
+    return transport_->getSelfCertificate();
   }
 
  protected:

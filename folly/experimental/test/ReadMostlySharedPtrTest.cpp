@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2015-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,15 +21,14 @@
 #include <thread>
 
 #include <folly/Memory.h>
-#include <folly/experimental/RCURefCount.h>
 #include <folly/experimental/ReadMostlySharedPtr.h>
 #include <folly/portability/GTest.h>
 #include <folly/synchronization/Baton.h>
 
 using folly::ReadMostlyMainPtr;
-using folly::ReadMostlyWeakPtr;
-using folly::ReadMostlySharedPtr;
 using folly::ReadMostlyMainPtrDeleter;
+using folly::ReadMostlySharedPtr;
+using folly::ReadMostlyWeakPtr;
 
 // send SIGALRM to test process after this many seconds
 const unsigned int TEST_TIMEOUT = 10;
@@ -45,8 +44,8 @@ struct TestObject {
   int value;
   std::atomic<int>& counter;
 
-  TestObject(int value, std::atomic<int>& counter)
-      : value(value), counter(counter) {
+  TestObject(int value_, std::atomic<int>& counter_)
+      : value(value_), counter(counter_) {
     ++counter;
   }
 
@@ -66,7 +65,6 @@ class Coordinator {
   }
 
   void waitForRequest() {
-    folly::RCURegisterThread();
     requestBaton_.wait();
   }
 

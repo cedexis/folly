@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2013-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,9 +23,11 @@
 
 using namespace folly;
 
+// clang-format off
 [[noreturn]] void fail() {
   FOLLY_SAFE_CHECK(0 + 0, "hello");
 }
+// clang-format on
 
 void succeed() {
   FOLLY_SAFE_CHECK(1, "world");

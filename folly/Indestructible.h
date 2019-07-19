@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -59,7 +59,6 @@ namespace folly {
 
 template <typename T>
 class Indestructible final {
-
  public:
   template <typename S = T, typename = decltype(S())>
   constexpr Indestructible() noexcept(noexcept(T())) {}
@@ -81,21 +80,21 @@ class Indestructible final {
    */
   template <
       typename U = T,
-      _t<std::enable_if<std::is_constructible<T, U&&>::value>>* = nullptr,
-      _t<std::enable_if<
-          !std::is_same<Indestructible<T>, remove_cvref_t<U>>::value>>* =
+      std::enable_if_t<std::is_constructible<T, U&&>::value>* = nullptr,
+      std::enable_if_t<
+          !std::is_same<Indestructible<T>, remove_cvref_t<U>>::value>* =
           nullptr,
-      _t<std::enable_if<!std::is_convertible<U&&, T>::value>>* = nullptr>
+      std::enable_if_t<!std::is_convertible<U&&, T>::value>* = nullptr>
   explicit constexpr Indestructible(U&& u) noexcept(
       noexcept(T(std::declval<U>())))
       : storage_(std::forward<U>(u)) {}
   template <
       typename U = T,
-      _t<std::enable_if<std::is_constructible<T, U&&>::value>>* = nullptr,
-      _t<std::enable_if<
-          !std::is_same<Indestructible<T>, remove_cvref_t<U>>::value>>* =
+      std::enable_if_t<std::is_constructible<T, U&&>::value>* = nullptr,
+      std::enable_if_t<
+          !std::is_same<Indestructible<T>, remove_cvref_t<U>>::value>* =
           nullptr,
-      _t<std::enable_if<std::is_convertible<U&&, T>::value>>* = nullptr>
+      std::enable_if_t<std::is_convertible<U&&, T>::value>* = nullptr>
   /* implicit */ constexpr Indestructible(U&& u) noexcept(
       noexcept(T(std::declval<U>())))
       : storage_(std::forward<U>(u)) {}
@@ -140,10 +139,18 @@ class Indestructible final {
     check();
     return &storage_.value;
   }
-  T& operator*() noexcept { return *get(); }
-  T const& operator*() const noexcept { return *get(); }
-  T* operator->() noexcept { return get(); }
-  T const* operator->() const noexcept { return get(); }
+  T& operator*() noexcept {
+    return *get();
+  }
+  T const& operator*() const noexcept {
+    return *get();
+  }
+  T* operator->() noexcept {
+    return get();
+  }
+  T const* operator->() const noexcept {
+    return get();
+  }
 
  private:
   void check() const noexcept {

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 #include <folly/detail/MemoryIdler.h>
 
-#include <folly/Logging.h>
+#include <folly/GLog.h>
 #include <folly/Portability.h>
 #include <folly/ScopeGuard.h>
 #include <folly/concurrency/CacheLocality.h>
@@ -32,10 +32,11 @@
 #include <string.h>
 #include <utility>
 
-namespace folly { namespace detail {
+namespace folly {
+namespace detail {
 
 AtomicStruct<std::chrono::steady_clock::duration>
-MemoryIdler::defaultIdleTimeout(std::chrono::seconds(5));
+    MemoryIdler::defaultIdleTimeout(std::chrono::seconds(5));
 
 void MemoryIdler::flushLocalMallocCaches() {
   if (!usingJEMalloc()) {
@@ -77,7 +78,6 @@ void MemoryIdler::flushLocalMallocCaches() {
   }
 }
 
-
 // Stack madvise isn't Linux or glibc specific, but the system calls
 // and arithmetic (and bug compatibility) are not portable.  The set of
 // platforms could be increased if it was useful.
@@ -105,13 +105,32 @@ static void fetchStackLimits() {
     tls_stackSize = 1;
     return;
   }
-  SCOPE_EXIT { pthread_attr_destroy(&attr); };
+  SCOPE_EXIT {
+    pthread_attr_destroy(&attr);
+  };
 
   void* addr;
   size_t rawSize;
   if ((err = pthread_attr_getstack(&attr, &addr, &rawSize))) {
     // unexpected, but it is better to continue in prod than do nothing
     FB_LOG_EVERY_MS(ERROR, 10000) << "pthread_attr_getstack error " << err;
+    assert(false);
+    tls_stackSize = 1;
+    return;
+  }
+  if (rawSize >= (1ULL << 32)) {
+    // Avoid unmapping huge swaths of memory if there is an insane
+    // stack size.  The boundary of sanity is somewhat arbitrary: 4GB.
+    //
+    // If we went into /proc to find the actual contiguous mapped pages
+    // before unmapping we wouldn't care about the stack size at all,
+    // but our current strategy is to unmap the entire range that might
+    // be used for the stack even if it hasn't been fully faulted-in.
+    //
+    // Very large stack size is a bug (hence the assert), but we can
+    // carry on if we are in prod.
+    FB_LOG_EVERY_MS(ERROR, 10000)
+        << "pthread_attr_getstack returned insane stack size " << rawSize;
     assert(false);
     tls_stackSize = 1;
     return;
@@ -164,10 +183,14 @@ void MemoryIdler::unmapUnusedStack(size_t retain) {
   if (madvise((void*)tls_stackLimit, len, MADV_DONTNEED) != 0) {
     // It is likely that the stack vma hasn't been fully grown.  In this
     // case madvise will apply dontneed to the present vmas, then return
-    // errno of ENOMEM.  We can also get an EAGAIN, theoretically.
-    // EINVAL means either an invalid alignment or length, or that some
-    // of the pages are locked or shared.  Neither should occur.
-    assert(errno == EAGAIN || errno == ENOMEM);
+    // errno of ENOMEM.
+    // If thread stack pages are backed by locked or huge pages, madvise will
+    // fail with EINVAL. (EINVAL may also be returned if the address or length
+    // are bad.) Warn in debug mode, since MemoryIdler may not function as
+    // expected.
+    // We can also get an EAGAIN, theoretically.
+    PLOG_IF(WARNING, kIsDebug && errno == EINVAL) << "madvise failed";
+    assert(errno == EAGAIN || errno == ENOMEM || errno == EINVAL);
   }
 }
 

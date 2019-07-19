@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-present Facebook, Inc.
+ * Copyright 2015-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,12 +17,15 @@
 #pragma once
 
 #include <atomic>
+#include <cassert>
 #include <cstdint>
+#include <system_error>
 
 #include <folly/portability/SysMman.h>
 #include <folly/portability/Unistd.h>
 
-namespace folly { namespace detail {
+namespace folly {
+namespace detail {
 
 class MMapAlloc {
  private:
@@ -38,18 +41,17 @@ class MMapAlloc {
   void* allocate(size_t size) {
     auto len = computeSize(size);
 
+    int extraflags = 0;
+#if defined(MAP_POPULATE)
+    extraflags |= MAP_POPULATE;
+#endif
     // MAP_HUGETLB is a perf win, but requires cooperation from the
     // deployment environment (and a change to computeSize()).
     void* mem = static_cast<void*>(mmap(
         nullptr,
         len,
         PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_ANONYMOUS
-#ifdef MAP_POPULATE
-            |
-            MAP_POPULATE
-#endif
-        ,
+        MAP_PRIVATE | MAP_ANONYMOUS | extraflags,
         -1,
         0));
     if (mem == reinterpret_cast<void*>(-1)) {
@@ -72,7 +74,7 @@ template <typename Allocator>
 struct GivesZeroFilledMemory : public std::false_type {};
 
 template <>
-struct GivesZeroFilledMemory<MMapAlloc> : public std::true_type{};
+struct GivesZeroFilledMemory<MMapAlloc> : public std::true_type {};
 
 } // namespace detail
 } // namespace folly

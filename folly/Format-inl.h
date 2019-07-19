@@ -29,11 +29,13 @@
 #include <folly/FormatTraits.h>
 #include <folly/MapUtil.h>
 #include <folly/Traits.h>
+#include <folly/lang/Exception.h>
 #include <folly/portability/Windows.h>
 
-// Ignore -Wformat-nonliteral warnings within this file
+// Ignore -Wformat-nonliteral and -Wconversion warnings within this file
 FOLLY_PUSH_WARNING
-FOLLY_GCC_DISABLE_WARNING("-Wformat-nonliteral")
+FOLLY_GNU_DISABLE_WARNING("-Wformat-nonliteral")
+FOLLY_GNU_DISABLE_WARNING("-Wconversion")
 
 namespace folly {
 
@@ -42,10 +44,10 @@ namespace detail {
 // Updates the end of the buffer after the comma separators have been added.
 void insertThousandsGroupingUnsafe(char* start_buffer, char** end_buffer);
 
-extern const char formatHexUpper[256][2];
-extern const char formatHexLower[256][2];
-extern const char formatOctal[512][3];
-extern const char formatBinary[256][8];
+extern const std::array<std::array<char, 2>, 256> formatHexUpper;
+extern const std::array<std::array<char, 2>, 256> formatHexLower;
+extern const std::array<std::array<char, 3>, 512> formatOctal;
+extern const std::array<std::array<char, 8>, 256> formatBinary;
 
 const size_t kMaxHexLength = 2 * sizeof(uintmax_t);
 const size_t kMaxOctalLength = 3 * sizeof(uintmax_t);
@@ -61,8 +63,11 @@ const size_t kMaxBinaryLength = 8 * sizeof(uintmax_t);
  * [buf+begin, buf+bufLen).
  */
 template <class Uint>
-size_t
-uintToHex(char* buffer, size_t bufLen, Uint v, const char (&repr)[256][2]) {
+size_t uintToHex(
+    char* buffer,
+    size_t bufLen,
+    Uint v,
+    std::array<std::array<char, 2>, 256> const& repr) {
   // 'v >>= 7, v >>= 1' is no more than a work around to get rid of shift size
   // warning when Uint = uint8_t (it's false as v >= 256 implies sizeof(v) > 1).
   for (; !less_than<unsigned, 256>(v); v >>= 7, v >>= 1) {
@@ -181,7 +186,8 @@ void BaseFormatter<Derived, containerMode, Args...>::operator()(
       p = q;
 
       if (p == end || *p != '}') {
-        throwBadFormatArg("folly::format: single '}' in format string");
+        throw_exception<BadFormatArg>(
+            "folly::format: single '}' in format string");
       }
       ++p;
     }
@@ -203,7 +209,8 @@ void BaseFormatter<Derived, containerMode, Args...>::operator()(
     p = q + 1;
 
     if (p == end) {
-      throwBadFormatArg("folly::format: '}' at end of format string");
+      throw_exception<BadFormatArg>(
+          "folly::format: '}' at end of format string");
     }
 
     // "{{" -> "{"
@@ -216,7 +223,7 @@ void BaseFormatter<Derived, containerMode, Args...>::operator()(
     // Format string
     q = static_cast<const char*>(memchr(p, '}', size_t(end - p)));
     if (q == nullptr) {
-      throwBadFormatArg("folly::format: missing ending '}'");
+      throw_exception<BadFormatArg>("folly::format: missing ending '}'");
     }
     FormatArg arg(StringPiece(p, q));
     p = q + 1;
@@ -254,18 +261,16 @@ void BaseFormatter<Derived, containerMode, Args...>::operator()(
           arg.width = asDerived().getSizeArg(size_t(arg.widthIndex), arg);
         }
 
-        try {
-          argIndex = to<int>(piece);
-        } catch (const std::out_of_range&) {
-          arg.error("argument index must be integer");
-        }
+        auto result = tryTo<int>(piece);
+        arg.enforce(result, "argument index must be integer");
+        argIndex = *result;
         arg.enforce(argIndex >= 0, "argument index must be non-negative");
         hasExplicitArgIndex = true;
       }
     }
 
     if (hasDefaultArgIndex && hasExplicitArgIndex) {
-      throwBadFormatArg(
+      throw_exception<BadFormatArg>(
           "folly::format: may not have both default and explicit arg indexes");
     }
 
@@ -291,10 +296,10 @@ namespace format_value {
 template <class FormatCallback>
 void formatString(StringPiece val, FormatArg& arg, FormatCallback& cb) {
   if (arg.width != FormatArg::kDefaultWidth && arg.width < 0) {
-    throwBadFormatArg("folly::format: invalid width");
+    throw_exception<BadFormatArg>("folly::format: invalid width");
   }
   if (arg.precision != FormatArg::kDefaultPrecision && arg.precision < 0) {
-    throwBadFormatArg("folly::format: invalid precision");
+    throw_exception<BadFormatArg>("folly::format: invalid precision");
   }
 
   if (arg.precision != FormatArg::kDefaultPrecision &&
@@ -445,7 +450,9 @@ class FormatValue<
     char sign;
     if (std::is_signed<T>::value) {
       if (folly::is_negative(val_)) {
-        uval = UT(-static_cast<UT>(val_));
+        // avoid unary negation of unsigned types, which may be warned against
+        // avoid ub signed integer overflow, which ubsan checks against
+        uval = UT(0 - static_cast<UT>(val_));
         sign = '-';
       } else {
         uval = static_cast<UT>(val_);
@@ -954,7 +961,7 @@ struct KeyableTraitsAssoc : public FormatTraitsBase {
     if (auto ptr = get_ptr(map, KeyFromStringPiece<key_type>::convert(key))) {
       return *ptr;
     }
-    detail::throwFormatKeyNotFoundException(key);
+    throw_exception<FormatKeyNotFoundException>(key);
   }
   static const value_type&
   at(const T& map, StringPiece key, const value_type& dflt) {
@@ -1069,7 +1076,7 @@ class FormatValue<std::tuple<Args...>> {
   template <size_t K, class Callback>
   typename std::enable_if<K == valueCount>::type
   doFormatFrom(size_t i, FormatArg& arg, Callback& /* cb */) const {
-    arg.enforce("tuple index out of range, max=", i);
+    arg.error("tuple index out of range, max=", i);
   }
 
   template <size_t K, class Callback>

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 #include <sys/types.h>
 
 #include <string>
@@ -40,14 +39,14 @@ struct AddressData {
   uint8_t version;
 
   AddressData(
-      const std::string& address,
-      const ByteVector& bytes,
-      uint8_t version)
-      : address(address), bytes(bytes), version(version) {}
-  AddressData(const std::string& address, uint8_t version)
-      : address(address), bytes(), version(version) {}
-  explicit AddressData(const std::string& address)
-      : address(address), bytes(), version(0) {}
+      const std::string& address_,
+      const ByteVector& bytes_,
+      uint8_t version_)
+      : address(address_), bytes(bytes_), version(version_) {}
+  AddressData(const std::string& address_, uint8_t version_)
+      : address(address_), bytes(), version(version_) {}
+  explicit AddressData(const std::string& address_)
+      : address(address_), bytes(), version(0) {}
   AddressData() : address(""), bytes(), version(0) {}
 
   static in_addr parseAddress4(const std::string& src) {
@@ -76,8 +75,8 @@ struct AddressFlags {
   static const uint8_t IS_MULTICAST = 1 << 5;
   static const uint8_t IS_LINK_LOCAL_BROADCAST = 1 << 6;
 
-  AddressFlags(const std::string& addr, uint8_t version, uint8_t flags)
-      : address(addr), flags(flags), version(version) {}
+  AddressFlags(const std::string& addr, uint8_t version_, uint8_t flags_)
+      : address(addr), flags(flags_), version(version_) {}
 
   bool isLoopback() const {
     return (flags & IS_LOCAL);
@@ -103,26 +102,26 @@ struct MaskData {
   std::string address;
   uint8_t mask;
   std::string subnet;
-  MaskData(const std::string& addr, uint8_t mask, const std::string& subnet)
-      : address(addr), mask(mask), subnet(subnet) {}
+  MaskData(const std::string& addr, uint8_t mask_, const std::string& subnet_)
+      : address(addr), mask(mask_), subnet(subnet_) {}
 };
 
 struct MaskBoundaryData : MaskData {
   bool inSubnet;
   MaskBoundaryData(
       const std::string& addr,
-      uint8_t mask,
-      const std::string& subnet,
-      bool inSubnet)
-      : MaskData(addr, mask, subnet), inSubnet(inSubnet) {}
+      uint8_t mask_,
+      const std::string& subnet_,
+      bool inSubnet_)
+      : MaskData(addr, mask_, subnet_), inSubnet(inSubnet_) {}
 };
 
 struct SerializeData {
   std::string address;
   ByteVector bytes;
 
-  SerializeData(const std::string& addr, const ByteVector& bytes)
-      : address(addr), bytes(bytes) {}
+  SerializeData(const std::string& addr, const ByteVector& bytes_)
+      : address(addr), bytes(bytes_) {}
 };
 
 struct IPAddressTest : TestWithParam<AddressData> {
@@ -281,10 +280,10 @@ TEST(IPAddress, InvalidAddressFamilyExceptions) {
   }
 }
 
-TEST(IPAddress, CreateNetwork) {
+TEST(IPAddress, TryCreateNetwork) {
   // test valid IPv4 network
   {
-    auto net = IPAddress::createNetwork("192.168.0.1/24");
+    auto net = IPAddress::tryCreateNetwork("192.168.0.1/24").value();
     ASSERT_TRUE(net.first.isV4());
     EXPECT_EQ("192.168.0.0", net.first.str());
     EXPECT_EQ(24, net.second);
@@ -292,7 +291,7 @@ TEST(IPAddress, CreateNetwork) {
   }
   // test valid IPv4 network without applying mask
   {
-    auto net = IPAddress::createNetwork("192.168.0.1/24", -1, false);
+    auto net = IPAddress::tryCreateNetwork("192.168.0.1/24", -1, false).value();
     ASSERT_TRUE(net.first.isV4());
     EXPECT_EQ("192.168.0.1", net.first.str());
     EXPECT_EQ(24, net.second);
@@ -300,7 +299,7 @@ TEST(IPAddress, CreateNetwork) {
   }
   // test valid IPv6 network
   {
-    auto net = IPAddress::createNetwork("1999::1/24");
+    auto net = IPAddress::tryCreateNetwork("1999::1/24").value();
     ASSERT_TRUE(net.first.isV6());
     EXPECT_EQ("1999::", net.first.str());
     EXPECT_EQ(24, net.second);
@@ -308,20 +307,30 @@ TEST(IPAddress, CreateNetwork) {
   }
   // test valid IPv6 network without applying mask
   {
-    auto net = IPAddress::createNetwork("1999::1/24", -1, false);
+    auto net = IPAddress::tryCreateNetwork("1999::1/24", -1, false).value();
     ASSERT_TRUE(net.first.isV6());
     EXPECT_EQ("1999::1", net.first.str());
     EXPECT_EQ(24, net.second);
     EXPECT_EQ("1999::1/24", IPAddress::networkToString(net));
   }
+
+  // test invalid default CIDR
+  EXPECT_EQ(
+      CIDRNetworkError::INVALID_DEFAULT_CIDR,
+      IPAddress::tryCreateNetwork("192.168.1.1", 300).error());
+
   // test empty string
-  EXPECT_THROW(IPAddress::createNetwork(""), IPAddressFormatException);
+  EXPECT_EQ(
+      CIDRNetworkError::INVALID_IP, IPAddress::tryCreateNetwork("").error());
+
   // test multi slash string
-  EXPECT_THROW(
-      IPAddress::createNetwork("192.168.0.1/24/36"), IPAddressFormatException);
+  EXPECT_EQ(
+      CIDRNetworkError::INVALID_IP_SLASH_CIDR,
+      IPAddress::tryCreateNetwork("192.168.0.1/24/36").error());
+
   // test no slash string with default IPv4
   {
-    auto net = IPAddress::createNetwork("192.168.0.1");
+    auto net = IPAddress::tryCreateNetwork("192.168.0.1").value();
     ASSERT_TRUE(net.first.isV4());
     EXPECT_EQ("192.168.0.1", net.first.str());
     EXPECT_EQ(32, net.second); // auto-detected
@@ -332,11 +341,26 @@ TEST(IPAddress, CreateNetwork) {
   }
   // test no slash string with default IPv6
   {
-    auto net = IPAddress::createNetwork("1999::1");
+    auto net = IPAddress::tryCreateNetwork("1999::1").value();
     ASSERT_TRUE(net.first.isV6());
     EXPECT_EQ("1999::1", net.first.str());
     EXPECT_EQ(128, net.second);
   }
+  // test no slash string with invalid default
+  EXPECT_EQ(
+      CIDRNetworkError::CIDR_MISMATCH,
+      IPAddress::tryCreateNetwork("192.168.0.1", 33).error());
+}
+
+// test that throwing version actually throws
+TEST(IPAddress, CreateNetworkExceptions) {
+  // test invalid default CIDR
+  EXPECT_THROW(IPAddress::createNetwork("192.168.0.1", 300), std::range_error);
+  // test empty string
+  EXPECT_THROW(IPAddress::createNetwork(""), IPAddressFormatException);
+  // test multi slash string
+  EXPECT_THROW(
+      IPAddress::createNetwork("192.168.0.1/24/36"), IPAddressFormatException);
   // test no slash string with invalid default
   EXPECT_THROW(
       IPAddress::createNetwork("192.168.0.1", 33), IPAddressFormatException);
@@ -395,6 +419,11 @@ TEST(IPAddress, CtorDefault) {
   EXPECT_EQ(IPAddressV4("0.0.0.0"), v4);
   IPAddressV6 v6;
   EXPECT_EQ(IPAddressV6("::0"), v6);
+  IPAddress v0;
+  EXPECT_EQ(IPAddress(), v0);
+  EXPECT_NE(v0, v4);
+  EXPECT_NE(v0, v6);
+  EXPECT_NE(v4, v6);
 }
 
 TEST(IPAddressV4, validate) {
@@ -518,6 +547,14 @@ TEST(IPAddress, CtorSockaddr) {
     addr.sin_addr = sin_addr;
 
     EXPECT_THROW(IPAddress((sockaddr*)&addr), IPAddressFormatException);
+  }
+  // test none address
+  {
+    IPAddress ipAddr;
+    EXPECT_TRUE(ipAddr.empty());
+    EXPECT_FALSE(ipAddr.isV4());
+    EXPECT_FALSE(ipAddr.isV6());
+    EXPECT_EQ("", ipAddr.str());
   }
 }
 
@@ -811,7 +848,7 @@ TEST(IPAddress, getIPv6For6To4) {
     auto ipv6 = ipv4.getIPv6For6To4();
     EXPECT_EQ(ipv6.type(), IPAddressV6::Type::T6TO4);
     auto ipv4New = ipv6.getIPv4For6To4();
-    EXPECT_TRUE(ipv4Str.compare(ipv4New.str()) == 0);
+    EXPECT_EQ(ipv4Str, ipv4New.str());
   }
 }
 
@@ -884,13 +921,13 @@ TEST(IPAddress, ToLong) {
 
     auto ip2 = IPAddress::fromLongHBO(tc.second);
     EXPECT_TRUE(ip2.isV4());
-    EXPECT_TRUE(tc.first.compare(ip2.str()) == 0);
+    EXPECT_EQ(tc.first, ip2.str());
     EXPECT_EQ(tc.second, ip2.asV4().toLongHBO());
 
     auto nla = htonl(tc.second);
     auto ip3 = IPAddress::fromLong(nla);
     EXPECT_TRUE(ip3.isV4());
-    EXPECT_TRUE(tc.first.compare(ip3.str()) == 0);
+    EXPECT_EQ(tc.first, ip3.str());
     EXPECT_EQ(nla, ip3.asV4().toLong());
   }
 }

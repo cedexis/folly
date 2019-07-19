@@ -17,17 +17,25 @@
 
 #include <folly/Optional.h>
 #include <folly/concurrency/detail/ConcurrentHashMap-detail.h>
-#include <folly/experimental/hazptr/hazptr.h>
+#include <folly/synchronization/Hazptr.h>
 #include <atomic>
 #include <mutex>
 
 namespace folly {
 
 /**
- * Based on Java's ConcurrentHashMap
+ * Implementations of high-performance Concurrent Hashmaps that
+ * support erase and update.
  *
  * Readers are always wait-free.
  * Writers are sharded, but take a lock.
+ *
+ * Multithreaded performance beats anything except the lock-free
+ *      atomic maps (AtomicUnorderedMap, AtomicHashMap), BUT only
+ *      if you can perfectly size the atomic maps, and you don't
+ *      need erase().  If you don't know the size in advance or
+ *      your workload frequently calls erase(), this is the
+ *      better choice.
  *
  * The interface is as close to std::unordered_map as possible, but there
  * are a handful of changes:
@@ -53,22 +61,63 @@ namespace folly {
  *   std::unordered_map which iterates over a linked list of elements.
  *   If the table is sparse, this may be more expensive.
  *
- * * rehash policy is a power of two, using supplied factor.
- *
  * * Allocator must be stateless.
  *
- * * ValueTypes without copy constructors will work, but pessimize the
- *   implementation.
+ * 1: ConcurrentHashMap, based on Java's ConcurrentHashMap.
+ *    Very similar to std::unodered_map in performance.
  *
- * Comparisons:
- *      Single-threaded performance is extremely similar to std::unordered_map.
+ * 2: ConcurrentHashMapSIMD, based on F14ValueMap.  If the map is
+ *    larger than the cache size, it has superior performance due to
+ *    vectorized key lookup.
  *
- *      Multithreaded performance beats anything except the lock-free
- *           atomic maps (AtomicUnorderedMap, AtomicHashMap), BUT only
- *           if you can perfectly size the atomic maps, and you don't
- *           need erase().  If you don't know the size in advance or
- *           your workload frequently calls erase(), this is the
- *           better choice.
+ *
+ *
+ * USAGE FAQs
+ *
+ * Q: Is simultaneous iteration and erase() threadsafe?
+ *       Example:
+ *
+ *       ConcurrentHashMap<int, int> map;
+ *
+ *       Thread 1: auto it = map.begin();
+ *                   while (it != map.end()) {
+ *                      // Do something with it
+ *                      it++;
+ *                   }
+ *
+ *       Thread 2:    map.insert(2, 2);  map.erase(2);
+ *
+ * A: Yes, this is safe.  However, the iterating thread is not
+ * garanteed to see (or not see) concurrent insertions and erasures.
+ * Inserts may cause a rehash, but the old table is still valid as
+ * long as any iterator pointing to it exists.
+ *
+ * Q: How do I update an existing object atomically?
+ *
+ * A: assign_if_equal is the recommended way - readers will see the
+ * old value until the new value is completely constructed and
+ * inserted.
+ *
+ * Q: Why does map.erase() not actually destroy elements?
+ *
+ * A: Hazard Pointers are used to improve the performance of
+ * concurrent access.  They can be thought of as a simple Garbage
+ * Collector.  To reduce the GC overhead, a GC pass is only run after
+ * reaching a cetain memory bound.  erase() will remove the element
+ * from being accessed via the map, but actual destruction may happen
+ * later, after iterators that may point to it have been deleted.
+ *
+ * The only guarantee is that a GC pass will be run on map destruction
+ * - no elements will remain after map destruction.
+ *
+ * Q: Are pointers to values safe to access *without* holding an
+ * iterator?
+ *
+ * A: The SIMD version guarantees that references to elements are
+ * stable across rehashes, the non-SIMD version does *not*.  Note that
+ * unless you hold an iterator, you need to ensure there are no
+ * concurrent deletes/updates to that key if you are accessing it via
+ * reference.
  */
 
 template <
@@ -79,7 +128,16 @@ template <
     typename Allocator = std::allocator<uint8_t>,
     uint8_t ShardBits = 8,
     template <typename> class Atom = std::atomic,
-    class Mutex = std::mutex>
+    class Mutex = std::mutex,
+    template <
+        typename,
+        typename,
+        uint8_t,
+        typename,
+        typename,
+        typename,
+        template <typename> class,
+        class> class Impl = detail::concurrenthashmap::bucket::BucketTable>
 class ConcurrentHashMap {
   using SegmentT = detail::ConcurrentHashMapSegment<
       KeyType,
@@ -89,12 +147,12 @@ class ConcurrentHashMap {
       KeyEqual,
       Allocator,
       Atom,
-      Mutex>;
+      Mutex,
+      Impl>;
+
+  float load_factor_ = SegmentT::kDefaultLoadFactor;
+
   static constexpr uint64_t NumShards = (1 << ShardBits);
-  // Slightly higher than 1.0, in case hashing to shards isn't
-  // perfectly balanced, reserve(size) will still work without
-  // rehashing.
-  float load_factor_ = 1.05;
 
  public:
   class ConstIterator;
@@ -126,13 +184,16 @@ class ConcurrentHashMap {
     }
   }
 
-  ConcurrentHashMap(ConcurrentHashMap&& o) noexcept {
+  ConcurrentHashMap(ConcurrentHashMap&& o) noexcept
+      : size_(o.size_), max_size_(o.max_size_) {
     for (uint64_t i = 0; i < NumShards; i++) {
       segments_[i].store(
           o.segments_[i].load(std::memory_order_relaxed),
           std::memory_order_relaxed);
       o.segments_[i].store(nullptr, std::memory_order_relaxed);
     }
+    batch_.store(o.batch(), std::memory_order_relaxed);
+    o.batch_.store(nullptr, std::memory_order_relaxed);
   }
 
   ConcurrentHashMap& operator=(ConcurrentHashMap&& o) {
@@ -147,6 +208,11 @@ class ConcurrentHashMap {
           std::memory_order_relaxed);
       o.segments_[i].store(nullptr, std::memory_order_relaxed);
     }
+    size_ = o.size_;
+    max_size_ = o.max_size_;
+    batch_shutdown_cleanup();
+    batch_.store(o.batch(), std::memory_order_relaxed);
+    o.batch_.store(nullptr, std::memory_order_relaxed);
     return *this;
   }
 
@@ -158,6 +224,7 @@ class ConcurrentHashMap {
         Allocator().deallocate((uint8_t*)seg, sizeof(SegmentT));
       }
     }
+    batch_shutdown_cleanup();
   }
 
   bool empty() const noexcept {
@@ -188,6 +255,14 @@ class ConcurrentHashMap {
 
   ConstIterator cbegin() const noexcept {
     return ConstIterator(this);
+  }
+
+  ConstIterator end() const noexcept {
+    return cend();
+  }
+
+  ConstIterator begin() const noexcept {
+    return cbegin();
   }
 
   std::pair<ConstIterator, bool> insert(
@@ -229,7 +304,7 @@ class ConcurrentHashMap {
   std::pair<ConstIterator, bool> emplace(Args&&... args) {
     using Node = typename SegmentT::Node;
     auto node = (Node*)Allocator().allocate(sizeof(Node));
-    new (node) Node(std::forward<Args>(args)...);
+    new (node) Node(ensureBatch(), std::forward<Args>(args)...);
     auto segment = pickSegment(node->getItem().first);
     std::pair<ConstIterator, bool> res(
         std::piecewise_construct,
@@ -262,15 +337,15 @@ class ConcurrentHashMap {
     ConstIterator res(this, segment);
     auto seg = segments_[segment].load(std::memory_order_acquire);
     if (!seg) {
-      return folly::Optional<ConstIterator>();
+      return none;
     } else {
       auto r =
           seg->assign(res.it_, std::forward<Key>(k), std::forward<Value>(v));
       if (!r) {
-        return folly::Optional<ConstIterator>();
+        return none;
       }
     }
-    return res;
+    return std::move(res);
   }
 
   // Assign to desired if and only if key k is equal to expected
@@ -281,7 +356,7 @@ class ConcurrentHashMap {
     ConstIterator res(this, segment);
     auto seg = segments_[segment].load(std::memory_order_acquire);
     if (!seg) {
-      return folly::Optional<ConstIterator>();
+      return none;
     } else {
       auto r = seg->assign_if_equal(
           res.it_,
@@ -289,10 +364,10 @@ class ConcurrentHashMap {
           expected,
           std::forward<Value>(desired));
       if (!r) {
-        return folly::Optional<ConstIterator>();
+        return none;
       }
     }
-    return res;
+    return std::move(res);
   }
 
   // Copying wrappers around insert and find.
@@ -329,6 +404,16 @@ class ConcurrentHashMap {
     ensureSegment(segment)->erase(res.it_, pos.it_);
     res.next(); // May point to segment end, and need to advance.
     return res;
+  }
+
+  // Erase if and only if key k is equal to expected
+  size_type erase_if_equal(const key_type& k, const ValueType& expected) {
+    auto segment = pickSegment(k);
+    auto seg = segments_[segment].load(std::memory_order_acquire);
+    if (!seg) {
+      return 0;
+    }
+    return seg->erase_if_equal(k, expected);
   }
 
   // NOT noexcept, initializes new shard segments vs.
@@ -389,15 +474,9 @@ class ConcurrentHashMap {
     }
 
     ConstIterator& operator++() {
-      it_++;
+      ++it_;
       next();
       return *this;
-    }
-
-    ConstIterator operator++(int) {
-      auto prev = *this;
-      ++*this;
-      return prev;
     }
 
     bool operator==(const ConstIterator& o) const {
@@ -408,16 +487,23 @@ class ConcurrentHashMap {
       return !(*this == o);
     }
 
-    ConstIterator& operator=(const ConstIterator& o) {
-      it_ = o.it_;
-      segment_ = o.segment_;
+    ConstIterator& operator=(const ConstIterator& o) = delete;
+
+    ConstIterator& operator=(ConstIterator&& o) noexcept {
+      if (this != &o) {
+        it_ = std::move(o.it_);
+        segment_ = std::exchange(o.segment_, uint64_t(NumShards));
+        parent_ = std::exchange(o.parent_, nullptr);
+      }
       return *this;
     }
 
-    ConstIterator(const ConstIterator& o) {
-      it_ = o.it_;
-      segment_ = o.segment_;
-    }
+    ConstIterator(const ConstIterator& o) = delete;
+
+    ConstIterator(ConstIterator&& o) noexcept
+        : it_(std::move(o.it_)),
+          segment_(std::exchange(o.segment_, uint64_t(NumShards))),
+          parent_(std::exchange(o.parent_, nullptr)) {}
 
     ConstIterator(const ConcurrentHashMap* parent, uint64_t segment)
         : segment_(segment), parent_(parent) {}
@@ -436,15 +522,19 @@ class ConcurrentHashMap {
     explicit ConstIterator(uint64_t shards) : it_(nullptr), segment_(shards) {}
 
     void next() {
-      while (it_ == parent_->ensureSegment(segment_)->cend() &&
-             segment_ < parent_->NumShards) {
-        segment_++;
-        auto seg = parent_->segments_[segment_].load(std::memory_order_acquire);
-        if (segment_ < parent_->NumShards) {
-          if (!seg) {
-            continue;
+      while (segment_ < parent_->NumShards &&
+             it_ == parent_->ensureSegment(segment_)->cend()) {
+        SegmentT* seg{nullptr};
+        while (!seg) {
+          segment_++;
+          if (segment_ < parent_->NumShards) {
+            seg = parent_->segments_[segment_].load(std::memory_order_acquire);
+            if (!seg) {
+              continue;
+            }
+            it_ = seg->cbegin();
           }
-          it_ = seg->cbegin();
+          break;
         }
       }
     }
@@ -472,9 +562,10 @@ class ConcurrentHashMap {
   SegmentT* ensureSegment(uint64_t i) const {
     SegmentT* seg = segments_[i].load(std::memory_order_acquire);
     if (!seg) {
+      auto b = ensureBatch();
       SegmentT* newseg = (SegmentT*)Allocator().allocate(sizeof(SegmentT));
       newseg = new (newseg)
-          SegmentT(size_ >> ShardBits, load_factor_, max_size_ >> ShardBits);
+          SegmentT(size_ >> ShardBits, load_factor_, max_size_ >> ShardBits, b);
       if (!segments_[i].compare_exchange_strong(seg, newseg)) {
         // seg is updated with new value, delete ours.
         newseg->~SegmentT();
@@ -486,9 +577,62 @@ class ConcurrentHashMap {
     return seg;
   }
 
+  hazptr_obj_batch<Atom>* batch() const noexcept {
+    return batch_.load(std::memory_order_acquire);
+  }
+
+  hazptr_obj_batch<Atom>* ensureBatch() const {
+    auto b = batch();
+    if (!b) {
+      auto storage = Allocator().allocate(sizeof(hazptr_obj_batch<Atom>));
+      auto newbatch = new (storage) hazptr_obj_batch<Atom>();
+      if (batch_.compare_exchange_strong(b, newbatch)) {
+        b = newbatch;
+      } else {
+        newbatch->shutdown_and_reclaim();
+        newbatch->~hazptr_obj_batch<Atom>();
+        Allocator().deallocate(storage, sizeof(hazptr_obj_batch<Atom>));
+      }
+    }
+    return b;
+  }
+
+  void batch_shutdown_cleanup() {
+    auto b = batch();
+    if (b) {
+      b->shutdown_and_reclaim();
+      hazptr_cleanup_batch_tag(b);
+      b->~hazptr_obj_batch<Atom>();
+      Allocator().deallocate((uint8_t*)b, sizeof(hazptr_obj_batch<Atom>));
+    }
+  }
+
   mutable Atom<SegmentT*> segments_[NumShards];
   size_t size_{0};
   size_t max_size_{0};
+  mutable Atom<hazptr_obj_batch<Atom>*> batch_{nullptr};
 };
+
+#if FOLLY_SSE_PREREQ(4, 2) && !FOLLY_MOBILE
+template <
+    typename KeyType,
+    typename ValueType,
+    typename HashFn = std::hash<KeyType>,
+    typename KeyEqual = std::equal_to<KeyType>,
+    typename Allocator = std::allocator<uint8_t>,
+    uint8_t ShardBits = 8,
+    template <typename> class Atom = std::atomic,
+    class Mutex = std::mutex>
+using ConcurrentHashMapSIMD = ConcurrentHashMap<
+    KeyType,
+    ValueType,
+    HashFn,
+    KeyEqual,
+    Allocator,
+    ShardBits,
+    Atom,
+    Mutex,
+    detail::concurrenthashmap::simd::SIMDTable>;
+#endif
 
 } // namespace folly

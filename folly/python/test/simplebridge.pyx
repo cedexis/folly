@@ -1,12 +1,15 @@
 import asyncio
-from folly.futures cimport bridgeFuture
-from folly cimport cFollyFuture, cFollyTry
+from folly.futures cimport bridgeFuture, bridgeSemiFuture
+from folly.fibers cimport bridgeFibers
+from folly cimport cFollyFuture, cFollySemiFuture, cFollyTry
 from libc.stdint cimport uint64_t
 from cpython.ref cimport PyObject
 from cython.operator cimport dereference as deref
 
 cdef extern from "folly/python/test/simple.h" namespace "folly::python::test":
     cdef cFollyFuture[uint64_t] future_getValueX5(uint64_t val)
+    cdef cFollySemiFuture[uint64_t] semiFuture_getValueX5(uint64_t val)
+    cdef (uint64_t(*)()) getValueX5Fibers(uint64_t val)
 
 
 def get_value_x5(int val):
@@ -14,6 +17,26 @@ def get_value_x5(int val):
     fut = loop.create_future()
     bridgeFuture[uint64_t](
         future_getValueX5(val),
+        handle_uint64_t,
+        <PyObject *>fut
+    )
+    return fut
+
+def get_value_x5_semifuture(int val):
+    loop = asyncio.get_event_loop()
+    fut = loop.create_future()
+    bridgeSemiFuture[uint64_t](
+        semiFuture_getValueX5(val),
+        handle_uint64_t,
+        <PyObject *>fut
+    )
+    return fut
+
+def get_value_x5_fibers(int val):
+    loop = asyncio.get_event_loop()
+    fut = loop.create_future()
+    bridgeFibers[uint64_t](
+        getValueX5Fibers(val),
         handle_uint64_t,
         <PyObject *>fut
     )

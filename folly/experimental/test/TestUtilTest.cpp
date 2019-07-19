@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2012-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -69,20 +69,19 @@ TEST(TemporaryFile, EarlyClose) {
 TEST(TemporaryFile, Prefix) {
   TemporaryFile f("Foo");
   EXPECT_TRUE(f.path().is_absolute());
-  EXPECT_TRUE(boost::algorithm::starts_with(f.path().filename().native(),
-                                            "Foo"));
+  EXPECT_TRUE(
+      boost::algorithm::starts_with(f.path().filename().native(), "Foo"));
 }
 
 TEST(TemporaryFile, PathPrefix) {
   TemporaryFile f("Foo", ".");
   EXPECT_EQ(fs::path("."), f.path().parent_path());
-  EXPECT_TRUE(boost::algorithm::starts_with(f.path().filename().native(),
-                                            "Foo"));
+  EXPECT_TRUE(
+      boost::algorithm::starts_with(f.path().filename().native(), "Foo"));
 }
 
 TEST(TemporaryFile, NoSuchPath) {
-  EXPECT_THROW({TemporaryFile f("", "/no/such/path");},
-               std::system_error);
+  EXPECT_THROW({ TemporaryFile f("", "/no/such/path"); }, std::system_error);
 }
 
 TEST(TemporaryFile, moveAssignment) {

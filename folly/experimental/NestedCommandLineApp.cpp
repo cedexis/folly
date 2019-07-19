@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2015-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,8 @@
 #include <folly/experimental/NestedCommandLineApp.h>
 
 #include <iostream>
+
+#include <glog/logging.h>
 
 #include <folly/FileUtil.h>
 #include <folly/Format.h>
@@ -40,11 +42,13 @@ std::string guessProgramName() {
 } // namespace
 
 ProgramExit::ProgramExit(int status, const std::string& msg)
-  : std::runtime_error(msg),
-    status_(status) {
+    : std::runtime_error(msg), status_(status) {
   // Message is only allowed for non-zero exit status
   CHECK(status_ != 0 || msg.empty());
 }
+
+constexpr StringPiece const NestedCommandLineApp::kHelpCommand;
+constexpr StringPiece const NestedCommandLineApp::kVersionCommand;
 
 NestedCommandLineApp::NestedCommandLineApp(
     std::string programName,
@@ -58,17 +62,31 @@ NestedCommandLineApp::NestedCommandLineApp(
       version_(std::move(version)),
       initFunction_(std::move(initFunction)),
       globalOptions_("Global options") {
-  addCommand("help", "[command]",
-             "Display help (globally or for a given command)",
-             "Displays help (globally or for a given command).",
-             [this] (const po::variables_map& vm,
-                     const std::vector<std::string>& args) {
-               displayHelp(vm, args);
-             });
+  addCommand(
+      kHelpCommand.str(),
+      "[command]",
+      "Display help (globally or for a given command)",
+      "Displays help (globally or for a given command).",
+      [this](
+          const po::variables_map& vm, const std::vector<std::string>& args) {
+        displayHelp(vm, args);
+      });
+  builtinCommands_.insert(kHelpCommand);
 
-  globalOptions_.add_options()
-    ("help,h", "Display help (globally or for a given command)")
-    ("version", "Display version information");
+  addCommand(
+      kVersionCommand.str(),
+      "[command]",
+      "Display version information",
+      "Displays version information.",
+      [this](const po::variables_map&, const std::vector<std::string>&) {
+        displayVersion();
+      });
+  builtinCommands_.insert(kVersionCommand);
+
+  globalOptions_.add_options()(
+      kHelpCommand.str().c_str(),
+      "Display help (globally or for a given command)")(
+      kVersionCommand.str().c_str(), "Display version information");
 }
 
 po::options_description& NestedCommandLineApp::addCommand(
@@ -77,13 +95,12 @@ po::options_description& NestedCommandLineApp::addCommand(
     std::string shortHelp,
     std::string fullHelp,
     Command command) {
-  CommandInfo info {
-    std::move(argStr),
-    std::move(shortHelp),
-    std::move(fullHelp),
-    std::move(command),
-    po::options_description(folly::sformat("Options for `{}'", name))
-  };
+  CommandInfo info{
+      std::move(argStr),
+      std::move(shortHelp),
+      std::move(fullHelp),
+      std::move(command),
+      po::options_description(folly::sformat("Options for `{}'", name))};
 
   auto p = commands_.emplace(std::move(name), std::move(info));
   CHECK(p.second) << "Command already exists";
@@ -91,18 +108,17 @@ po::options_description& NestedCommandLineApp::addCommand(
   return p.first->second.options;
 }
 
-void NestedCommandLineApp::addAlias(std::string newName,
-                                     std::string oldName) {
+void NestedCommandLineApp::addAlias(std::string newName, std::string oldName) {
   CHECK(aliases_.count(oldName) || commands_.count(oldName))
-    << "Alias old name does not exist";
+      << "Alias old name does not exist";
   CHECK(!aliases_.count(newName) && !commands_.count(newName))
-    << "Alias new name already exists";
+      << "Alias new name already exists";
   aliases_.emplace(std::move(newName), std::move(oldName));
 }
 
 void NestedCommandLineApp::displayHelp(
     const po::variables_map& /* globalOptions */,
-    const std::vector<std::string>& args) {
+    const std::vector<std::string>& args) const {
   if (args.empty()) {
     // General help
     printf(
@@ -122,15 +138,21 @@ void NestedCommandLineApp::displayHelp(
     }
 
     for (auto& p : commands_) {
-      printf("  %-*s    %s\n",
-             int(maxLen), p.first.c_str(), p.second.shortHelp.c_str());
+      printf(
+          "  %-*s    %s\n",
+          int(maxLen),
+          p.first.c_str(),
+          p.second.shortHelp.c_str());
     }
 
     if (!aliases_.empty()) {
       printf("\nAvailable aliases:\n");
       for (auto& p : aliases_) {
-        printf("  %-*s => %s\n",
-               int(maxLen), p.first.c_str(), resolveAlias(p.second).c_str());
+        printf(
+            "  %-*s => %s\n",
+            int(maxLen),
+            p.first.c_str(),
+            resolveAlias(p.second).c_str());
       }
     }
     std::cout << "\n" << programHelpFooter_ << "\n";
@@ -138,8 +160,11 @@ void NestedCommandLineApp::displayHelp(
     // Help for a given command
     auto& p = findCommand(args.front());
     if (p.first != args.front()) {
-      printf("`%s' is an alias for `%s'; showing help for `%s'\n",
-             args.front().c_str(), p.first.c_str(), p.first.c_str());
+      printf(
+          "`%s' is an alias for `%s'; showing help for `%s'\n",
+          args.front().c_str(),
+          p.first.c_str(),
+          p.first.c_str());
     }
     auto& info = p.second;
 
@@ -162,6 +187,10 @@ void NestedCommandLineApp::displayHelp(
   }
 }
 
+void NestedCommandLineApp::displayVersion() const {
+  printf("%s %s\n", programName_.c_str(), version_.c_str());
+}
+
 const std::string& NestedCommandLineApp::resolveAlias(
     const std::string& name) const {
   auto dest = &name;
@@ -176,13 +205,16 @@ const std::string& NestedCommandLineApp::resolveAlias(
 }
 
 auto NestedCommandLineApp::findCommand(const std::string& name) const
-  -> const std::pair<const std::string, CommandInfo>& {
+    -> const std::pair<const std::string, CommandInfo>& {
   auto pos = commands_.find(resolveAlias(name));
   if (pos == commands_.end()) {
     throw ProgramExit(
         1,
-        folly::sformat("Command `{}' not found. Run `{} help' for help.",
-                       name, programName_));
+        folly::sformat(
+            "Command '{}' not found. Run '{} {}' for help.",
+            name,
+            programName_,
+            kHelpCommand));
   }
   return *pos;
 }
@@ -200,13 +232,20 @@ int NestedCommandLineApp::run(const std::vector<std::string>& args) {
     doRun(args);
     status = 0;
   } catch (const ProgramExit& ex) {
-    if (ex.what()[0]) {  // if not empty
+    if (ex.what()[0]) { // if not empty
       fprintf(stderr, "%s\n", ex.what());
     }
     status = ex.status();
   } catch (const po::error& ex) {
-    fprintf(stderr, "%s. Run `%s help' for help.\n",
-            ex.what(), programName_.c_str());
+    fprintf(
+        stderr,
+        "%s",
+        folly::sformat(
+            "{}. Run '{} help' for {}.\n",
+            ex.what(),
+            programName_,
+            kHelpCommand)
+            .c_str());
     status = 1;
   }
 
@@ -215,8 +254,10 @@ int NestedCommandLineApp::run(const std::vector<std::string>& args) {
       fprintf(stderr, "error on standard output\n");
       status = 1;
     } else if (fflush(stdout)) {
-      fprintf(stderr, "standard output flush failed: %s\n",
-              errnoStr(errno).c_str());
+      fprintf(
+          stderr,
+          "standard output flush failed: %s\n",
+          errnoStr(errno).c_str());
       status = 1;
     }
   }
@@ -228,10 +269,25 @@ void NestedCommandLineApp::doRun(const std::vector<std::string>& args) {
   if (programName_.empty()) {
     programName_ = guessProgramName();
   }
-  auto parsed = parseNestedCommandLine(args, globalOptions_);
+
+  bool not_clean = false;
+  std::vector<std::string> cleanArgs;
+  std::vector<std::string> endArgs;
+
+  for (auto& na : args) {
+    if (na == "--") {
+      not_clean = true;
+    } else if (not_clean) {
+      endArgs.push_back(na);
+    } else {
+      cleanArgs.push_back(na);
+    }
+  }
+
+  auto parsed = parseNestedCommandLine(cleanArgs, globalOptions_);
   po::variables_map vm;
   po::store(parsed.options, vm);
-  if (vm.count("help")) {
+  if (vm.count(kHelpCommand.str())) {
     std::vector<std::string> helpArgs;
     if (parsed.command) {
       helpArgs.push_back(*parsed.command);
@@ -240,16 +296,18 @@ void NestedCommandLineApp::doRun(const std::vector<std::string>& args) {
     return;
   }
 
-  if (vm.count("version")) {
-    printf("%s %s\n", programName_.c_str(), version_.c_str());
+  if (vm.count(kVersionCommand.str())) {
+    displayVersion();
     return;
   }
 
   if (!parsed.command) {
     throw ProgramExit(
         1,
-        folly::sformat("Command not specified. Run `{} help' for help.",
-                       programName_));
+        folly::sformat(
+            "Command not specified. Run '{} {}' for help.",
+            programName_,
+            kHelpCommand));
   }
 
   auto& p = findCommand(*parsed.command);
@@ -257,18 +315,25 @@ void NestedCommandLineApp::doRun(const std::vector<std::string>& args) {
   auto& info = p.second;
 
   auto cmdOptions =
-    po::command_line_parser(parsed.rest).options(info.options).run();
+      po::command_line_parser(parsed.rest).options(info.options).run();
+
   po::store(cmdOptions, vm);
   po::notify(vm);
 
-  auto cmdArgs = po::collect_unrecognized(cmdOptions.options,
-                                          po::include_positional);
+  auto cmdArgs =
+      po::collect_unrecognized(cmdOptions.options, po::include_positional);
+
+  cmdArgs.insert(cmdArgs.end(), endArgs.begin(), endArgs.end());
 
   if (initFunction_) {
     initFunction_(cmd, vm, cmdArgs);
   }
 
   info.command(vm, cmdArgs);
+}
+
+bool NestedCommandLineApp::isBuiltinCommand(const std::string& name) const {
+  return builtinCommands_.count(name);
 }
 
 } // namespace folly

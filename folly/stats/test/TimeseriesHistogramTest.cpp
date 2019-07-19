@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2013-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -438,7 +438,18 @@ TEST(TimeseriesHistogram, QueryByInterval) {
   };
 
   int expectedCounts[12] = {
-      60, 3600, 7200, 3540, 7139, 3600, 30, 3000, 7178, 2000, 6199, 3600,
+      60,
+      3600,
+      7200,
+      3540,
+      7139,
+      3600,
+      30,
+      3000,
+      7178,
+      2000,
+      6199,
+      3600,
   };
 
   // The first 7200 values added all fell below the histogram minimum,

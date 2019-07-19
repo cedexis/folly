@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2015-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -51,7 +51,7 @@ class SparseByteSet {
   static constexpr uint16_t kCapacity = 256;
 
   //  No init of byte-arrays required!
-  SparseByteSet() : size_(0) { }
+  SparseByteSet() : size_(0) {}
 
   /***
    *  add(byte)
@@ -79,8 +79,8 @@ class SparseByteSet {
   }
 
  private:
-  uint16_t size_;  // can't use uint8_t because it would overflow if all
-                   // possible values were inserted.
+  uint16_t size_; // can't use uint8_t because it would overflow if all
+                  // possible values were inserted.
   uint8_t sparse_[kCapacity];
   uint8_t dense_[kCapacity];
 };

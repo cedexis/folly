@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2012-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,7 +29,8 @@ namespace folly {
 /**
  * Identification of an Intel CPU.
  * Supports CPUID feature flags (EAX=1) and extended features (EAX=7, ECX=0).
- * Values from http://www.intel.com/content/www/us/en/processors/processor-identification-cpuid-instruction-note.html
+ * Values from
+ * http://www.intel.com/content/www/us/en/processors/processor-identification-cpuid-instruction-note.html
  */
 class CpuId {
  public:
@@ -40,7 +41,7 @@ class CpuId {
   // mode since inlining happens more likely, and it doesn't happen for
   // statically linked binaries which don't depend on the PLT)
   FOLLY_ALWAYS_INLINE CpuId() {
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && (FOLLY_X64 || defined(_M_IX86))
     int reg[4];
     __cpuid(static_cast<int*>(reg), 0);
     const int n = reg[0];

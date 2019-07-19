@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,12 +20,12 @@
 #include <folly/folly-config.h>
 #endif
 
-#ifdef FOLLY_PLATFORM_CONFIG
-#include FOLLY_PLATFORM_CONFIG
+#if __has_include(<features.h>)
+#include <features.h> // @manual
 #endif
 
-#if FOLLY_HAVE_FEATURES_H
-#include <features.h> // @manual
+#if __has_include(<bits/c++config.h>)
+#include <bits/c++config.h> // @manual
 #endif
 
 #ifdef __ANDROID__

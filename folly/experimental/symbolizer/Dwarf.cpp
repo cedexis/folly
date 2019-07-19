@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright 2012-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,11 +18,7 @@
 
 #include <type_traits>
 
-#if FOLLY_HAVE_LIBDWARF_DWARF_H
-#include <libdwarf/dwarf.h>
-#else
-#include <dwarf.h> // @manual
-#endif
+#include <dwarf.h>
 
 namespace folly {
 namespace symbolizer {
@@ -601,7 +597,7 @@ bool Dwarf::findAddress(
       // it only if such behavior is requested via LocationInfoMode.
       return false;
     } else {
-      DCHECK(mode == LocationInfoMode::FULL);
+      FOLLY_SAFE_DCHECK(mode == LocationInfoMode::FULL, "unexpected mode");
       // Fall back to the linear scan.
     }
   }

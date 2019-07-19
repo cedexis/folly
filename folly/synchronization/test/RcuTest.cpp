@@ -112,7 +112,7 @@ TEST(RcuTest, Stress) {
   std::vector<std::thread> threads;
   constexpr uint32_t sz = 1000;
   std::atomic<int*> ints[sz];
-  for (uint i = 0; i < sz; i++) {
+  for (uint32_t i = 0; i < sz; i++) {
     ints[i].store(new int(0));
   }
   for (unsigned th = 0; th < FLAGS_threads; th++) {
@@ -121,10 +121,10 @@ TEST(RcuTest, Stress) {
         rcu_reader g;
         int sum = 0;
         int* ptrs[sz];
-        for (uint j = 0; j < sz; j++) {
+        for (uint32_t j = 0; j < sz; j++) {
           ptrs[j] = ints[j].load(std::memory_order_acquire);
         }
-        for (uint j = 0; j < sz; j++) {
+        for (uint32_t j = 0; j < sz; j++) {
           sum += *ptrs[j];
         }
         EXPECT_EQ(sum, 0);
@@ -149,7 +149,7 @@ TEST(RcuTest, Stress) {
   updater.join();
   // Cleanup for asan
   synchronize_rcu();
-  for (uint i = 0; i < sz; i++) {
+  for (uint32_t i = 0; i < sz; i++) {
     delete ints[i].exchange(nullptr);
   }
 }
@@ -171,7 +171,18 @@ TEST(RcuTest, Synchronize) {
 TEST(RcuTest, NewDomainTest) {
   struct UniqueTag;
   rcu_domain<UniqueTag> newdomain(nullptr);
-  synchronize_rcu();
+  synchronize_rcu(&newdomain);
+}
+
+TEST(RcuTest, NewDomainGuardTest) {
+  struct UniqueTag;
+  rcu_domain<UniqueTag> newdomain(nullptr);
+  bool del = false;
+  auto foo = new des(&del);
+  { rcu_reader_domain<UniqueTag> g(&newdomain); }
+  rcu_retire(foo, {}, &newdomain);
+  synchronize_rcu(&newdomain);
+  EXPECT_TRUE(del);
 }
 
 TEST(RcuTest, MovableReader) {
@@ -201,18 +212,16 @@ TEST(RcuTest, MoveReaderBetweenThreads) {
 }
 
 TEST(RcuTest, ForkTest) {
-  rcu_token epoch;
-  std::thread t([&]() {
-    epoch = rcu_default_domain()->lock_shared();
-  });
+  rcu_token<RcuTag> epoch;
+  std::thread t([&]() { epoch = rcu_default_domain()->lock_shared(); });
   t.join();
   auto pid = fork();
   if (pid) {
     // parent
     rcu_default_domain()->unlock_shared(std::move(epoch));
     synchronize_rcu();
-    int status;
-    auto pid2 = wait(&status);
+    int status = -1;
+    auto pid2 = waitpid(pid, &status, 0);
     EXPECT_EQ(status, 0);
     EXPECT_EQ(pid, pid2);
   } else {

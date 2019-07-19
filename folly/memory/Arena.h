@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2012-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,6 +28,7 @@
 #include <folly/Likely.h>
 #include <folly/Memory.h>
 #include <folly/lang/Align.h>
+#include <folly/lang/Exception.h>
 #include <folly/memory/Malloc.h>
 
 namespace folly {
@@ -36,16 +37,10 @@ namespace folly {
  * Simple arena: allocate memory which gets freed when the arena gets
  * destroyed.
  *
- * The arena itself allocates memory using a custom allocator which provides
- * the following interface (same as required by StlAllocator in StlAllocator.h)
+ * The arena itself allocates memory using a custom allocator which conforms
+ * to the C++ concept Allocator.
  *
- *   void* allocate(size_t size);
- *      Allocate a block of size bytes, properly aligned to the maximum
- *      alignment required on your system; throw std::bad_alloc if the
- *      allocation can't be satisfied.
- *
- *   void deallocate(void* ptr);
- *      Deallocate a previously allocated block.
+ *   http://en.cppreference.com/w/cpp/concept/Allocator
  *
  * You may also specialize ArenaAllocatorTraits for your allocator type to
  * provide:
@@ -59,24 +54,26 @@ namespace folly {
  *
  * An implementation that uses malloc() / free() is defined below, see SysArena.
  */
-template <class Alloc> struct ArenaAllocatorTraits;
+template <class Alloc>
+struct ArenaAllocatorTraits;
 template <class Alloc>
 class Arena {
  public:
-  explicit Arena(const Alloc& alloc,
-                 size_t minBlockSize = kDefaultMinBlockSize,
-                 size_t sizeLimit = kNoSizeLimit,
-                 size_t maxAlign = kDefaultMaxAlign)
-    : allocAndSize_(alloc, minBlockSize)
-    , ptr_(nullptr)
-    , end_(nullptr)
-    , totalAllocatedSize_(0)
-    , bytesUsed_(0)
-    , sizeLimit_(sizeLimit)
-    , maxAlign_(maxAlign) {
+  explicit Arena(
+      const Alloc& alloc,
+      size_t minBlockSize = kDefaultMinBlockSize,
+      size_t sizeLimit = kNoSizeLimit,
+      size_t maxAlign = kDefaultMaxAlign)
+      : allocAndSize_(alloc, minBlockSize),
+        ptr_(nullptr),
+        end_(nullptr),
+        totalAllocatedSize_(0),
+        bytesUsed_(0),
+        sizeLimit_(sizeLimit),
+        maxAlign_(maxAlign) {
     if ((maxAlign_ & (maxAlign_ - 1)) || maxAlign_ > alignof(Block)) {
-      throw std::invalid_argument(
-          folly::to<std::string>("Invalid maxAlign: ", maxAlign_));
+      throw_exception(std::invalid_argument(
+          folly::to<std::string>("Invalid maxAlign: ", maxAlign_)));
     }
   }
 
@@ -101,7 +98,7 @@ class Arena {
     return r;
   }
 
-  void deallocate(void* /* p */) {
+  void deallocate(void* /* p */, size_t = 0) {
     // Deallocate? Never!
   }
 
@@ -121,18 +118,16 @@ class Arena {
     return bytesUsed_;
   }
 
-  // not copyable
+  // not copyable or movable
   Arena(const Arena&) = delete;
   Arena& operator=(const Arena&) = delete;
-
-  // movable
-  Arena(Arena&&) = default;
-  Arena& operator=(Arena&&) = default;
+  Arena(Arena&&) = delete;
+  Arena& operator=(Arena&&) = delete;
 
  private:
   struct Block;
-  typedef boost::intrusive::slist_member_hook<
-    boost::intrusive::tag<Arena>> BlockLink;
+  typedef boost::intrusive::slist_member_hook<boost::intrusive::tag<Arena>>
+      BlockLink;
 
   struct alignas(max_align_v) Block {
     BlockLink link;
@@ -141,8 +136,8 @@ class Arena {
     // If allowSlack is true, allocate more than size bytes if convenient
     // (via ArenaAllocatorTraits::goodSize()) as we'll try to pack small
     // allocations in this block.
-    static std::pair<Block*, size_t> allocate(
-        Alloc& alloc, size_t size, bool allowSlack);
+    static std::pair<Block*, size_t>
+    allocate(Alloc& alloc, size_t size, bool allowSlack);
     void deallocate(Alloc& alloc);
 
     char* start() {
@@ -176,19 +171,19 @@ class Arena {
   // cache_last<true> makes the list keep a pointer to the last element, so we
   // have push_back() and constant time splice_after()
   typedef boost::intrusive::slist<
-    Block,
-    boost::intrusive::member_hook<Block, BlockLink, &Block::link>,
-    boost::intrusive::constant_time_size<false>,
-    boost::intrusive::cache_last<true>> BlockList;
+      Block,
+      boost::intrusive::member_hook<Block, BlockLink, &Block::link>,
+      boost::intrusive::constant_time_size<false>,
+      boost::intrusive::cache_last<true>>
+      BlockList;
 
   void* allocateSlow(size_t size);
 
   // Empty member optimization: package Alloc with a non-empty member
-  // in case Alloc is empty (as it is in the case of SysAlloc).
+  // in case Alloc is empty (as it is in the case of SysAllocator).
   struct AllocAndSize : public Alloc {
     explicit AllocAndSize(const Alloc& a, size_t s)
-      : Alloc(a), minBlockSize(s) {
-    }
+        : Alloc(a), minBlockSize(s) {}
 
     size_t minBlockSize;
   };
@@ -196,8 +191,12 @@ class Arena {
   size_t minBlockSize() const {
     return allocAndSize_.minBlockSize;
   }
-  Alloc& alloc() { return allocAndSize_; }
-  const Alloc& alloc() const { return allocAndSize_; }
+  Alloc& alloc() {
+    return allocAndSize_;
+  }
+  const Alloc& alloc() const {
+    return allocAndSize_;
+  }
 
   AllocAndSize allocAndSize_;
   BlockList blocks_;
@@ -210,19 +209,21 @@ class Arena {
 };
 
 template <class Alloc>
-struct IsArenaAllocator<Arena<Alloc>> : std::true_type { };
+struct AllocatorHasTrivialDeallocate<Arena<Alloc>> : std::true_type {};
 
 /**
  * By default, don't pad the given size.
  */
 template <class Alloc>
 struct ArenaAllocatorTraits {
-  static size_t goodSize(const Alloc& /* alloc */, size_t size) { return size; }
+  static size_t goodSize(const Alloc& /* alloc */, size_t size) {
+    return size;
+  }
 };
 
 template <>
-struct ArenaAllocatorTraits<SysAlloc> {
-  static size_t goodSize(const SysAlloc& /* alloc */, size_t size) {
+struct ArenaAllocatorTraits<SysAllocator<void>> {
+  static size_t goodSize(const SysAllocator<void>& /* alloc */, size_t size) {
     return goodMallocSize(size);
   }
 };
@@ -230,17 +231,23 @@ struct ArenaAllocatorTraits<SysAlloc> {
 /**
  * Arena that uses the system allocator (malloc / free)
  */
-class SysArena : public Arena<SysAlloc> {
+class SysArena : public Arena<SysAllocator<void>> {
  public:
-  explicit SysArena(size_t minBlockSize = kDefaultMinBlockSize,
-                    size_t sizeLimit = kNoSizeLimit,
-                    size_t maxAlign = kDefaultMaxAlign)
-    : Arena<SysAlloc>(SysAlloc(), minBlockSize, sizeLimit, maxAlign) {
-  }
+  explicit SysArena(
+      size_t minBlockSize = kDefaultMinBlockSize,
+      size_t sizeLimit = kNoSizeLimit,
+      size_t maxAlign = kDefaultMaxAlign)
+      : Arena<SysAllocator<void>>({}, minBlockSize, sizeLimit, maxAlign) {}
 };
 
 template <>
-struct IsArenaAllocator<SysArena> : std::true_type { };
+struct AllocatorHasTrivialDeallocate<SysArena> : std::true_type {};
+
+template <typename T, typename Alloc>
+using ArenaAllocator = CxxAllocatorAdaptor<T, Arena<Alloc>>;
+
+template <typename T>
+using SysArenaAllocator = ArenaAllocator<T, SysAllocator<void>>;
 
 } // namespace folly
 

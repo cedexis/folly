@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-present Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,14 +15,15 @@
  */
 
 #include <folly/io/async/EventHandler.h>
+#include <folly/String.h>
 #include <folly/io/async/EventBase.h>
 
 #include <assert.h>
 
 namespace folly {
 
-EventHandler::EventHandler(EventBase* eventBase, int fd) {
-  folly_event_set(&event_, fd, 0, &EventHandler::libeventCallback, this);
+EventHandler::EventHandler(EventBase* eventBase, NetworkSocket fd) {
+  event_set(&event_, fd.data, 0, &EventHandler::libeventCallback, this);
   if (eventBase != nullptr) {
     setEventBase(eventBase);
   } else {
@@ -90,7 +91,7 @@ bool EventHandler::registerImpl(uint16_t events, bool internal) {
   // more space).
   if (event_add(&event_, nullptr) < 0) {
     LOG(ERROR) << "EventBase: failed to register event handler for fd "
-               << event_.ev_fd << ": " << strerror(errno);
+               << event_.ev_fd << ": " << errnoStr(errno);
     // Call event_del() to make sure the event is completely uninstalled
     event_del(&event_);
     return false;
@@ -120,17 +121,17 @@ void EventHandler::detachEventBase() {
   event_.ev_base = nullptr;
 }
 
-void EventHandler::changeHandlerFD(int fd) {
+void EventHandler::changeHandlerFD(NetworkSocket fd) {
   ensureNotRegistered(__func__);
   // event_set() resets event_base.ev_base, so manually restore it afterwards
   struct event_base* evb = event_.ev_base;
-  folly_event_set(&event_, fd, 0, &EventHandler::libeventCallback, this);
+  event_set(&event_, fd.data, 0, &EventHandler::libeventCallback, this);
   event_.ev_base = evb; // don't use event_base_set(), since evb may be nullptr
 }
 
-void EventHandler::initHandler(EventBase* eventBase, int fd) {
+void EventHandler::initHandler(EventBase* eventBase, NetworkSocket fd) {
   ensureNotRegistered(__func__);
-  folly_event_set(&event_, fd, 0, &EventHandler::libeventCallback, this);
+  event_set(&event_, fd.data, 0, &EventHandler::libeventCallback, this);
   setEventBase(eventBase);
 }
 

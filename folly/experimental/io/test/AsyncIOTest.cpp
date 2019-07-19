@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2013-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,6 +40,7 @@ namespace fs = folly::fs;
 using folly::AsyncIO;
 using folly::AsyncIOOp;
 using folly::AsyncIOQueue;
+using folly::errnoStr;
 
 namespace {
 
@@ -126,7 +127,7 @@ typedef std::unique_ptr<char, void (*)(void*)> ManagedBuffer;
 ManagedBuffer allocateAligned(size_t size) {
   void* buf;
   int rc = posix_memalign(&buf, kAlign, size);
-  CHECK_EQ(rc, 0) << strerror(rc);
+  CHECK_EQ(rc, 0) << errnoStr(rc);
   return ManagedBuffer(reinterpret_cast<char*>(buf), free);
 }
 

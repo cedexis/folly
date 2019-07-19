@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2013-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,11 +23,8 @@
 #include <unordered_map>
 #include <utility>
 
-#include <boost/noncopyable.hpp>
 #include <glog/logging.h>
 
-#include <folly/Benchmark.h>
-#include <folly/Memory.h>
 #include <folly/Random.h>
 #include <folly/Varint.h>
 #include <folly/hash/Hash.h>
@@ -36,20 +33,24 @@
 
 #if FOLLY_HAVE_LIBZSTD
 #include <zstd.h>
+
+#include <folly/compression/Zstd.h>
 #endif
 
 #if FOLLY_HAVE_LIBZ
 #include <folly/compression/Zlib.h>
-#endif
 
 namespace zlib = folly::io::zlib;
+#endif
 
 namespace folly {
 namespace io {
 namespace test {
 
-class DataHolder : private boost::noncopyable {
+class DataHolder {
  public:
+  DataHolder(const DataHolder&) = delete;
+  DataHolder& operator=(const DataHolder&) = delete;
   uint64_t hash(size_t size) const;
   ByteRange data(size_t size) const;
 
@@ -61,9 +62,7 @@ class DataHolder : private boost::noncopyable {
 };
 
 DataHolder::DataHolder(size_t sizeLog2)
-  : size_(size_t(1) << sizeLog2),
-    data_(new uint8_t[size_]) {
-}
+    : size_(size_t(1) << sizeLog2), data_(new uint8_t[size_]) {}
 
 uint64_t DataHolder::hash(size_t size) const {
   CHECK_LE(size, size_);
@@ -95,8 +94,7 @@ class RandomDataHolder : public DataHolder {
   explicit RandomDataHolder(size_t sizeLog2);
 };
 
-RandomDataHolder::RandomDataHolder(size_t sizeLog2)
-  : DataHolder(sizeLog2) {
+RandomDataHolder::RandomDataHolder(size_t sizeLog2) : DataHolder(sizeLog2) {
   static constexpr size_t numThreadsLog2 = 3;
   static constexpr size_t numThreads = size_t(1) << numThreadsLog2;
 
@@ -125,12 +123,11 @@ class ConstantDataHolder : public DataHolder {
   explicit ConstantDataHolder(size_t sizeLog2);
 };
 
-ConstantDataHolder::ConstantDataHolder(size_t sizeLog2)
-  : DataHolder(sizeLog2) {
+ConstantDataHolder::ConstantDataHolder(size_t sizeLog2) : DataHolder(sizeLog2) {
   memset(data_.get(), 'a', size_);
 }
 
-constexpr size_t dataSizeLog2 = 27;  // 128MiB
+constexpr size_t dataSizeLog2 = 27; // 128MiB
 RandomDataHolder randomDataHolder(dataSizeLog2);
 ConstantDataHolder constantDataHolder(dataSizeLog2);
 
@@ -139,10 +136,7 @@ static std::vector<CodecType> supportedCodecs(std::vector<CodecType> const& v) {
   std::vector<CodecType> supported;
 
   std::copy_if(
-      std::begin(v),
-      std::end(v),
-      std::back_inserter(supported),
-      hasCodec);
+      std::begin(v), std::end(v), std::back_inserter(supported), hasCodec);
 
   return supported;
 }
@@ -194,23 +188,23 @@ TEST(CompressionTestNeedsUncompressedLength, Simple) {
 
   for (auto const& test : expectations) {
     if (hasCodec(test.type)) {
-      EXPECT_EQ(getCodec(test.type)->needsUncompressedLength(),
-                test.needsUncompressedLength);
+      EXPECT_EQ(
+          getCodec(test.type)->needsUncompressedLength(),
+          test.needsUncompressedLength);
     }
   }
 }
 
 class CompressionTest
-    : public testing::TestWithParam<std::tr1::tuple<int, int, CodecType>> {
+    : public testing::TestWithParam<std::tuple<int, int, CodecType>> {
  protected:
   void SetUp() override {
     auto tup = GetParam();
-    int lengthLog = std::tr1::get<0>(tup);
+    int lengthLog = std::get<0>(tup);
     // Small hack to test empty data
-    uncompressedLength_ =
-        (lengthLog < 0) ? 0 : uint64_t(1) << std::tr1::get<0>(tup);
-    chunks_ = std::tr1::get<1>(tup);
-    codec_ = getCodec(std::tr1::get<2>(tup));
+    uncompressedLength_ = (lengthLog < 0) ? 0 : uint64_t(1) << std::get<0>(tup);
+    chunks_ = std::get<1>(tup);
+    codec_ = getCodec(std::get<2>(tup));
   }
 
   void runSimpleIOBufTest(const DataHolder& dh);
@@ -237,8 +231,8 @@ void CompressionTest::runSimpleIOBufTest(const DataHolder& dh) {
     EXPECT_EQ(dh.hash(uncompressedLength_), hashIOBuf(uncompressed.get()));
   }
   {
-    auto uncompressed = codec_->uncompress(compressed.get(),
-                                           uncompressedLength_);
+    auto uncompressed =
+        codec_->uncompress(compressed.get(), uncompressedLength_);
     EXPECT_EQ(uncompressedLength_, uncompressed->computeChainDataLength());
     EXPECT_EQ(dh.hash(uncompressedLength_), hashIOBuf(uncompressed.get()));
   }
@@ -315,12 +309,12 @@ INSTANTIATE_TEST_CASE_P(
         testing::ValuesIn(availableCodecs())));
 
 class CompressionVarintTest
-    : public testing::TestWithParam<std::tr1::tuple<int, CodecType>> {
+    : public testing::TestWithParam<std::tuple<int, CodecType>> {
  protected:
   void SetUp() override {
     auto tup = GetParam();
-    uncompressedLength_ = uint64_t(1) << std::tr1::get<0>(tup);
-    codec_ = getCodec(std::tr1::get<1>(tup));
+    uncompressedLength_ = uint64_t(1) << std::get<0>(tup);
+    codec_ = getCodec(std::get<1>(tup));
   }
 
   void runSimpleTest(const DataHolder& dh);
@@ -343,8 +337,8 @@ void CompressionVarintTest::runSimpleTest(const DataHolder& dh) {
       1UL +
       Random::rand64(
           std::max(uint64_t(9), oneBasedMsbPos(uncompressedLength_)) / 9UL);
-  auto tinyBuf = IOBuf::copyBuffer(compressed->data(),
-                                   std::min(compressed->length(), breakPoint));
+  auto tinyBuf = IOBuf::copyBuffer(
+      compressed->data(), std::min(compressed->length(), breakPoint));
   compressed->trimStart(breakPoint);
   tinyBuf->prependChain(std::move(compressed));
   compressed = std::move(tinyBuf);
@@ -387,7 +381,9 @@ TEST(LZMATest, UncompressBadVarint) {
 
 class CompressionCorruptionTest : public testing::TestWithParam<CodecType> {
  protected:
-  void SetUp() override { codec_ = getCodec(GetParam()); }
+  void SetUp() override {
+    codec_ = getCodec(GetParam());
+  }
 
   void runSimpleTest(const DataHolder& dh);
 
@@ -405,26 +401,27 @@ void CompressionCorruptionTest::runSimpleTest(const DataHolder& dh) {
     EXPECT_EQ(dh.hash(uncompressedLength), hashIOBuf(uncompressed.get()));
   }
   {
-    auto uncompressed = codec_->uncompress(compressed.get(),
-                                           uncompressedLength);
+    auto uncompressed =
+        codec_->uncompress(compressed.get(), uncompressedLength);
     EXPECT_EQ(uncompressedLength, uncompressed->computeChainDataLength());
     EXPECT_EQ(dh.hash(uncompressedLength), hashIOBuf(uncompressed.get()));
   }
 
-  EXPECT_THROW(codec_->uncompress(compressed.get(), uncompressedLength + 1),
-               std::runtime_error);
+  EXPECT_THROW(
+      codec_->uncompress(compressed.get(), uncompressedLength + 1),
+      std::runtime_error);
 
   auto corrupted = compressed->clone();
   corrupted->unshare();
   // Truncate the last character
   corrupted->prev()->trimEnd(1);
   if (!codec_->needsUncompressedLength()) {
-    EXPECT_THROW(codec_->uncompress(corrupted.get()),
-                 std::runtime_error);
+    EXPECT_THROW(codec_->uncompress(corrupted.get()), std::runtime_error);
   }
 
-  EXPECT_THROW(codec_->uncompress(corrupted.get(), uncompressedLength),
-               std::runtime_error);
+  EXPECT_THROW(
+      codec_->uncompress(corrupted.get(), uncompressedLength),
+      std::runtime_error);
 
   corrupted = compressed->clone();
   corrupted->unshare();
@@ -432,12 +429,12 @@ void CompressionCorruptionTest::runSimpleTest(const DataHolder& dh) {
   ++(corrupted->writableData()[0]);
 
   if (!codec_->needsUncompressedLength()) {
-    EXPECT_THROW(codec_->uncompress(corrupted.get()),
-                 std::runtime_error);
+    EXPECT_THROW(codec_->uncompress(corrupted.get()), std::runtime_error);
   }
 
-  EXPECT_THROW(codec_->uncompress(corrupted.get(), uncompressedLength),
-               std::runtime_error);
+  EXPECT_THROW(
+      codec_->uncompress(corrupted.get(), uncompressedLength),
+      std::runtime_error);
 }
 
 TEST_P(CompressionCorruptionTest, RandomData) {
@@ -463,10 +460,47 @@ INSTANTIATE_TEST_CASE_P(
             CodecType::BZIP2,
         })));
 
+static bool codecHasFlush(CodecType type) {
+  return type != CodecType::BZIP2;
+}
+
+namespace {
+class NoCountersCodec : public Codec {
+ public:
+  NoCountersCodec()
+      : Codec(CodecType::NO_COMPRESSION, {}, {}, /* counters */ false) {}
+
+ private:
+  uint64_t doMaxCompressedLength(uint64_t uncompressedLength) const override {
+    return uncompressedLength;
+  }
+
+  std::unique_ptr<IOBuf> doCompress(const IOBuf* buf) override {
+    return buf->clone();
+  }
+
+  std::unique_ptr<IOBuf> doUncompress(const IOBuf* buf, Optional<uint64_t>)
+      override {
+    return buf->clone();
+  }
+};
+} // namespace
+
+TEST(CodecTest, NoCounters) {
+  NoCountersCodec codec;
+  for (size_t i = 0; i < 1000; ++i) {
+    EXPECT_EQ("hello", codec.uncompress(codec.compress("hello")));
+  }
+}
+
 class StreamingUnitTest : public testing::TestWithParam<CodecType> {
  protected:
   void SetUp() override {
     codec_ = getStreamCodec(GetParam());
+  }
+
+  bool hasFlush() const {
+    return codecHasFlush(GetParam());
   }
 
   std::unique_ptr<StreamCodec> codec_;
@@ -555,8 +589,10 @@ TEST_P(StreamingUnitTest, emptyData) {
     codec_->resetStream(0);
     output = {largeBuffer->writableData(), largeBuffer->length()};
     EXPECT_FALSE(codec_->compressStream(input, output));
-    EXPECT_TRUE(
-        codec_->compressStream(input, output, StreamCodec::FlushOp::FLUSH));
+    if (hasFlush()) {
+      EXPECT_TRUE(
+          codec_->compressStream(input, output, StreamCodec::FlushOp::FLUSH));
+    }
     EXPECT_TRUE(
         codec_->compressStream(input, output, StreamCodec::FlushOp::END));
   }
@@ -565,17 +601,21 @@ TEST_P(StreamingUnitTest, emptyData) {
   output = {};
   codec_->resetStream();
   EXPECT_TRUE(codec_->uncompressStream(input, output));
-  codec_->resetStream();
-  EXPECT_TRUE(
-      codec_->uncompressStream(input, output, StreamCodec::FlushOp::FLUSH));
+  if (hasFlush()) {
+    codec_->resetStream();
+    EXPECT_TRUE(
+        codec_->uncompressStream(input, output, StreamCodec::FlushOp::FLUSH));
+  }
   codec_->resetStream();
   EXPECT_TRUE(
       codec_->uncompressStream(input, output, StreamCodec::FlushOp::END));
   codec_->resetStream(0);
   EXPECT_TRUE(codec_->uncompressStream(input, output));
-  codec_->resetStream(0);
-  EXPECT_TRUE(
-      codec_->uncompressStream(input, output, StreamCodec::FlushOp::FLUSH));
+  if (hasFlush()) {
+    codec_->resetStream(0);
+    EXPECT_TRUE(
+        codec_->uncompressStream(input, output, StreamCodec::FlushOp::FLUSH));
+  }
   codec_->resetStream(0);
   EXPECT_TRUE(
       codec_->uncompressStream(input, output, StreamCodec::FlushOp::END));
@@ -601,6 +641,9 @@ TEST_P(StreamingUnitTest, noForwardProgress) {
   // No progress is not okay twice in a row for all flush operations when
   // compressing
   for (const auto flushOp : flushOps) {
+    if (flushOp == StreamCodec::FlushOp::FLUSH && !hasFlush()) {
+      continue;
+    }
     if (codec_->needsDataLength()) {
       codec_->resetStream(inBuffer->computeChainDataLength());
     } else {
@@ -622,6 +665,9 @@ TEST_P(StreamingUnitTest, noForwardProgress) {
   // No progress is not okay twice in a row for all flush operations when
   // uncompressing
   for (const auto flushOp : flushOps) {
+    if (flushOp == StreamCodec::FlushOp::FLUSH && !hasFlush()) {
+      continue;
+    }
     codec_->resetStream();
     auto input = compressed->coalesce();
     // Remove the last byte so the operation is incomplete
@@ -648,9 +694,8 @@ TEST_P(StreamingUnitTest, stateTransitions) {
   auto outBuffer = IOBuf::create(codec_->maxCompressedLength(in.size()));
   MutableByteRange const out{outBuffer->writableTail(), outBuffer->tailroom()};
 
-  auto compress = [&](
-      StreamCodec::FlushOp flushOp = StreamCodec::FlushOp::NONE,
-      bool empty = false) {
+  auto compress = [&](StreamCodec::FlushOp flushOp = StreamCodec::FlushOp::NONE,
+                      bool empty = false) {
     auto input = in;
     auto output = empty ? MutableByteRange{} : out;
     return codec_->compressStream(input, output, flushOp);
@@ -669,9 +714,9 @@ TEST_P(StreamingUnitTest, stateTransitions) {
       }
     }
   };
-  auto uncompress = [&](
-      StreamCodec::FlushOp flushOp = StreamCodec::FlushOp::NONE,
-      bool empty = false) {
+  auto uncompress = [&](StreamCodec::FlushOp flushOp =
+                            StreamCodec::FlushOp::NONE,
+                        bool empty = false) {
     auto input = in;
     auto output = empty ? MutableByteRange{} : out;
     return codec_->uncompressStream(input, output, flushOp);
@@ -682,35 +727,43 @@ TEST_P(StreamingUnitTest, stateTransitions) {
     codec_->resetStream();
     EXPECT_FALSE(compress());
     EXPECT_FALSE(compress());
-    EXPECT_TRUE(compress(StreamCodec::FlushOp::FLUSH));
+    if (hasFlush()) {
+      EXPECT_TRUE(compress(StreamCodec::FlushOp::FLUSH));
+    }
     EXPECT_FALSE(compress());
     EXPECT_TRUE(compress(StreamCodec::FlushOp::END));
   }
   codec_->resetStream(in.size() * 5);
   compress_all(false);
   compress_all(false);
-  compress_all(true, StreamCodec::FlushOp::FLUSH);
+  if (hasFlush()) {
+    compress_all(true, StreamCodec::FlushOp::FLUSH);
+  }
   compress_all(false);
   compress_all(true, StreamCodec::FlushOp::END);
 
   // uncompression flow
   codec_->resetStream();
   EXPECT_FALSE(uncompress(StreamCodec::FlushOp::NONE, true));
-  codec_->resetStream();
-  EXPECT_FALSE(uncompress(StreamCodec::FlushOp::FLUSH, true));
+  if (hasFlush()) {
+    codec_->resetStream();
+    EXPECT_FALSE(uncompress(StreamCodec::FlushOp::FLUSH, true));
+  }
   codec_->resetStream();
   EXPECT_FALSE(uncompress(StreamCodec::FlushOp::NONE, true));
   codec_->resetStream();
   EXPECT_FALSE(uncompress(StreamCodec::FlushOp::NONE, true));
-  codec_->resetStream();
-  EXPECT_TRUE(uncompress(StreamCodec::FlushOp::FLUSH));
+  if (hasFlush()) {
+    codec_->resetStream();
+    EXPECT_TRUE(uncompress(StreamCodec::FlushOp::FLUSH));
+  }
   // compress -> uncompress
   codec_->resetStream(in.size());
   EXPECT_FALSE(compress());
   EXPECT_THROW(uncompress(), std::logic_error);
   // uncompress -> compress
   codec_->resetStream(inBuffer->computeChainDataLength());
-  EXPECT_TRUE(uncompress(StreamCodec::FlushOp::FLUSH));
+  EXPECT_TRUE(uncompress(StreamCodec::FlushOp::NONE));
   EXPECT_THROW(compress(), std::logic_error);
   // end -> compress
   if (!codec_->needsDataLength()) {
@@ -725,16 +778,20 @@ TEST_P(StreamingUnitTest, stateTransitions) {
   EXPECT_THROW(compress(), std::logic_error);
   // end -> uncompress
   codec_->resetStream();
-  EXPECT_TRUE(uncompress(StreamCodec::FlushOp::FLUSH));
+  EXPECT_TRUE(uncompress(StreamCodec::FlushOp::END));
   EXPECT_THROW(uncompress(), std::logic_error);
   // flush -> compress
-  codec_->resetStream(in.size());
-  EXPECT_FALSE(compress(StreamCodec::FlushOp::FLUSH, true));
-  EXPECT_THROW(compress(), std::logic_error);
+  if (hasFlush()) {
+    codec_->resetStream(in.size());
+    EXPECT_FALSE(compress(StreamCodec::FlushOp::FLUSH, true));
+    EXPECT_THROW(compress(), std::logic_error);
+  }
   // flush -> end
-  codec_->resetStream(in.size());
-  EXPECT_FALSE(compress(StreamCodec::FlushOp::FLUSH, true));
-  EXPECT_THROW(compress(StreamCodec::FlushOp::END), std::logic_error);
+  if (hasFlush()) {
+    codec_->resetStream(in.size());
+    EXPECT_FALSE(compress(StreamCodec::FlushOp::FLUSH, true));
+    EXPECT_THROW(compress(StreamCodec::FlushOp::END), std::logic_error);
+  }
   // undefined -> compress
   codec_->compress(inBuffer.get());
   EXPECT_THROW(compress(), std::logic_error);
@@ -753,6 +810,10 @@ INSTANTIATE_TEST_CASE_P(
 class StreamingCompressionTest
     : public testing::TestWithParam<std::tuple<int, int, CodecType>> {
  protected:
+  bool hasFlush() const {
+    return codecHasFlush(std::get<2>(GetParam()));
+  }
+
   void SetUp() override {
     auto const tup = GetParam();
     uncompressedLength_ = uint64_t(1) << std::get<0>(tup);
@@ -875,6 +936,8 @@ TEST_P(StreamingCompressionTest, compressStream) {
 
 void StreamingCompressionTest::runUncompressStreamTest(
     const folly::io::test::DataHolder& dh) {
+  const auto flush =
+      hasFlush() ? StreamCodec::FlushOp::FLUSH : StreamCodec::FlushOp::NONE;
   auto const data = IOBuf::wrapBuffer(dh.data(uncompressedLength_));
   // Concatenate 3 compressed frames in a row
   auto compressed = codec_->compress(data.get());
@@ -885,8 +948,7 @@ void StreamingCompressionTest::runUncompressStreamTest(
   // Uncompress the first frame
   codec_->resetStream(data->computeChainDataLength());
   {
-    auto const result = uncompressSome(
-        codec_.get(), input, chunkSize_, StreamCodec::FlushOp::FLUSH);
+    auto const result = uncompressSome(codec_.get(), input, chunkSize_, flush);
     ASSERT_TRUE(result.first);
     ASSERT_EQ(hashIOBuf(data.get()), hashIOBuf(result.second.get()));
   }
@@ -901,8 +963,7 @@ void StreamingCompressionTest::runUncompressStreamTest(
   // Uncompress the third frame
   codec_->resetStream();
   {
-    auto const result = uncompressSome(
-        codec_.get(), input, chunkSize_, StreamCodec::FlushOp::FLUSH);
+    auto const result = uncompressSome(codec_.get(), input, chunkSize_, flush);
     ASSERT_TRUE(result.first);
     ASSERT_EQ(hashIOBuf(data.get()), hashIOBuf(result.second.get()));
   }
@@ -946,6 +1007,9 @@ void StreamingCompressionTest::runFlushTest(DataHolder const& dh) {
 }
 
 TEST_P(StreamingCompressionTest, testFlush) {
+  if (!hasFlush()) {
+    return;
+  }
   runFlushTest(constantDataHolder);
   runFlushTest(randomDataHolder);
 }
@@ -1352,6 +1416,12 @@ TEST(CheckCompatibleTest, ZlibIsPrefix) {
 
 #if FOLLY_HAVE_LIBZSTD
 
+#if ZSTD_VERSION_NUMBER < 10308
+#define ZSTD_c_contentSizeFlag ZSTD_p_contentSizeFlag
+#define ZSTD_c_checksumFlag ZSTD_p_checksumFlag
+#define ZSTD_c_windowLog ZSTD_p_windowLog
+#endif
+
 TEST(ZstdTest, BackwardCompatible) {
   auto codec = getCodec(CodecType::ZSTD);
   {
@@ -1371,6 +1441,58 @@ TEST(ZstdTest, BackwardCompatible) {
         data->length(),
         ZSTD_getDecompressedSize(compressed->data(), compressed->length()));
   }
+}
+
+TEST(ZstdTest, CustomOptions) {
+  auto test = [](const DataHolder& dh, unsigned contentSizeFlag) {
+    unsigned const wlog = 23;
+    zstd::Options options(1);
+    options.set(ZSTD_c_contentSizeFlag, contentSizeFlag);
+    options.set(ZSTD_c_checksumFlag, 1);
+    options.set(ZSTD_c_windowLog, wlog);
+    auto codec = zstd::getCodec(std::move(options));
+    size_t const uncompressedLength = (size_t)1 << 27;
+    auto const original = std::string(
+        reinterpret_cast<const char*>(dh.data(uncompressedLength).data()),
+        uncompressedLength);
+    auto const compressed = codec->compress(original);
+    auto const uncompressed = codec->uncompress(compressed);
+    EXPECT_EQ(uncompressed, original);
+    EXPECT_EQ(
+        codec->getUncompressedLength(
+            folly::IOBuf::wrapBuffer(compressed.data(), compressed.size())
+                .get()),
+        contentSizeFlag ? uncompressedLength : Optional<uint64_t>());
+    {
+      ZSTD_frameHeader zfh;
+      ZSTD_getFrameHeader(&zfh, compressed.data(), compressed.size());
+      EXPECT_EQ(zfh.checksumFlag, 1);
+      EXPECT_EQ(zfh.windowSize, 1ULL << wlog);
+      EXPECT_EQ(
+          zfh.frameContentSize,
+          contentSizeFlag ? uncompressedLength : ZSTD_CONTENTSIZE_UNKNOWN);
+    }
+  };
+  for (unsigned contentSizeFlag = 0; contentSizeFlag <= 1; ++contentSizeFlag) {
+    test(constantDataHolder, contentSizeFlag);
+    test(randomDataHolder, contentSizeFlag);
+  }
+}
+
+TEST(ZstdTest, NegativeLevels) {
+  EXPECT_EQ(zstd::Options(1).level(), 1);
+  EXPECT_EQ(zstd::Options(-1).level(), -1);
+  auto const original = std::string(
+      reinterpret_cast<const char*>(randomDataHolder.data(16348).data()),
+      16348);
+  auto const plusCompressed =
+      zstd::getCodec(zstd::Options(1))->compress(original);
+  auto const minusCompressed =
+      zstd::getCodec(zstd::Options(-100))->compress(original);
+  EXPECT_GT(minusCompressed.size(), plusCompressed.size());
+  auto codec = getCodec(CodecType::ZSTD);
+  auto const uncompressed = codec->uncompress(minusCompressed);
+  EXPECT_EQ(original, uncompressed);
 }
 
 #endif
@@ -1431,15 +1553,15 @@ TEST(ZlibTest, DefaultOptions) {
   }
 }
 
-class ZlibOptionsTest : public testing::TestWithParam<
-                            std::tr1::tuple<ZlibFormat, int, int, int>> {
+class ZlibOptionsTest
+    : public testing::TestWithParam<std::tuple<ZlibFormat, int, int, int>> {
  protected:
   void SetUp() override {
     auto tup = GetParam();
-    options_.format = std::tr1::get<0>(tup);
-    options_.windowSize = std::tr1::get<1>(tup);
-    options_.memLevel = std::tr1::get<2>(tup);
-    options_.strategy = std::tr1::get<3>(tup);
+    options_.format = std::get<0>(tup);
+    options_.windowSize = std::get<1>(tup);
+    options_.memLevel = std::get<2>(tup);
+    options_.strategy = std::get<3>(tup);
     codec_ = zlib::getStreamCodec(options_);
   }
 
@@ -1489,14 +1611,3 @@ INSTANTIATE_TEST_CASE_P(
 } // namespace test
 } // namespace io
 } // namespace folly
-
-int main(int argc, char *argv[]) {
-  testing::InitGoogleTest(&argc, argv);
-  gflags::ParseCommandLineFlags(&argc, &argv, true);
-
-  auto ret = RUN_ALL_TESTS();
-  if (!ret) {
-    folly::runBenchmarksOnFlag();
-  }
-  return ret;
-}

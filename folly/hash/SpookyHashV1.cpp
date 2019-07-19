@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2017-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,12 +35,14 @@
 namespace folly {
 namespace hash {
 
+// clang-format off
+
 //
 // short hash ... it could be used on any message,
 // but it's used by Spooky just for short messages.
 //
 void SpookyHashV1::Short(
-    const void *message,
+    const void* message,
     size_t length,
     uint64_t *hash1,
     uint64_t *hash2)
@@ -382,6 +384,8 @@ void SpookyHashV1::Final(uint64_t *hash1, uint64_t *hash2)
     *hash1 = h0;
     *hash2 = h1;
 }
+
+// clang-format on
 
 } // namespace hash
 } // namespace folly

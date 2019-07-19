@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2013-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,15 +16,18 @@
 
 #pragma once
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <ostream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <folly/CPortability.h>
+#include <folly/Traits.h>
 #include <folly/stats/detail/Bucket.h>
 
 namespace folly {
@@ -220,6 +223,7 @@ class HistogramBuckets {
   }
 
  private:
+  static constexpr bool kIsExact = std::numeric_limits<ValueType>::is_exact;
   ValueType bucketSize_;
   ValueType min_;
   ValueType max_;
@@ -248,27 +252,24 @@ class Histogram {
       : buckets_(bucketSize, min, max, Bucket()) {}
 
   /* Add a data point to the histogram */
-  void addValue(ValueType value) FOLLY_DISABLE_UNDEFINED_BEHAVIOR_SANITIZER(
-      "signed-integer-overflow",
-      "unsigned-integer-overflow") {
+  void addValue(ValueType value) {
     Bucket& bucket = buckets_.getByValue(value);
     // NOTE: Overflow is handled elsewhere and tests check this
     // behavior (see HistogramTest.cpp TestOverflow* tests).
     // TODO: It would be nice to handle overflow here and redesign this class.
-    bucket.sum += value;
+    auto const addend = to_unsigned(value);
+    bucket.sum = static_cast<ValueType>(to_unsigned(bucket.sum) + addend);
     bucket.count += 1;
   }
 
   /* Add multiple same data points to the histogram */
-  void addRepeatedValue(ValueType value, uint64_t nSamples)
-      FOLLY_DISABLE_UNDEFINED_BEHAVIOR_SANITIZER(
-          "signed-integer-overflow",
-          "unsigned-integer-overflow") {
+  void addRepeatedValue(ValueType value, uint64_t nSamples) {
     Bucket& bucket = buckets_.getByValue(value);
     // NOTE: Overflow is handled elsewhere and tests check this
     // behavior (see HistogramTest.cpp TestOverflow* tests).
     // TODO: It would be nice to handle overflow here and redesign this class.
-    bucket.sum += value * nSamples;
+    auto const addend = to_unsigned(value) * nSamples;
+    bucket.sum = static_cast<ValueType>(to_unsigned(bucket.sum) + addend);
     bucket.count += nSamples;
   }
 
@@ -279,15 +280,14 @@ class Histogram {
    * had previously been added to the histogram; it merely subtracts the
    * requested value from the appropriate bucket's sum.
    */
-  void removeValue(ValueType value) FOLLY_DISABLE_UNDEFINED_BEHAVIOR_SANITIZER(
-      "signed-integer-overflow",
-      "unsigned-integer-overflow") {
+  void removeValue(ValueType value) {
     Bucket& bucket = buckets_.getByValue(value);
     // NOTE: Overflow is handled elsewhere and tests check this
     // behavior (see HistogramTest.cpp TestOverflow* tests).
     // TODO: It would be nice to handle overflow here and redesign this class.
     if (bucket.count > 0) {
-      bucket.sum -= value;
+      auto const subtrahend = to_unsigned(value);
+      bucket.sum = static_cast<ValueType>(to_unsigned(bucket.sum) - subtrahend);
       bucket.count -= 1;
     } else {
       bucket.sum = ValueType();
@@ -475,6 +475,17 @@ class Histogram {
   };
 
  private:
+  template <typename S, typename = std::enable_if_t<std::is_integral<S>::value>>
+  static constexpr std::make_unsigned_t<S> to_unsigned(S s) {
+    return static_cast<std::make_unsigned_t<S>>(s);
+  }
+  template <
+      typename S,
+      typename = std::enable_if_t<!std::is_integral<S>::value>>
+  static constexpr S to_unsigned(S s) {
+    return s;
+  }
+
   detail::HistogramBuckets<ValueType, Bucket> buckets_;
 };
 

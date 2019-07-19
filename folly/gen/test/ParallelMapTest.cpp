@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@
 #include <folly/Memory.h>
 #include <folly/gen/Base.h>
 #include <folly/gen/ParallelMap.h>
+#include <folly/portability/GFlags.h>
 #include <folly/portability/GTest.h>
 
 using namespace folly;
@@ -29,6 +30,7 @@ using namespace folly::gen;
 TEST(Pmap, InfiniteEquivalent) {
   // apply
   {
+    // clang-format off
     auto mapResult
       = seq(1)
       | map([](int x) { return x * x; })
@@ -40,12 +42,14 @@ TEST(Pmap, InfiniteEquivalent) {
       | pmap([](int x) { return x * x; }, 4)
       | until([](int x) { return x > 1000 * 1000; })
       | as<std::vector<int>>();
+    // clang-format on
 
     EXPECT_EQ(pmapResult, mapResult);
   }
 
   // foreach
   {
+    // clang-format off
     auto mapResult
       = seq(1, 10)
       | map([](int x) { return x * x; })
@@ -55,6 +59,7 @@ TEST(Pmap, InfiniteEquivalent) {
       = seq(1, 10)
       | pmap([](int x) { return x * x; }, 4)
       | as<std::vector<int>>();
+    // clang-format on
 
     EXPECT_EQ(pmapResult, mapResult);
   }
@@ -63,6 +68,7 @@ TEST(Pmap, InfiniteEquivalent) {
 TEST(Pmap, Empty) {
   // apply
   {
+    // clang-format off
     auto mapResult
       = seq(1)
       | map([](int x) { return x * x; })
@@ -74,6 +80,7 @@ TEST(Pmap, Empty) {
       | pmap([](int x) { return x * x; }, 4)
       | until([](int) { return true; })
       | as<std::vector<int>>();
+    // clang-format on
 
     EXPECT_EQ(mapResult.size(), 0);
     EXPECT_EQ(pmapResult, mapResult);
@@ -81,6 +88,7 @@ TEST(Pmap, Empty) {
 
   // foreach
   {
+    // clang-format off
     auto mapResult
       = empty<int>()
       | map([](int x) { return x * x; })
@@ -90,6 +98,7 @@ TEST(Pmap, Empty) {
       = empty<int>()
       | pmap([](int x) { return x * x; }, 4)
       | as<std::vector<int>>();
+    // clang-format on
 
     EXPECT_EQ(mapResult.size(), 0);
     EXPECT_EQ(pmapResult, mapResult);
@@ -99,6 +108,7 @@ TEST(Pmap, Empty) {
 TEST(Pmap, Rvalues) {
   // apply
   {
+    // clang-format off
     auto mapResult
         = seq(1)
         | map([](int x) { return std::make_unique<int>(x); })
@@ -116,12 +126,14 @@ TEST(Pmap, Rvalues) {
         | pmap([](std::unique_ptr<int> x) { return *x; })
         | take(1000)
         | sum;
+    // clang-format on
 
     EXPECT_EQ(pmapResult, mapResult);
   }
 
   // foreach
   {
+    // clang-format off
     auto mapResult
         = seq(1, 1000)
         | map([](int x) { return std::make_unique<int>(x); })
@@ -137,12 +149,18 @@ TEST(Pmap, Rvalues) {
             return std::make_unique<int>(*x * *x); })
         | pmap([](std::unique_ptr<int> x) { return *x; })
         | sum;
+    // clang-format on
 
     EXPECT_EQ(pmapResult, mapResult);
   }
 }
 
-int main(int argc, char *argv[]) {
+TEST(Pmap, Exception) {
+  std::vector<char const*> input{"a"};
+  EXPECT_THROW(from(input) | pmap(To<int>()) | count, std::runtime_error);
+}
+
+int main(int argc, char* argv[]) {
   testing::InitGoogleTest(&argc, argv);
   gflags::ParseCommandLineFlags(&argc, &argv, true);
   return RUN_ALL_TESTS();

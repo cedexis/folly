@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2011-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@
 
 #include <folly/Portability.h>
 #include <folly/Traits.h>
+#include <folly/functional/Invoke.h>
 
 #if FOLLY_HAVE_EXTRANDOM_SFMT19937
 #include <ext/random>
@@ -52,11 +53,7 @@ class ThreadLocalPRNG {
  public:
   using result_type = uint32_t;
 
-  result_type operator()() {
-    // Using a static method allows the compiler to avoid allocating stack space
-    // for this class.
-    return getImpl(local_);
-  }
+  result_type operator()();
 
   static constexpr result_type min() {
     return std::numeric_limits<result_type>::min();
@@ -64,23 +61,13 @@ class ThreadLocalPRNG {
   static constexpr result_type max() {
     return std::numeric_limits<result_type>::max();
   }
-  friend class Random;
-
-  ThreadLocalPRNG();
-
-  class LocalInstancePRNG;
-
- private:
-  static result_type getImpl(LocalInstancePRNG* local);
-  LocalInstancePRNG* local_;
 };
 
 class Random {
  private:
   template <class RNG>
-  using ValidRNG = typename std::enable_if<
-      std::is_unsigned<typename std::result_of<RNG&()>::type>::value,
-      RNG>::type;
+  using ValidRNG = typename std::
+      enable_if<std::is_unsigned<invoke_result_t<RNG&>>::value, RNG>::type;
 
   template <class T>
   class SecureRNG {

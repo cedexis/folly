@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2017-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#include <folly/Benchmark.h>
 #include <folly/experimental/FlatCombiningPriorityQueue.h>
+#include <folly/Benchmark.h>
 #include <folly/portability/GTest.h>
 #include <glog/logging.h>
 
@@ -61,7 +61,7 @@ class BaselinePQ {
     return pq_.size();
   }
 
-  bool tryPush(const T& val) {
+  bool try_push(const T& val) {
     std::lock_guard<Mutex> g(m_);
     if (maxSize_ > 0 && pq_.size() == maxSize_) {
       return false;
@@ -76,7 +76,7 @@ class BaselinePQ {
     }
   }
 
-  bool tryPop(T& val) {
+  bool try_pop(T& val) {
     std::lock_guard<Mutex> g(m_);
     if (!pq_.empty()) {
       val = pq_.top();
@@ -87,7 +87,7 @@ class BaselinePQ {
     return false;
   }
 
-  bool tryPeek(T& val) {
+  bool try_peek(T& val) {
     std::lock_guard<Mutex> g(m_);
     if (!pq_.empty()) {
       val = pq_.top();
@@ -122,7 +122,7 @@ static uint64_t run_once(PriorityQueue& pq, const Func& fn) {
   std::atomic<uint32_t> started{0};
 
   for (int i = 0; i < size; ++i) {
-    CHECK(pq.tryPush(i * (ops / size)));
+    CHECK(pq.try_push(i * (ops / size)));
   }
 
   std::vector<std::thread> threads(nthreads);
@@ -161,39 +161,53 @@ TEST(FCPriQueue, basic) {
   CHECK(pq.empty());
   CHECK_EQ(pq.size(), 0);
   int v;
-  CHECK(!pq.tryPop(v));
+  CHECK(!pq.try_pop(v));
+  // try_pop() returns an Optional
+  EXPECT_FALSE(bool(pq.try_pop()));
 
-  CHECK(pq.tryPush(1));
-  CHECK(pq.tryPush(2));
+  CHECK(pq.try_push(1));
+  CHECK(pq.try_push(2));
   CHECK(!pq.empty());
   CHECK_EQ(pq.size(), 2);
 
   pq.peek(v);
   CHECK_EQ(v, 2); // higher value has higher priority
-  CHECK(pq.tryPeek(v));
+  CHECK(pq.try_peek(v));
   CHECK_EQ(v, 2);
   CHECK(!pq.empty());
   CHECK_EQ(pq.size(), 2);
 
-  CHECK(pq.tryPop(v));
+  CHECK(pq.try_pop(v));
   CHECK_EQ(v, 2);
   CHECK(!pq.empty());
   CHECK_EQ(pq.size(), 1);
 
-  CHECK(pq.tryPop(v));
+  CHECK(pq.try_pop(v));
   CHECK_EQ(v, 1);
+  CHECK(pq.empty());
+  CHECK_EQ(pq.size(), 0);
+
+  CHECK(pq.try_push(1));
+  CHECK(pq.try_push(2));
+
+  // check successful try_pop()
+  EXPECT_EQ(*pq.try_pop(), 2);
+  CHECK(!pq.empty());
+  CHECK_EQ(pq.size(), 1);
+
+  EXPECT_EQ(*pq.try_pop(), 1);
   CHECK(pq.empty());
   CHECK_EQ(pq.size(), 0);
 }
 
 TEST(FCPriQueue, bounded) {
   FCPQ pq(1);
-  CHECK(pq.tryPush(1));
-  CHECK(!pq.tryPush(1));
+  CHECK(pq.try_push(1));
+  CHECK(!pq.try_push(1));
   CHECK_EQ(pq.size(), 1);
   CHECK(!pq.empty());
   int v;
-  CHECK(pq.tryPop(v));
+  CHECK(pq.try_pop(v));
   CHECK_EQ(v, 1);
   CHECK_EQ(pq.size(), 0);
   CHECK(pq.empty());
@@ -202,16 +216,32 @@ TEST(FCPriQueue, bounded) {
 TEST(FCPriQueue, timeout) {
   FCPQ pq(1);
   int v;
-  CHECK(!pq.tryPeek(
-      v,
-      std::chrono::steady_clock::now() + std::chrono::microseconds(1000)));
-  CHECK(!pq.tryPop(
-      v,
-      std::chrono::steady_clock::now() + std::chrono::microseconds(1000)));
+  CHECK(!pq.try_peek(v));
+  CHECK(!pq.try_pop(v));
   pq.push(10);
-  CHECK(!pq.tryPush(
-      20,
-      std::chrono::steady_clock::now() + std::chrono::microseconds(1000)));
+  CHECK(!pq.try_push(20));
+
+  auto dur = std::chrono::microseconds(1000);
+  EXPECT_EQ(*pq.try_pop(), 10);
+  CHECK(pq.empty());
+  // check try_***_for
+  EXPECT_FALSE(bool(pq.try_pop_for(dur)));
+  EXPECT_FALSE(bool(pq.try_peek_for(dur)));
+  CHECK(pq.try_push_for(10, dur));
+  CHECK(!pq.try_push_for(20, dur));
+  EXPECT_EQ(*pq.try_peek_for(dur), 10);
+  EXPECT_EQ(*pq.try_pop_for(dur), 10);
+
+  CHECK(pq.empty());
+  // check try_***_until
+  EXPECT_FALSE(bool(pq.try_pop_until(std::chrono::steady_clock::now() + dur)));
+
+  EXPECT_FALSE(bool(pq.try_peek_until(std::chrono::steady_clock::now() + dur)));
+  CHECK(pq.try_push_until(10, std::chrono::steady_clock::now() + dur));
+  CHECK(!pq.try_push_until(20, std::chrono::steady_clock::now() + dur));
+  EXPECT_EQ(*pq.try_peek_until(std::chrono::steady_clock::now() + dur), 10);
+  EXPECT_EQ(*pq.try_pop_until(std::chrono::steady_clock::now() + dur), 10);
+  CHECK(pq.empty());
 }
 
 TEST(FCPriQueue, push_pop) {
@@ -224,13 +254,13 @@ TEST(FCPriQueue, push_pop) {
     FCPQ pq(10000);
     auto fn = [&](uint32_t tid) {
       for (int i = tid; i < ops; i += nthreads) {
-        CHECK(pq.tryPush(i));
-        CHECK(pq.tryPush(i, when));
+        CHECK(pq.try_push(i));
+        CHECK(pq.try_push_until(i, when));
         pq.push(i);
         doWork(work);
         int v;
-        CHECK(pq.tryPop(v));
-        CHECK(pq.tryPop(v, when));
+        CHECK(pq.try_pop(v));
+        EXPECT_NE(pq.try_pop_until(when), folly::none);
         pq.pop(v);
         doWork(work);
       }
@@ -243,7 +273,7 @@ enum Exp {
   NoFC,
   FCNonBlock,
   FCBlock,
-  FCTimed
+  FCTimed,
 };
 
 static uint64_t test(std::string name, Exp exp, uint64_t base) {
@@ -256,33 +286,35 @@ static uint64_t test(std::string name, Exp exp, uint64_t base) {
 
   for (int r = 0; r < FLAGS_reps; ++r) {
     uint64_t dur;
-    switch(exp) {
+    switch (exp) {
       case NoFC: {
         Baseline pq;
         auto fn = [&](uint32_t tid) {
           for (int i = tid; i < ops; i += nthreads) {
-            CHECK(pq.tryPush(i));
+            CHECK(pq.try_push(i));
             doWork(work);
             int v;
-            CHECK(pq.tryPop(v));
+            CHECK(pq.try_pop(v));
             doWork(work);
           }
         };
         dur = run_once(pq, fn);
-      } break;
+        break;
+      }
       case FCNonBlock: {
         FCPQ pq;
         auto fn = [&](uint32_t tid) {
           for (int i = tid; i < ops; i += nthreads) {
-            CHECK(pq.tryPush(i));
+            CHECK(pq.try_push(i));
             doWork(work);
             int v;
-            CHECK(pq.tryPop(v));
+            CHECK(pq.try_pop(v));
             doWork(work);
           }
         };
         dur = run_once(pq, fn);
-      } break;
+        break;
+      }
       case FCBlock: {
         FCPQ pq;
         auto fn = [&](uint32_t tid) {
@@ -295,22 +327,23 @@ static uint64_t test(std::string name, Exp exp, uint64_t base) {
           }
         };
         dur = run_once(pq, fn);
-      } break;
+        break;
+      }
       case FCTimed: {
         FCPQ pq;
         auto fn = [&](uint32_t tid) {
           std::chrono::steady_clock::time_point when =
               std::chrono::steady_clock::now() + std::chrono::hours(24);
           for (int i = tid; i < ops; i += nthreads) {
-            CHECK(pq.tryPush(i, when));
+            CHECK(pq.try_push_until(i, when));
             doWork(work);
-            int v;
-            CHECK(pq.tryPop(v, when));
+            EXPECT_NE(pq.try_pop_until(when), folly::none);
             doWork(work);
           }
         };
         dur = run_once(pq, fn);
-      } break;
+        break;
+      }
       default:
         CHECK(false);
     }
@@ -343,10 +376,8 @@ TEST(FCPriQueue, bench) {
   for (int i : nthr) {
     nthreads = i;
     std::cout << "\n------------------------------------ Number of threads = "
-              << i
-              << std::endl;
-    uint64_t base =
-    test("baseline                    ", NoFC, 0);
+              << i << std::endl;
+    uint64_t base = test("baseline                    ", NoFC, 0);
     test("baseline - dup              ", NoFC, base);
     std::cout << "---- fc -------------------------------" << std::endl;
     test("fc non-blocking             ", FCNonBlock, base);
@@ -523,6 +554,14 @@ L2 cache:              256K
 L3 cache:              20480K
 NUMA node0 CPU(s):     0-7,16-23
 NUMA node1 CPU(s):     8-15,24-31
-Flags:                 fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc aperfmperf eagerfpu pni pclmulqdq dtes64 monitor ds_cpl vmx smx est tm2 ssse3 cx16 xtpr pdcm pcid dca sse4_1 sse4_2 x2apic popcnt tsc_deadline_timer aes xsave avx lahf_lm epb tpr_shadow vnmi flexpriority ept vpid xsaveopt dtherm arat pln pts
+Flags:                 fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca
+                       cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht
+                       tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc
+                       arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc
+                       aperfmperf eagerfpu pni pclmulqdq dtes64 monitor ds_cpl
+                       vmx smx est tm2 ssse3 cx16 xtpr pdcm pcid dca sse4_1
+                       sse4_2 x2apic popcnt tsc_deadline_timer aes xsave avx
+                       lahf_lm epb tpr_shadow vnmi flexpriority ept vpid
+                       xsaveopt dtherm arat pln pts
 
  */

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2017-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,11 +28,13 @@ namespace folly {
 class ZeroCopyTestAsyncSocket {
  public:
   explicit ZeroCopyTestAsyncSocket(
+      size_t* counter,
       folly::EventBase* evb,
       int numLoops,
       size_t bufferSize,
       bool zeroCopy)
-      : evb_(evb),
+      : counter_(counter),
+        evb_(evb),
         numLoops_(numLoops),
         sock_(new folly::AsyncSocket(evb)),
         callback_(this),
@@ -42,12 +44,14 @@ class ZeroCopyTestAsyncSocket {
   }
 
   explicit ZeroCopyTestAsyncSocket(
+      size_t* counter,
       folly::EventBase* evb,
-      int fd,
+      NetworkSocket fd,
       int numLoops,
       size_t bufferSize,
       bool zeroCopy)
-      : evb_(evb),
+      : counter_(counter),
+        evb_(evb),
         numLoops_(numLoops),
         sock_(new folly::AsyncSocket(evb, fd)),
         callback_(this),
@@ -152,7 +156,12 @@ class ZeroCopyTestAsyncSocket {
     currLoop_++;
     if (client_ && currLoop_ >= numLoops_) {
       evb_->runInLoop(
-          [this] { evb_->terminateLoopSoon(); }, false /*thisIteration*/);
+          [this] {
+            if (counter_ && (0 == --(*counter_))) {
+              evb_->terminateLoopSoon();
+            }
+          },
+          false /*thisIteration*/);
       return;
     }
     writeBuffer();
@@ -160,7 +169,9 @@ class ZeroCopyTestAsyncSocket {
 
   void onDataFinish(folly::exception_wrapper) {
     if (client_) {
-      evb_->terminateLoopSoon();
+      if (counter_ && (0 == --(*counter_))) {
+        evb_->terminateLoopSoon();
+      }
     }
   }
 
@@ -182,6 +193,7 @@ class ZeroCopyTestAsyncSocket {
     return true;
   }
 
+  size_t* counter_{nullptr};
   folly::EventBase* evb_;
   int numLoops_{0};
   int currLoop_{0};
@@ -215,10 +227,10 @@ class ZeroCopyTestServer : public folly::AsyncServerSocket::AcceptCallback {
   }
 
   void connectionAccepted(
-      int fd,
+      folly::NetworkSocket fd,
       const folly::SocketAddress& /* unused */) noexcept override {
     auto client = std::make_shared<ZeroCopyTestAsyncSocket>(
-        evb_, fd, numLoops_, bufferSize_, zeroCopy_);
+        nullptr, evb_, fd, numLoops_, bufferSize_, zeroCopy_);
     clients_[client.get()] = client;
   }
 
@@ -238,21 +250,29 @@ class ZeroCopyTestServer : public folly::AsyncServerSocket::AcceptCallback {
 
 class ZeroCopyTest {
  public:
-  explicit ZeroCopyTest(int numLoops, bool zeroCopy, size_t bufferSize);
+  explicit ZeroCopyTest(
+      size_t numClients,
+      int numLoops,
+      bool zeroCopy,
+      size_t bufferSize);
   bool run();
 
  private:
-  void connectOne() {
+  void connectAll() {
     SocketAddress addr = listenSock_->getAddress();
-    client_->connect(addr);
+    for (auto& client : clients_) {
+      client->connect(addr);
+    }
   }
 
+  size_t numClients_;
+  size_t counter_;
   int numLoops_;
   bool zeroCopy_;
   size_t bufferSize_;
 
   EventBase evb_;
-  std::unique_ptr<ZeroCopyTestAsyncSocket> client_;
+  std::vector<std::unique_ptr<ZeroCopyTestAsyncSocket>> clients_;
   folly::AsyncServerSocket::UniquePtr listenSock_;
   ZeroCopyTestServer server_;
 };

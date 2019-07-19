@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,8 +19,8 @@
 #include <folly/io/Cursor.h>
 
 using namespace folly;
-using folly::io::QueueAppender;
 using folly::bser::serialization_opts;
+using folly::io::QueueAppender;
 
 namespace folly {
 namespace bser {

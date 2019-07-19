@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2013-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,6 @@
 #include <glog/logging.h>
 #include <memory>
 #include <thread>
-#include <type_traits>
 #include <unordered_map>
 
 using namespace folly;
@@ -376,6 +375,30 @@ TEST(AccessSpreader, Simple) {
   }
 }
 
+TEST(AccessSpreader, SimpleCached) {
+  for (size_t s = 1; s < 200; ++s) {
+    EXPECT_LT(AccessSpreader<>::cachedCurrent(s), s);
+  }
+}
+
+TEST(AccessSpreader, ConcurrentAccessCached) {
+  std::vector<std::thread> threads;
+  for (size_t i = 0; i < 4; ++i) {
+    threads.emplace_back([]() {
+      for (size_t s : {16, 32, 64}) {
+        for (size_t j = 1; j < 200; ++j) {
+          EXPECT_LT(AccessSpreader<>::cachedCurrent(s), s);
+          EXPECT_LT(AccessSpreader<>::cachedCurrent(s), s);
+        }
+        std::this_thread::yield();
+      }
+    });
+  }
+  for (auto& thread : threads) {
+    thread.join();
+  }
+}
+
 #ifdef FOLLY_TLS
 #define DECLARE_SPREADER_TAG(tag, locality, func)      \
   namespace {                                          \
@@ -392,6 +415,7 @@ TEST(AccessSpreader, Simple) {
   Getcpu::Func AccessSpreader<tag>::pickGetcpuFunc() { \
     return func;                                       \
   }                                                    \
+  template struct AccessSpreader<tag>;                 \
   }
 
 DECLARE_SPREADER_TAG(ManualTag, CacheLocality::uniform(16), testingGetcpu)
@@ -412,8 +436,8 @@ TEST(AccessSpreader, Wrapping) {
   }
 }
 
-TEST(CoreAllocator, Basic) {
-  CoreAllocator<32> alloc;
+TEST(CoreRawAllocator, Basic) {
+  CoreRawAllocator<32> alloc;
   auto a = alloc.get(0);
   auto res = a->allocate(8);
   memset(res, 0, 8);

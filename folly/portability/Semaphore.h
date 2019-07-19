@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2017-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,20 @@
 
 #pragma once
 
-// On Windows, the include order matters, as the pthread implementation we
-// support attempts to use a different definition of `mode_t` than everything
-// else, so we have to make sure our definition of it is first.
-#include <folly/portability/SysTypes.h>
-
+#ifndef _WIN32
 #include <semaphore.h>
+#else
+#include <limits.h>
+
+#define SEM_VALUE_MAX INT_MAX
+namespace folly::portability::semaphore {
+using sem_t = struct sem_t_*;
+int sem_init(sem_t* s, int shared, unsigned int value);
+int sem_destroy(sem_t* s);
+int sem_post(sem_t* s);
+int sem_trywait(sem_t* s);
+int sem_wait(sem_t* s);
+} // namespace folly::portability::semaphore
+
+/* using override */ using namespace folly::portability::semaphore;
+#endif

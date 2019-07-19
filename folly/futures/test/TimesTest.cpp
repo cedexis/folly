@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2015-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -66,9 +66,11 @@ TEST(Times, success) {
   bool failure = false;
 
   auto thunk = makeThunk(ps, interrupt, ps_mutex);
-  auto f = folly::times(3, thunk).then([&]() mutable {
-    complete = true;
-  }).onError([&](FutureException& /* e */) { failure = true; });
+  auto f = folly::times(3, thunk)
+               .thenValue([&](auto&&) mutable { complete = true; })
+               .thenError(folly::tag_t<FutureException>{}, [&](auto&& /* e */) {
+                 failure = true;
+               });
 
   popAndFulfillPromise(ps, ps_mutex);
   EXPECT_FALSE(complete);
@@ -92,9 +94,11 @@ TEST(Times, failure) {
   bool failure = false;
 
   auto thunk = makeThunk(ps, interrupt, ps_mutex);
-  auto f = folly::times(3, thunk).then([&]() mutable {
-    complete = true;
-  }).onError([&](FutureException& /* e */) { failure = true; });
+  auto f = folly::times(3, thunk)
+               .thenValue([&](auto&&) mutable { complete = true; })
+               .thenError(folly::tag_t<FutureException>{}, [&](auto&& /* e */) {
+                 failure = true;
+               });
 
   popAndFulfillPromise(ps, ps_mutex);
   EXPECT_FALSE(complete);
@@ -120,9 +124,11 @@ TEST(Times, interrupt) {
   bool failure = false;
 
   auto thunk = makeThunk(ps, interrupt, ps_mutex);
-  auto f = folly::times(3, thunk).then([&]() mutable {
-    complete = true;
-  }).onError([&](FutureException& /* e */) { failure = true; });
+  auto f = folly::times(3, thunk)
+               .thenValue([&](auto&&) mutable { complete = true; })
+               .thenError(folly::tag_t<FutureException>{}, [&](auto&& /* e */) {
+                 failure = true;
+               });
 
   EXPECT_EQ(0, interrupt);
 

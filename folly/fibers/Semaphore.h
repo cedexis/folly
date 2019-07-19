@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,10 @@
 
 #include <folly/Synchronized.h>
 #include <folly/fibers/Baton.h>
+#include <folly/futures/Future.h>
+#if FOLLY_HAS_COROUTINES
+#include <folly/experimental/coro/Task.h>
+#endif
 
 namespace folly {
 namespace fibers {
@@ -45,10 +49,36 @@ class Semaphore {
    */
   void wait();
 
+  /**
+   * Try to wait on the semaphore.
+   * Return true on success.
+   * On failure, the passed baton is enqueued, it will be posted once the
+   * semaphore has capacity. Caller is responsible to wait then signal.
+   */
+  bool try_wait(Baton& waitBaton);
+
+#if FOLLY_HAS_COROUTINES
+
+  /*
+   * Wait for capacity in the semaphore.
+   */
+  coro::Task<void> co_wait();
+
+#endif
+
+#if FOLLY_FUTURE_USING_FIBER
+
+  /*
+   * Wait for capacity in the semaphore.
+   */
+  SemiFuture<Unit> future_wait();
+
+#endif
+
   size_t getCapacity() const;
 
  private:
-  bool waitSlow();
+  bool waitSlow(folly::fibers::Baton& waitBaton);
   bool signalSlow();
 
   size_t capacity_;

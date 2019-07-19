@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,10 +25,11 @@ using namespace folly::gen;
 using folly::fbstring;
 using std::pair;
 using std::set;
-using std::vector;
 using std::tuple;
+using std::vector;
 
 static std::atomic<int> testSize(1000);
+// clang-format off
 static vector<int> testVector =
     seq(1, testSize.load())
   | mapped([](int) { return rand(); })
@@ -44,6 +45,7 @@ static vector<fbstring> strings =
     from(testVector)
   | eachTo<fbstring>()
   | as<vector>();
+// clang-format on
 
 auto square = [](int x) { return x * x; };
 
@@ -67,7 +69,7 @@ BENCHMARK_RELATIVE(Sum_Basic_Gen, iters) {
   folly::doNotOptimizeAway(s);
 }
 
-BENCHMARK_DRAW_LINE()
+BENCHMARK_DRAW_LINE();
 
 BENCHMARK(Sum_Vector_NoGen, iters) {
   int s = 0;
@@ -87,29 +89,33 @@ BENCHMARK_RELATIVE(Sum_Vector_Gen, iters) {
   folly::doNotOptimizeAway(s);
 }
 
-BENCHMARK_DRAW_LINE()
+BENCHMARK_DRAW_LINE();
 
 BENCHMARK(Member, iters) {
   int s = 0;
-  while(iters--) {
+  while (iters--) {
+    // clang-format off
     s += from(strings)
        | member(&fbstring::size)
        | sum;
+    // clang-format on
   }
   folly::doNotOptimizeAway(s);
 }
 
 BENCHMARK_RELATIVE(MapMember, iters) {
   int s = 0;
-  while(iters--) {
+  while (iters--) {
+    // clang-format off
     s += from(strings)
        | map([](const fbstring& x) { return x.size(); })
        | sum;
+    // clang-format on
   }
   folly::doNotOptimizeAway(s);
 }
 
-BENCHMARK_DRAW_LINE()
+BENCHMARK_DRAW_LINE();
 
 BENCHMARK(Count_Vector_NoGen, iters) {
   int s = 0;
@@ -126,16 +132,18 @@ BENCHMARK(Count_Vector_NoGen, iters) {
 BENCHMARK_RELATIVE(Count_Vector_Gen, iters) {
   int s = 0;
   while (iters--) {
+    // clang-format off
     s += from(testVector)
        | filter([](int i) {
                   return i * 2 < rand();
                 })
        | count;
+    // clang-format on
   }
   folly::doNotOptimizeAway(s);
 }
 
-BENCHMARK_DRAW_LINE()
+BENCHMARK_DRAW_LINE();
 
 BENCHMARK(Fib_Sum_NoGen, iters) {
   int s = 0;
@@ -213,7 +221,7 @@ BENCHMARK_RELATIVE(Fib_Sum_Gen_Static, iters) {
   folly::doNotOptimizeAway(s);
 }
 
-BENCHMARK_DRAW_LINE()
+BENCHMARK_DRAW_LINE();
 
 BENCHMARK(VirtualGen_0Virtual, iters) {
   int s = 0;
@@ -259,7 +267,7 @@ BENCHMARK_RELATIVE(VirtualGen_3Virtual, iters) {
   folly::doNotOptimizeAway(s);
 }
 
-BENCHMARK_DRAW_LINE()
+BENCHMARK_DRAW_LINE();
 
 BENCHMARK(Concat_NoGen, iters) {
   int s = 0;
@@ -281,7 +289,7 @@ BENCHMARK_RELATIVE(Concat_Gen, iters) {
   folly::doNotOptimizeAway(s);
 }
 
-BENCHMARK_DRAW_LINE()
+BENCHMARK_DRAW_LINE();
 
 BENCHMARK(Composed_NoGen, iters) {
   int s = 0;
@@ -310,7 +318,7 @@ BENCHMARK_RELATIVE(Composed_GenRegular, iters) {
   folly::doNotOptimizeAway(s);
 }
 
-BENCHMARK_DRAW_LINE()
+BENCHMARK_DRAW_LINE();
 
 BENCHMARK(Sample, iters) {
   size_t s = 0;
@@ -356,7 +364,7 @@ BENCHMARK(Sample, iters) {
 // Sample                                                     176.48ms     5.67
 // ============================================================================
 
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
   folly::runBenchmarks();
   return 0;

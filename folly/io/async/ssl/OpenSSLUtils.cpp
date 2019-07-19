@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@
 #include <folly/ScopeGuard.h>
 #include <folly/portability/Sockets.h>
 #include <folly/portability/Unistd.h>
+#include <folly/ssl/Init.h>
 
 namespace {
 #ifdef OPENSSL_IS_BORINGSSL
@@ -48,8 +49,8 @@ bool OpenSSLUtils::getTLSMasterKey(
     return true;
   }
 #else
-  (SSL_SESSION*)session;
-  (MutableByteRange) keyOut;
+  (void)session;
+  (void)keyOut;
 #endif
   return false;
 }
@@ -65,15 +66,16 @@ bool OpenSSLUtils::getTLSClientRandom(
     return true;
   }
 #else
-  (SSL*)ssl;
-  (MutableByteRange) randomOut;
+  (void)ssl;
+  (void)randomOut;
 #endif
   return false;
 }
 
-bool OpenSSLUtils::getPeerAddressFromX509StoreCtx(X509_STORE_CTX* ctx,
-                                                  sockaddr_storage* addrStorage,
-                                                  socklen_t* addrLen) {
+bool OpenSSLUtils::getPeerAddressFromX509StoreCtx(
+    X509_STORE_CTX* ctx,
+    sockaddr_storage* addrStorage,
+    socklen_t* addrLen) {
   // Grab the ssl idx and then the ssl object so that we can get the peer
   // name to compare against the ips in the subjectAltName
   auto sslIdx = SSL_get_ex_data_X509_STORE_CTX_idx();
@@ -93,9 +95,10 @@ bool OpenSSLUtils::getPeerAddressFromX509StoreCtx(X509_STORE_CTX* ctx,
   return true;
 }
 
-bool OpenSSLUtils::validatePeerCertNames(X509* cert,
-                                         const sockaddr* addr,
-                                         socklen_t /* addrLen */) {
+bool OpenSSLUtils::validatePeerCertNames(
+    X509* cert,
+    const sockaddr* addr,
+    socklen_t /* addrLen */) {
   // Try to extract the names within the SAN extension from the certificate
   auto altNames = reinterpret_cast<STACK_OF(GENERAL_NAME)*>(
       X509_get_ext_d2i(cert, NID_subject_alt_name, nullptr, nullptr));
@@ -147,12 +150,15 @@ bool OpenSSLUtils::validatePeerCertNames(X509* cert,
 }
 
 static std::unordered_map<uint16_t, std::string> getOpenSSLCipherNames() {
+  folly::ssl::init();
   std::unordered_map<uint16_t, std::string> ret;
   SSL_CTX* ctx = nullptr;
   SSL* ssl = nullptr;
 
-  const SSL_METHOD* meth = SSLv23_server_method();
+  const SSL_METHOD* meth = TLS_server_method();
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
   OpenSSL_add_ssl_algorithms();
+#endif
 
   if ((ctx = SSL_CTX_new(meth)) == nullptr) {
     return ret;
@@ -285,29 +291,37 @@ void* OpenSSLUtils::getBioAppData(BIO* b) {
 #endif
 }
 
-int OpenSSLUtils::getBioFd(BIO* b, int* fd) {
+NetworkSocket OpenSSLUtils::getBioFd(BIO* b) {
+  auto ret = BIO_get_fd(b, nullptr);
 #ifdef _WIN32
-  int ret = portability::sockets::socket_to_fd((SOCKET)BIO_get_fd(b, fd));
-  if (fd != nullptr) {
-    *fd = ret;
-  }
-  return ret;
+  return NetworkSocket((SOCKET)ret);
 #else
-  return BIO_get_fd(b, fd);
+  return NetworkSocket(ret);
 #endif
 }
 
-void OpenSSLUtils::setBioFd(BIO* b, int fd, int flags) {
+void OpenSSLUtils::setBioFd(BIO* b, NetworkSocket fd, int flags) {
 #ifdef _WIN32
-  SOCKET socket = portability::sockets::fd_to_socket(fd);
   // Internally OpenSSL uses this as an int for reasons completely
   // beyond any form of sanity, so we do the cast ourselves to avoid
   // the warnings that would be generated.
-  int sock = int(socket);
+  int sock = int(fd.data);
 #else
-  int sock = fd;
+  int sock = fd.toFd();
 #endif
   BIO_set_fd(b, sock, flags);
+}
+
+std::string OpenSSLUtils::getCommonName(X509* x509) {
+  if (x509 == nullptr) {
+    return "";
+  }
+  X509_NAME* subject = X509_get_subject_name(x509);
+  std::string cn;
+  cn.resize(ub_common_name);
+  X509_NAME_get_text_by_NID(
+      subject, NID_commonName, const_cast<char*>(cn.data()), ub_common_name);
+  return cn;
 }
 
 } // namespace ssl
@@ -319,30 +333,30 @@ namespace {
 static int boringssl_bio_fd_non_fatal_error(int err) {
   if (
 #ifdef EWOULDBLOCK
-    err == EWOULDBLOCK ||
+      err == EWOULDBLOCK ||
 #endif
 #ifdef WSAEWOULDBLOCK
-    err == WSAEWOULDBLOCK ||
+      err == WSAEWOULDBLOCK ||
 #endif
 #ifdef ENOTCONN
-    err == ENOTCONN ||
+      err == ENOTCONN ||
 #endif
 #ifdef EINTR
-    err == EINTR ||
+      err == EINTR ||
 #endif
 #ifdef EAGAIN
-    err == EAGAIN ||
+      err == EAGAIN ||
 #endif
 #ifdef EPROTO
-    err == EPROTO ||
+      err == EPROTO ||
 #endif
 #ifdef EINPROGRESS
-    err == EINPROGRESS ||
+      err == EINPROGRESS ||
 #endif
 #ifdef EALREADY
-    err == EALREADY ||
+      err == EALREADY ||
 #endif
-    0) {
+      0) {
     return 1;
   }
   return 0;

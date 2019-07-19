@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -125,9 +125,12 @@
 #include <folly/Executor.h>
 #include <folly/Memory.h>
 #include <folly/Synchronized.h>
+#include <folly/detail/Singleton.h>
 #include <folly/detail/StaticSingletonManager.h>
 #include <folly/experimental/ReadMostlySharedPtr.h>
 #include <folly/hash/Hash.h>
+#include <folly/lang/Exception.h>
+#include <folly/memory/SanitizeLeak.h>
 #include <folly/synchronization/Baton.h>
 #include <folly/synchronization/RWSpinLock.h>
 
@@ -135,6 +138,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <functional>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -180,21 +184,16 @@ class SingletonVault;
 
 namespace detail {
 
-struct DefaultTag {};
-
 // A TypeDescriptor is the unique handle for a given singleton.  It is
 // a combinaiton of the type and of the optional name, and is used as
 // a key in unordered_maps.
 class TypeDescriptor {
  public:
-  TypeDescriptor(const std::type_info& ti,
-                 const std::type_info& tag_ti)
-      : ti_(ti), tag_ti_(tag_ti) {
-  }
+  TypeDescriptor(const std::type_info& ti, const std::type_info& tag_ti)
+      : ti_(ti), tag_ti_(tag_ti) {}
 
   TypeDescriptor(const TypeDescriptor& other)
-      : ti_(other.ti_), tag_ti_(other.tag_ti_) {
-  }
+      : ti_(other.ti_), tag_ti_(other.tag_ti_) {}
 
   TypeDescriptor& operator=(const TypeDescriptor& other) {
     if (this != &other) {
@@ -271,11 +270,9 @@ struct SingletonVaultState {
       Type expected,
       const char* msg = "Unexpected singleton state change") const {
     if (expected != state) {
-      throwUnexpectedState(msg);
+      throw_exception<std::logic_error>(msg);
     }
   }
-
-  [[noreturn]] static void throwUnexpectedState(const char* msg);
 };
 
 // This interface is used by SingletonVault to interact with SingletonHolders.
@@ -283,7 +280,8 @@ struct SingletonVaultState {
 // SingletonHolders.
 class SingletonHolderBase {
  public:
-  explicit SingletonHolderBase(TypeDescriptor typeDesc) : type_(typeDesc) {}
+  explicit SingletonHolderBase(TypeDescriptor typeDesc) noexcept
+      : type_(typeDesc) {}
   virtual ~SingletonHolderBase() = default;
 
   TypeDescriptor type() const {
@@ -315,6 +313,7 @@ struct SingletonHolder : public SingletonHolderBase {
   inline std::weak_ptr<T> get_weak();
   inline std::shared_ptr<T> try_get();
   inline folly::ReadMostlySharedPtr<T> try_get_fast();
+  inline void vivify();
 
   void registerSingleton(CreateFunc c, TeardownFunc t);
   void registerSingletonMock(CreateFunc c, TeardownFunc t);
@@ -325,7 +324,10 @@ struct SingletonHolder : public SingletonHolderBase {
   void destroyInstance() override;
 
  private:
-  SingletonHolder(TypeDescriptor type, SingletonVault& vault);
+  template <typename Tag, typename VaultTag>
+  struct Impl;
+
+  SingletonHolder(TypeDescriptor type, SingletonVault& vault) noexcept;
 
   enum class SingletonHolderState {
     NotRegistered,
@@ -343,7 +345,7 @@ struct SingletonHolder : public SingletonHolderBase {
   std::atomic<SingletonHolderState> state_{SingletonHolderState::NotRegistered};
 
   // the thread creating the singleton (only valid while creating an object)
-  std::atomic<std::thread::id> creating_thread_;
+  std::atomic<std::thread::id> creating_thread_{};
 
   // The singleton itself and related functions.
 
@@ -395,8 +397,12 @@ class SingletonVault {
    */
   struct ScopedExpunger {
     SingletonVault* vault;
-    explicit ScopedExpunger(SingletonVault* v) : vault(v) { expunge(); }
-    ~ScopedExpunger() { expunge(); }
+    explicit ScopedExpunger(SingletonVault* v) : vault(v) {
+      expunge();
+    }
+    ~ScopedExpunger() {
+      expunge();
+    }
     void expunge() {
       vault->destroyInstances();
       vault->reenableInstances();
@@ -405,7 +411,8 @@ class SingletonVault {
 
   static Type defaultVaultType();
 
-  explicit SingletonVault(Type type = defaultVaultType()) : type_(type) {}
+  explicit SingletonVault(Type type = defaultVaultType()) noexcept
+      : type_(type) {}
 
   // Destructor is only called by unit tests to check destroyInstances.
   ~SingletonVault();
@@ -499,17 +506,7 @@ class SingletonVault {
   // tests only.
   template <typename VaultTag = detail::DefaultTag>
   static SingletonVault* singleton() {
-    /* library-local */ static auto vault =
-        detail::createGlobal<SingletonVault, VaultTag>();
-    return vault;
-  }
-
-  typedef std::string(*StackTraceGetterPtr)();
-
-  static std::atomic<StackTraceGetterPtr>& stackTraceGetter() {
-    /* library-local */ static auto stackTraceGetterPtr = detail::
-        createGlobal<std::atomic<StackTraceGetterPtr>, SingletonVault>();
-    return *stackTraceGetterPtr;
+    return &detail::createGlobal<SingletonVault, VaultTag>();
   }
 
   void setType(Type type) {
@@ -533,13 +530,22 @@ class SingletonVault {
   //    any of the singletons managed by folly::Singleton was requested.
   static void scheduleDestroyInstances();
 
-  typedef std::unordered_map<detail::TypeDescriptor,
-                             detail::SingletonHolderBase*,
-                             detail::TypeDescriptorHasher> SingletonMap;
-  Synchronized<SingletonMap> singletons_;
-  Synchronized<std::unordered_set<detail::SingletonHolderBase*>>
+  typedef std::unordered_map<
+      detail::TypeDescriptor,
+      detail::SingletonHolderBase*,
+      detail::TypeDescriptorHasher>
+      SingletonMap;
+
+  // Use SharedMutexSuppressTSAN to suppress noisy lock inversions when building
+  // with TSAN. If TSAN is not enabled, SharedMutexSuppressTSAN is equivalent
+  // to a normal SharedMutex.
+  Synchronized<SingletonMap, SharedMutexSuppressTSAN> singletons_;
+  Synchronized<
+      std::unordered_set<detail::SingletonHolderBase*>,
+      SharedMutexSuppressTSAN>
       eagerInitSingletons_;
-  Synchronized<std::vector<detail::TypeDescriptor>> creationOrder_;
+  Synchronized<std::vector<detail::TypeDescriptor>, SharedMutexSuppressTSAN>
+      creationOrder_;
 
   // Using SharedMutexReadPriority is important here, because we want to make
   // sure we don't block nested singleton creation happening concurrently with
@@ -566,15 +572,17 @@ class Singleton {
   // Generally your program life cycle should be fine with calling
   // get() repeatedly rather than saving the reference, and then not
   // call get() during process shutdown.
-  FOLLY_DEPRECATED("Replaced by try_get")
-  static T* get() { return getEntry().get(); }
+  [[deprecated("Replaced by try_get")]] static T* get() {
+    return getEntry().get();
+  }
 
   // If, however, you do need to hold a reference to the specific
   // singleton, you can try to do so with a weak_ptr.  Avoid this when
   // possible but the inability to lock the weak pointer can be a
   // signal that the vault has been destroyed.
-  FOLLY_DEPRECATED("Replaced by try_get")
-  static std::weak_ptr<T> get_weak() { return getEntry().get_weak(); }
+  [[deprecated("Replaced by try_get")]] static std::weak_ptr<T> get_weak() {
+    return getEntry().get_weak();
+  }
 
   // Preferred alternative to get_weak, it returns shared_ptr that can be
   // stored; a singleton won't be destroyed unless shared_ptr is destroyed.
@@ -591,12 +599,19 @@ class Singleton {
     return getEntry().try_get_fast();
   }
 
-  explicit Singleton(std::nullptr_t /* _ */ = nullptr,
-                     typename Singleton::TeardownFunc t = nullptr)
+  // Quickly ensure the instance exists.
+  static void vivify() {
+    getEntry().vivify();
+  }
+
+  explicit Singleton(
+      std::nullptr_t /* _ */ = nullptr,
+      typename Singleton::TeardownFunc t = nullptr)
       : Singleton([]() { return new T; }, std::move(t)) {}
 
-  explicit Singleton(typename Singleton::CreateFunc c,
-                     typename Singleton::TeardownFunc t = nullptr) {
+  explicit Singleton(
+      typename Singleton::CreateFunc c,
+      typename Singleton::TeardownFunc t = nullptr) {
     if (c == nullptr) {
       detail::singletonThrowNullCreator(typeid(T));
     }
@@ -629,22 +644,24 @@ class Singleton {
   }
 
   /**
-  * Construct and inject a mock singleton which should be used only from tests.
-  * Unlike regular singletons which are initialized once per process lifetime,
-  * mock singletons live for the duration of a test. This means that one process
-  * running multiple tests can initialize and register the same singleton
-  * multiple times. This functionality should be used only from tests
-  * since it relaxes validation and performance in order to be able to perform
-  * the injection. The returned mock singleton is functionality identical to
-  * regular singletons.
-  */
-  static void make_mock(std::nullptr_t /* c */ = nullptr,
-                        typename Singleton<T>::TeardownFunc t = nullptr) {
+   * Construct and inject a mock singleton which should be used only from tests.
+   * Unlike regular singletons which are initialized once per process lifetime,
+   * mock singletons live for the duration of a test. This means that one
+   * process running multiple tests can initialize and register the same
+   * singleton multiple times. This functionality should be used only from tests
+   * since it relaxes validation and performance in order to be able to perform
+   * the injection. The returned mock singleton is functionality identical to
+   * regular singletons.
+   */
+  static void make_mock(
+      std::nullptr_t /* c */ = nullptr,
+      typename Singleton<T>::TeardownFunc t = nullptr) {
     make_mock([]() { return new T; }, t);
   }
 
-  static void make_mock(CreateFunc c,
-                        typename Singleton<T>::TeardownFunc t = nullptr) {
+  static void make_mock(
+      CreateFunc c,
+      typename Singleton<T>::TeardownFunc t = nullptr) {
     if (c == nullptr) {
       detail::singletonThrowNullCreator(typeid(T));
     }
@@ -661,9 +678,9 @@ class Singleton {
 
   // Construct TeardownFunc.
   static typename detail::SingletonHolder<T>::TeardownFunc getTeardownFunc(
-      TeardownFunc t)  {
+      TeardownFunc t) {
     if (t == nullptr) {
-      return  [](T* v) { delete v; };
+      return [](T* v) { delete v; };
     } else {
       return t;
     }
@@ -686,7 +703,9 @@ class LeakySingleton {
     entry.state = State::Dead;
   }
 
-  static T& get() { return instance(); }
+  static T& get() {
+    return instance();
+  }
 
   static void make_mock(std::nullptr_t /* c */ = nullptr) {
     make_mock([]() { return new T; });
@@ -698,6 +717,9 @@ class LeakySingleton {
     }
 
     auto& entry = entryInstance();
+    if (entry.ptr) {
+      annotate_object_leaked(std::exchange(entry.ptr, nullptr));
+    }
     entry.createFunc = createFunc;
     entry.state = State::Dead;
   }
@@ -706,7 +728,7 @@ class LeakySingleton {
   enum class State { NotRegistered, Dead, Living };
 
   struct Entry {
-    Entry() {}
+    Entry() noexcept {}
     Entry(const Entry&) = delete;
     Entry& operator=(const Entry&) = delete;
 
@@ -718,8 +740,7 @@ class LeakySingleton {
   };
 
   static Entry& entryInstance() {
-    /* library-local */ static auto entry = detail::createGlobal<Entry, Tag>();
-    return *entry;
+    return detail::createGlobal<Entry, Tag>();
   }
 
   static T& instance() {

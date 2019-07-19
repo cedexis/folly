@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2015-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -114,13 +114,15 @@ TEST(SharedPromise, moveMove) {
   auto f1 = p.getFuture();
   auto f2 = p.getFuture();
   auto p2 = std::move(p);
+  EXPECT_EQ(2, p2.size());
   p = std::move(p2);
+  EXPECT_EQ(0, p2.size());
   p.setValue(std::make_shared<int>(1));
 }
 
 TEST(SharedPromise, setWith) {
   SharedPromise<int> p;
-  p.setWith([]{ return 1; });
+  p.setWith([] { return 1; });
   EXPECT_EQ(1, p.getFuture().value());
 }
 
@@ -133,6 +135,7 @@ TEST(SharedPromise, isFulfilled) {
   EXPECT_TRUE(p2.isFulfilled());
   p = std::move(p2);
   EXPECT_TRUE(p.isFulfilled());
+  EXPECT_FALSE(p2.isFulfilled());
 }
 
 TEST(SharedPromise, interruptHandler) {

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -111,7 +111,7 @@ int posix_fallocate(int fd, off_t offset, off_t len) {
   // can't exactly pre-allocate on windows anyways.
   return 0;
 }
-}
-}
-}
+} // namespace fcntl
+} // namespace portability
+} // namespace folly
 #endif

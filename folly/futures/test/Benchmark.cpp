@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@
 #include <folly/executors/InlineExecutor.h>
 #include <folly/futures/Future.h>
 #include <folly/futures/Promise.h>
+#include <folly/futures/test/TestExecutor.h>
 #include <folly/portability/GFlags.h>
 #include <folly/portability/Semaphore.h>
 #include <folly/synchronization/Baton.h>
@@ -33,11 +34,29 @@ T incr(Try<T>&& t) {
   return t.value() + 1;
 }
 
+Future<int> thens(Future<int> f, size_t n, bool runInline = false) {
+  for (size_t i = 0; i < n; i++) {
+    if (runInline) {
+      f = std::move(f).thenInline(incr<int>);
+    } else {
+      f = std::move(f).then(incr<int>);
+    }
+  }
+  return f;
+}
+
 void someThens(size_t n) {
   auto f = makeFuture<int>(42);
-  for (size_t i = 0; i < n; i++) {
-    f = f.then(incr<int>);
-  }
+  f = thens(std::move(f), n);
+}
+
+void someThensOnThread(size_t n, bool runInline = false) {
+  auto executor = std::make_unique<TestExecutor>(1);
+  auto f = makeFuture<int>(42).via(executor.get());
+  f = thens(std::move(f), n / 2, runInline);
+  f = thens(std::move(f), 1, false);
+  f = thens(std::move(f), n / 2, runInline);
+  f.wait();
 }
 
 } // namespace
@@ -61,7 +80,7 @@ BENCHMARK_RELATIVE(withThen) {
 }
 
 // thens
-BENCHMARK_DRAW_LINE()
+BENCHMARK_DRAW_LINE();
 
 BENCHMARK(oneThen) {
   someThens(1);
@@ -82,10 +101,32 @@ BENCHMARK_RELATIVE(hundredThens) {
   someThens(100);
 }
 
+BENCHMARK_DRAW_LINE();
+
+// look for >= 25% relative
+BENCHMARK_RELATIVE(fourThensOnThread) {
+  someThensOnThread(4);
+}
+
+// look for >= 25% relative
+BENCHMARK_RELATIVE(fourThensOnThreadInline) {
+  someThensOnThread(4, true);
+}
+
+// look for >= 1% relative
+BENCHMARK_RELATIVE(hundredThensOnThread) {
+  someThensOnThread(100);
+}
+
+// look for >= 1% relative
+BENCHMARK_RELATIVE(hundredThensOnThreadInline) {
+  someThensOnThread(100, true);
+}
+
 // Lock contention. Although in practice fulfills tend to be temporally
 // separate from then()s, still sometimes they will be concurrent. So the
 // higher this number is, the better.
-BENCHMARK_DRAW_LINE()
+BENCHMARK_DRAW_LINE();
 
 BENCHMARK(no_contention) {
   std::vector<Promise<int>> promises(10000);
@@ -98,15 +139,15 @@ BENCHMARK(no_contention) {
       futures.push_back(p.getFuture());
     }
 
-    consumer = std::thread([&]{
+    consumer = std::thread([&] {
       b1.post();
       for (auto& f : futures) {
-        f.then(incr<int>);
+        std::move(f).then(incr<int>);
       }
     });
     consumer.join();
 
-    producer = std::thread([&]{
+    producer = std::thread([&] {
       b2.post();
       for (auto& p : promises) {
         p.setValue(42);
@@ -134,15 +175,15 @@ BENCHMARK_RELATIVE(contention) {
       futures.push_back(p.getFuture());
     }
 
-    consumer = std::thread([&]{
+    consumer = std::thread([&] {
       b1.post();
       for (auto& f : futures) {
         sem_wait(&sem);
-        f.then(incr<int>);
+        std::move(f).then(incr<int>);
       }
     });
 
-    producer = std::thread([&]{
+    producer = std::thread([&] {
       b2.post();
       for (auto& p : promises) {
         sem_post(&sem);
@@ -175,11 +216,11 @@ BENCHMARK_DRAW_LINE();
 // The old way. Throw an exception, and rethrow to access it upstream.
 void throwAndCatchImpl() {
   makeFuture()
-      .then([](Try<Unit>&&){ throw std::runtime_error("oh no"); })
+      .then([](Try<Unit>&&) { throw std::runtime_error("oh no"); })
       .then([](Try<Unit>&& t) {
         try {
           t.value();
-        } catch(const std::runtime_error& e) {
+        } catch (const std::runtime_error& e) {
           // ...
           return;
         }
@@ -208,13 +249,13 @@ void throwAndCatchWrappedImpl() {
 // Better. Wrap an exception, and rethrow to access it upstream.
 void throwWrappedAndCatchImpl() {
   makeFuture()
-      .then([](Try<Unit>&&){
+      .then([](Try<Unit>&&) {
         return makeFuture<Unit>(std::runtime_error("oh no"));
       })
       .then([](Try<Unit>&& t) {
         try {
           t.value();
-        } catch(const std::runtime_error& e) {
+        } catch (const std::runtime_error& e) {
           // ...
           return;
         }
@@ -238,15 +279,15 @@ void throwWrappedAndCatchWrappedImpl() {
 }
 
 // Simulate heavy contention on func
-void contend(void(*func)()) {
+void contend(void (*func)()) {
   folly::BenchmarkSuspender s;
   const int N = 100;
   const int iters = 1000;
   pthread_barrier_t barrier;
-  pthread_barrier_init(&barrier, nullptr, N+1);
+  pthread_barrier_init(&barrier, nullptr, N + 1);
   std::vector<std::thread> threads;
   for (int i = 0; i < N; i++) {
-    threads.push_back(std::thread([&](){
+    threads.push_back(std::thread([&]() {
       pthread_barrier_wait(&barrier);
       for (int j = 0; j < iters; j++) {
         func();
@@ -319,7 +360,7 @@ BENCHMARK(lvalue_get) {
   Optional<Future<Bulky>> future;
   future = makeFuture(Bulky("Hello"));
   suspender.dismissing([&] {
-    std::string message = future.value().get().message();
+    std::string message = std::move(future.value()).get().message();
     doNotOptimizeAway(message);
   });
 }
@@ -340,19 +381,11 @@ template <class T>
 Future<T> fGen() {
   Promise<T> p;
   auto f = p.getFuture()
-    .then([] (T&& t) {
-      return std::move(t);
-    })
-    .then([] (T&& t) {
-      return makeFuture(std::move(t));
-    })
-    .via(&exe)
-    .then([] (T&& t) {
-      return std::move(t);
-    })
-    .then([] (T&& t) {
-      return makeFuture(std::move(t));
-    });
+               .thenValue([](T&& t) { return std::move(t); })
+               .thenValue([](T&& t) { return makeFuture(std::move(t)); })
+               .via(&exe)
+               .thenValue([](T&& t) { return std::move(t); })
+               .thenValue([](T&& t) { return makeFuture(std::move(t)); });
   p.setValue(T());
   return f;
 }
@@ -371,12 +404,8 @@ void complexBenchmark() {
   collect(fsGen<T>());
   collectAll(fsGen<T>());
   collectAny(fsGen<T>());
-  futures::map(fsGen<T>(), [] (const T& t) {
-    return t;
-  });
-  futures::map(fsGen<T>(), [] (const T& t) {
-    return makeFuture(T(t));
-  });
+  futures::mapValue(fsGen<T>(), [](const T& t) { return t; });
+  futures::mapValue(fsGen<T>(), [](const T& t) { return makeFuture(T(t)); });
 }
 
 BENCHMARK_DRAW_LINE();

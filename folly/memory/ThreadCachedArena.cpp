@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2012-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,14 +21,13 @@
 namespace folly {
 
 ThreadCachedArena::ThreadCachedArena(size_t minBlockSize, size_t maxAlign)
-  : minBlockSize_(minBlockSize), maxAlign_(maxAlign) {
-}
+    : minBlockSize_(minBlockSize), maxAlign_(maxAlign) {}
 
 SysArena* ThreadCachedArena::allocateThreadLocalArena() {
   SysArena* arena =
-    new SysArena(minBlockSize_, SysArena::kNoSizeLimit, maxAlign_);
-  auto disposer = [this] (SysArena* t, TLPDestructionMode mode) {
-    std::unique_ptr<SysArena> tp(t);  // ensure it gets deleted
+      new SysArena(minBlockSize_, SysArena::kNoSizeLimit, maxAlign_);
+  auto disposer = [this](SysArena* t, TLPDestructionMode mode) {
+    std::unique_ptr<SysArena> tp(t); // ensure it gets deleted
     if (mode == TLPDestructionMode::THIS_THREAD) {
       zombify(std::move(*t));
     }

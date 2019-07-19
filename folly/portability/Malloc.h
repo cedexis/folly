@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@
 #if (defined(USE_JEMALLOC) || defined(FOLLY_USE_JEMALLOC)) && !FOLLY_SANITIZE
 // JEMalloc provides it's own implementation of
 // malloc_usable_size, and that's what we should be using.
-#include <jemalloc/jemalloc.h>
+#include <jemalloc/jemalloc.h> // @manual
 #else
 #ifndef __APPLE__
 #include <malloc.h>

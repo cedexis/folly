@@ -462,18 +462,18 @@ void testDeprecated() {
   auto obj2 = obj;
   EXPECT_EQ(1000, obj2->size());
 
-  SYNCHRONIZED (obj) {
+  SYNCHRONIZED(obj) {
     obj.push_back(10);
     EXPECT_EQ(1001, obj.size());
     EXPECT_EQ(10, obj.back());
     EXPECT_EQ(1000, obj2->size());
   }
 
-  SYNCHRONIZED_CONST (obj) {
+  SYNCHRONIZED_CONST(obj) {
     EXPECT_EQ(1001, obj.size());
   }
 
-  SYNCHRONIZED (lockedObj, *&obj) {
+  SYNCHRONIZED(lockedObj, *&obj) {
     lockedObj.front() = 2;
   }
 
@@ -485,7 +485,8 @@ void testDeprecated() {
   EXPECT_EQ(FB_ARG_2_OR_1(1), 1);
 }
 
-template <class Mutex> void testConcurrency() {
+template <class Mutex>
+void testConcurrency() {
   folly::Synchronized<std::vector<int>, Mutex> v;
   static const size_t numThreads = 100;
   // Note: I initially tried using itersPerThread = 1000,
@@ -579,7 +580,8 @@ void testAcquireLockedWithConst() {
 }
 
 // Testing the deprecated SYNCHRONIZED_DUAL API
-template <class Mutex> void testDualLocking() {
+template <class Mutex>
+void testDualLocking() {
   folly::Synchronized<std::vector<int>, Mutex> v;
   folly::Synchronized<std::map<int, int>, Mutex> m;
 
@@ -611,7 +613,8 @@ template <class Mutex> void testDualLocking() {
 }
 
 // Testing the deprecated SYNCHRONIZED_DUAL API
-template <class Mutex> void testDualLockingWithConst() {
+template <class Mutex>
+void testDualLockingWithConst() {
   folly::Synchronized<std::vector<int>, Mutex> v;
   folly::Synchronized<std::map<int, int>, Mutex> m;
 
@@ -754,7 +757,8 @@ void testTimedShared() {
 }
 
 // Testing the deprecated TIMED_SYNCHRONIZED API
-template <class Mutex> void testTimedSynchronized() {
+template <class Mutex>
+void testTimedSynchronized() {
   folly::Synchronized<std::vector<int>, Mutex> v;
   folly::Synchronized<uint64_t, Mutex> numTimeouts;
 
@@ -800,7 +804,8 @@ template <class Mutex> void testTimedSynchronized() {
 }
 
 // Testing the deprecated TIMED_SYNCHRONIZED_CONST API
-template <class Mutex> void testTimedSynchronizedWithConst() {
+template <class Mutex>
+void testTimedSynchronizedWithConst() {
   folly::Synchronized<std::vector<int>, Mutex> v;
   folly::Synchronized<uint64_t, Mutex> numTimeouts;
 
@@ -852,13 +857,14 @@ template <class Mutex> void testTimedSynchronizedWithConst() {
             << *numTimeouts.contextualRLock() << " timeouts";
 }
 
-template <class Mutex> void testConstCopy() {
+template <class Mutex>
+void testConstCopy() {
   std::vector<int> input = {1, 2, 3};
   const folly::Synchronized<std::vector<int>, Mutex> v(input);
 
   std::vector<int> result;
 
-  v.copy(&result);
+  v.copyInto(result);
   EXPECT_EQ(input, result);
 
   result = v.copy();
@@ -873,9 +879,20 @@ struct NotCopiableNotMovable {
   NotCopiableNotMovable& operator=(NotCopiableNotMovable&&) = delete;
 };
 
-template <class Mutex> void testInPlaceConstruction() {
+template <class Mutex>
+void testInPlaceConstruction() {
   // This won't compile without in_place
   folly::Synchronized<NotCopiableNotMovable> a(folly::in_place, 5, "a");
+}
+
+template <class Mutex>
+void testExchange() {
+  std::vector<int> input = {1, 2, 3};
+  folly::Synchronized<std::vector<int>, Mutex> v(input);
+  std::vector<int> next = {4, 5, 6};
+  auto prev = v.exchange(std::move(next));
+  EXPECT_EQ((std::vector<int>{{1, 2, 3}}), prev);
+  EXPECT_EQ((std::vector<int>{{4, 5, 6}}), v.copy());
 }
 } // namespace sync_tests
 } // namespace folly

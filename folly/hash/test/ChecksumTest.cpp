@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2013-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@
 #include <boost/crc.hpp>
 
 #include <folly/Benchmark.h>
+#include <folly/Random.h>
 #include <folly/hash/Hash.h>
 #include <folly/hash/detail/ChecksumDetail.h>
 #include <folly/portability/GFlags.h>
@@ -36,37 +37,37 @@ struct ExpectedResult {
 
 ExpectedResult expectedResults[] = {
     // Zero-byte input
-    { 0, 0, ~0U },
+    {0, 0, ~0U},
     // Small aligned inputs to test special cases in SIMD implementations
-    { 8, 1, 1543413366 },
-    { 8, 2, 523493126 },
-    { 8, 3, 1560427360 },
-    { 8, 4, 3422504776 },
-    { 8, 5, 447841138 },
-    { 8, 6, 3910050499 },
-    { 8, 7, 3346241981 },
+    {8, 1, 1543413366},
+    {8, 2, 523493126},
+    {8, 3, 1560427360},
+    {8, 4, 3422504776},
+    {8, 5, 447841138},
+    {8, 6, 3910050499},
+    {8, 7, 3346241981},
     // Small unaligned inputs
-    { 9, 1, 3855826643 },
-    { 10, 2, 560880875 },
-    { 11, 3, 1479707779 },
-    { 12, 4, 2237687071 },
-    { 13, 5, 4063855784 },
-    { 14, 6, 2553454047 },
-    { 15, 7, 1349220140 },
+    {9, 1, 3855826643},
+    {10, 2, 560880875},
+    {11, 3, 1479707779},
+    {12, 4, 2237687071},
+    {13, 5, 4063855784},
+    {14, 6, 2553454047},
+    {15, 7, 1349220140},
     // Larger inputs to test leftover chunks at the end of aligned blocks
-    { 8, 8, 627613930 },
-    { 8, 9, 2105929409 },
-    { 8, 10, 2447068514 },
-    { 8, 11, 863807079 },
-    { 8, 12, 292050879 },
-    { 8, 13, 1411837737 },
-    { 8, 14, 2614515001 },
-    { 8, 15, 3579076296 },
-    { 8, 16, 2897079161 },
-    { 8, 17, 675168386 },
+    {8, 8, 627613930},
+    {8, 9, 2105929409},
+    {8, 10, 2447068514},
+    {8, 11, 863807079},
+    {8, 12, 292050879},
+    {8, 13, 1411837737},
+    {8, 14, 2614515001},
+    {8, 15, 3579076296},
+    {8, 16, 2897079161},
+    {8, 17, 675168386},
     // Much larger inputs
-    { 0, BUFFER_SIZE, 2096790750 },
-    { 1, BUFFER_SIZE / 2, 3854797577 },
+    {0, BUFFER_SIZE, 2096790750},
+    {1, BUFFER_SIZE / 2, 3854797577},
 };
 
 void testCRC32C(
@@ -81,11 +82,12 @@ void testCRC32CContinuation(
     std::function<uint32_t(const uint8_t*, size_t, uint32_t)> impl) {
   for (auto expected : expectedResults) {
     size_t partialLength = expected.length / 2;
-    uint32_t partialChecksum = impl(
-        buffer + expected.offset, partialLength, ~0U);
+    uint32_t partialChecksum =
+        impl(buffer + expected.offset, partialLength, ~0U);
     uint32_t result = impl(
         buffer + expected.offset + partialLength,
-        expected.length - partialLength, partialChecksum);
+        expected.length - partialLength,
+        partialChecksum);
     EXPECT_EQ(expected.crc32c, result);
   }
 }
@@ -111,13 +113,12 @@ TEST(Checksum, crc32c_continuation_software) {
   testCRC32CContinuation(folly::detail::crc32c_sw);
 }
 
-
 TEST(Checksum, crc32c_hardware) {
   if (folly::detail::crc32c_hw_supported()) {
     testCRC32C(folly::detail::crc32c_hw);
   } else {
-    LOG(WARNING) << "skipping hardware-accelerated CRC-32C tests" <<
-        " (not supported on this CPU)";
+    LOG(WARNING) << "skipping hardware-accelerated CRC-32C tests"
+                 << " (not supported on this CPU)";
   }
 }
 
@@ -138,8 +139,8 @@ TEST(Checksum, crc32c_continuation_hardware) {
   if (folly::detail::crc32c_hw_supported()) {
     testCRC32CContinuation(folly::detail::crc32c_hw);
   } else {
-    LOG(WARNING) << "skipping hardware-accelerated CRC-32C tests" <<
-        " (not supported on this CPU)";
+    LOG(WARNING) << "skipping hardware-accelerated CRC-32C tests"
+                 << " (not supported on this CPU)";
   }
 }
 
@@ -199,6 +200,28 @@ TEST(Checksum, crc32_type) {
   testMatchesBoost32Type();
 }
 
+TEST(Checksum, crc32_combine) {
+  for (size_t totlen = 1024; totlen < BUFFER_SIZE; totlen += BUFFER_SIZE / 8) {
+    auto mid = folly::Random::rand64(0, totlen);
+    auto crc1 = folly::crc32(&buffer[0], mid, 0);
+    auto crc2 = folly::crc32(&buffer[mid], totlen - mid, 0);
+    auto crcfull = folly::crc32(&buffer[0], totlen, 0);
+    auto combined = folly::crc32_combine(crc1, crc2, totlen - mid);
+    EXPECT_EQ(combined, crcfull);
+  }
+}
+
+TEST(Checksum, crc32c_combine) {
+  for (size_t totlen = 1024; totlen < BUFFER_SIZE; totlen += BUFFER_SIZE / 8) {
+    auto mid = folly::Random::rand64(0, totlen);
+    auto crc1 = folly::crc32c(&buffer[0], mid, 0);
+    auto crc2 = folly::crc32c(&buffer[mid], totlen - mid, 0);
+    auto crcfull = folly::crc32c(&buffer[0], totlen, 0);
+    auto combined = folly::crc32c_combine(crc1, crc2, totlen - mid);
+    EXPECT_EQ(combined, crcfull);
+  }
+}
+
 void benchmarkHardwareCRC32C(unsigned long iters, size_t blockSize) {
   if (folly::detail::crc32c_hw_supported()) {
     uint32_t checksum;
@@ -207,8 +230,8 @@ void benchmarkHardwareCRC32C(unsigned long iters, size_t blockSize) {
       folly::doNotOptimizeAway(checksum);
     }
   } else {
-    LOG(WARNING) << "skipping hardware-accelerated CRC-32C benchmarks" <<
-        " (not supported on this CPU)";
+    LOG(WARNING) << "skipping hardware-accelerated CRC-32C benchmarks"
+                 << " (not supported on this CPU)";
   }
 }
 
@@ -238,6 +261,43 @@ void benchmarkSoftwareCRC32(unsigned long iters, size_t blockSize) {
   for (unsigned long i = 0; i < iters; i++) {
     checksum = folly::detail::crc32_sw(buffer, blockSize);
     folly::doNotOptimizeAway(checksum);
+  }
+}
+
+void benchmarkCombineHardwareCrc32(unsigned long iters, size_t blockSize) {
+  // Arbitrarily chosen checksums
+  uint32_t checksum1 = 0xEDB88320;
+  uint32_t checksum2 = 0x82F63B78;
+  uint32_t result;
+  for (unsigned long i = 0; i < iters; i++) {
+    result = folly::crc32_combine(checksum1, checksum2, blockSize);
+    folly::doNotOptimizeAway(result);
+  }
+}
+
+void benchmarkCombineSoftwareLinear(unsigned long iters, size_t blockSize) {
+  // Arbitrarily chosen checksums
+  std::vector<uint8_t> zbuffer;
+  zbuffer.reserve(blockSize);
+  memset(zbuffer.data(), 0, blockSize);
+  uint32_t checksum1 = 0xEDB88320;
+  uint32_t checksum2 = 0x82F63B78;
+  uint32_t result;
+  for (unsigned long i = 0; i < iters; i++) {
+    result = folly::crc32c(zbuffer.data(), blockSize, checksum1);
+    result ^= checksum2;
+    folly::doNotOptimizeAway(result);
+  }
+}
+
+void benchmarkCombineHardwareCrc32c(unsigned long iters, size_t blockSize) {
+  // Arbitrarily chosen checksums
+  uint32_t checksum1 = 0xEDB88320;
+  uint32_t checksum2 = 0x82F63B78;
+  uint32_t result;
+  for (unsigned long i = 0; i < iters; i++) {
+    result = folly::crc32c_combine(checksum1, checksum2, blockSize);
+    folly::doNotOptimizeAway(result);
   }
 }
 
@@ -295,6 +355,20 @@ BENCHMARK(crc32_hardware_512KB_block, iters) {
 
 BENCHMARK(crc32_software_512KB_block, iters) {
   benchmarkSoftwareCRC32(iters, 512 * 1024);
+}
+
+BENCHMARK_DRAW_LINE();
+
+BENCHMARK(crc32_combine_linear_512KB_block, iters) {
+  benchmarkCombineSoftwareLinear(iters, 512 * 1024);
+}
+
+BENCHMARK(crc32_combine_512KB_block, iters) {
+  benchmarkCombineHardwareCrc32(iters, 512 * 1024);
+}
+
+BENCHMARK(crc32c_combine_512KB_block, iters) {
+  benchmarkCombineHardwareCrc32c(iters, 512 * 1024);
 }
 
 int main(int argc, char** argv) {

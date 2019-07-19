@@ -1,5 +1,5 @@
 /*
- * Copyright 2011-present Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -263,7 +263,6 @@ void checkArrayIndex(const T& array, size_t index) {
 // @author: Rajat Goel (rajat)
 
 static int64_t handwrittenAtoi(const char* start, const char* end) {
-
   bool positive = true;
   int64_t retVal = 0;
 
@@ -305,14 +304,14 @@ static StringPiece pc1 = "1234567890123456789";
 
 void handwrittenAtoiMeasure(unsigned int n, unsigned int digits) {
   auto p = pc1.subpiece(pc1.size() - digits, digits);
-  FOR_EACH_RANGE(i, 0, n) {
+  FOR_EACH_RANGE (i, 0, n) {
     doNotOptimizeAway(handwrittenAtoi(p.begin(), p.end()));
   }
 }
 
 void follyAtoiMeasure(unsigned int n, unsigned int digits) {
   auto p = pc1.subpiece(pc1.size() - digits, digits);
-  FOR_EACH_RANGE(i, 0, n) {
+  FOR_EACH_RANGE (i, 0, n) {
     doNotOptimizeAway(folly::to<int64_t>(p.begin(), p.end()));
   }
 }
@@ -320,13 +319,13 @@ void follyAtoiMeasure(unsigned int n, unsigned int digits) {
 void clibAtoiMeasure(unsigned int n, unsigned int digits) {
   auto p = pc1.subpiece(pc1.size() - digits, digits);
   assert(*p.end() == 0);
-  FOR_EACH_RANGE(i, 0, n) { doNotOptimizeAway(atoll(p.begin())); }
+  FOR_EACH_RANGE (i, 0, n) { doNotOptimizeAway(atoll(p.begin())); }
 }
 
 void lexicalCastMeasure(unsigned int n, unsigned int digits) {
   auto p = pc1.subpiece(pc1.size() - digits, digits);
   assert(*p.end() == 0);
-  FOR_EACH_RANGE(i, 0, n) {
+  FOR_EACH_RANGE (i, 0, n) {
     doNotOptimizeAway(boost::lexical_cast<uint64_t>(p.begin()));
   }
 }
@@ -369,7 +368,7 @@ unsigned u64ToAsciiTable(uint64_t value, char* dst) {
 void u64ToAsciiTableBM(unsigned int n, size_t index) {
   checkArrayIndex(uint64Num, index);
   char buf[20];
-  FOR_EACH_RANGE(i, 0, n) {
+  FOR_EACH_RANGE (i, 0, n) {
     doNotOptimizeAway(u64ToAsciiTable(uint64Num[index] + (i % 8), buf));
   }
 }
@@ -399,7 +398,7 @@ unsigned u64ToAsciiClassic(uint64_t value, char* dst) {
 void u64ToAsciiClassicBM(unsigned int n, size_t index) {
   checkArrayIndex(uint64Num, index);
   char buf[20];
-  FOR_EACH_RANGE(i, 0, n) {
+  FOR_EACH_RANGE (i, 0, n) {
     doNotOptimizeAway(u64ToAsciiClassic(uint64Num[index] + (i % 8), buf));
   }
 }
@@ -407,7 +406,7 @@ void u64ToAsciiClassicBM(unsigned int n, size_t index) {
 void u64ToAsciiFollyBM(unsigned int n, size_t index) {
   checkArrayIndex(uint64Num, index);
   char buf[20];
-  FOR_EACH_RANGE(i, 0, n) {
+  FOR_EACH_RANGE (i, 0, n) {
     doNotOptimizeAway(uint64ToBufferUnsafe(uint64Num[index] + (i % 8), buf));
   }
 }
@@ -452,7 +451,7 @@ void i64ToStringFollyMeasureNeg(unsigned int n, size_t index) {
 void u2aAppendClassicBM(unsigned int n, size_t index) {
   checkArrayIndex(uint64Num, index);
   string s;
-  FOR_EACH_RANGE(i, 0, n) {
+  FOR_EACH_RANGE (i, 0, n) {
     // auto buf = &s.back() + 1;
     char buffer[20];
     s.append(buffer, u64ToAsciiClassic(uint64Num[index] + (i % 8), buffer));
@@ -463,7 +462,7 @@ void u2aAppendClassicBM(unsigned int n, size_t index) {
 void u2aAppendFollyBM(unsigned int n, size_t index) {
   checkArrayIndex(uint64Num, index);
   string s;
-  FOR_EACH_RANGE(i, 0, n) {
+  FOR_EACH_RANGE (i, 0, n) {
     // auto buf = &s.back() + 1;
     char buffer[20];
     s.append(buffer, uint64ToBufferUnsafe(uint64Num[index] + (i % 8), buffer));
@@ -476,8 +475,10 @@ struct StringIdenticalToBM {
   StringIdenticalToBM() {}
   void operator()(unsigned int n, size_t len) const {
     String s;
-    BENCHMARK_SUSPEND { s.append(len, '0'); }
-    FOR_EACH_RANGE(i, 0, n) {
+    BENCHMARK_SUSPEND {
+      s.append(len, '0');
+    }
+    FOR_EACH_RANGE (i, 0, n) {
       String result = to<String>(s);
       doNotOptimizeAway(result.size());
     }
@@ -489,8 +490,10 @@ struct StringVariadicToBM {
   StringVariadicToBM() {}
   void operator()(unsigned int n, size_t len) const {
     String s;
-    BENCHMARK_SUSPEND { s.append(len, '0'); }
-    FOR_EACH_RANGE(i, 0, n) {
+    BENCHMARK_SUSPEND {
+      s.append(len, '0');
+    }
+    FOR_EACH_RANGE (i, 0, n) {
       String result = to<String>(s, nullptr);
       doNotOptimizeAway(result.size());
     }
@@ -718,11 +721,11 @@ static const StringVariadicToBM<std::string> stringVariadicToBM;
 static const StringIdenticalToBM<fbstring> fbstringIdenticalToBM;
 static const StringVariadicToBM<fbstring> fbstringVariadicToBM;
 
-#define DEFINE_BENCHMARK_GROUP(n)                 \
-  BENCHMARK_PARAM(u64ToAsciiClassicBM, n);        \
-  BENCHMARK_RELATIVE_PARAM(u64ToAsciiTableBM, n); \
-  BENCHMARK_RELATIVE_PARAM(u64ToAsciiFollyBM, n); \
-  BENCHMARK_DRAW_LINE();
+#define DEFINE_BENCHMARK_GROUP(n)                \
+  BENCHMARK_PARAM(u64ToAsciiClassicBM, n)        \
+  BENCHMARK_RELATIVE_PARAM(u64ToAsciiTableBM, n) \
+  BENCHMARK_RELATIVE_PARAM(u64ToAsciiFollyBM, n) \
+  BENCHMARK_DRAW_LINE()
 
 DEFINE_BENCHMARK_GROUP(1);
 DEFINE_BENCHMARK_GROUP(2);
@@ -747,12 +750,12 @@ DEFINE_BENCHMARK_GROUP(20);
 
 #undef DEFINE_BENCHMARK_GROUP
 
-#define DEFINE_BENCHMARK_GROUP(n)                          \
-  BENCHMARK_PARAM(u64ToStringClibMeasure, n);              \
-  BENCHMARK_RELATIVE_PARAM(u64ToStringFollyMeasure, n);    \
-  BENCHMARK_RELATIVE_PARAM(i64ToStringFollyMeasurePos, n); \
-  BENCHMARK_RELATIVE_PARAM(i64ToStringFollyMeasureNeg, n); \
-  BENCHMARK_DRAW_LINE();
+#define DEFINE_BENCHMARK_GROUP(n)                         \
+  BENCHMARK_PARAM(u64ToStringClibMeasure, n)              \
+  BENCHMARK_RELATIVE_PARAM(u64ToStringFollyMeasure, n)    \
+  BENCHMARK_RELATIVE_PARAM(i64ToStringFollyMeasurePos, n) \
+  BENCHMARK_RELATIVE_PARAM(i64ToStringFollyMeasureNeg, n) \
+  BENCHMARK_DRAW_LINE()
 
 DEFINE_BENCHMARK_GROUP(1);
 DEFINE_BENCHMARK_GROUP(2);
@@ -775,8 +778,8 @@ DEFINE_BENCHMARK_GROUP(18);
 DEFINE_BENCHMARK_GROUP(19);
 
 // Only for u64
-BENCHMARK_PARAM(u64ToStringClibMeasure, 20);
-BENCHMARK_RELATIVE_PARAM(u64ToStringFollyMeasure, 20);
+BENCHMARK_PARAM(u64ToStringClibMeasure, 20)
+BENCHMARK_RELATIVE_PARAM(u64ToStringFollyMeasure, 20)
 BENCHMARK_DRAW_LINE();
 
 #undef DEFINE_BENCHMARK_GROUP
@@ -804,11 +807,11 @@ void i128ToStringFollyMeasureNeg(unsigned int n, size_t index) {
   }
 }
 
-#define DEFINE_BENCHMARK_GROUP(n)                           \
-  BENCHMARK_PARAM(u128ToStringFollyMeasure, n);             \
-  BENCHMARK_RELATIVE_PARAM(i128ToStringFollyMeasurePos, n); \
-  BENCHMARK_RELATIVE_PARAM(i128ToStringFollyMeasureNeg, n); \
-  BENCHMARK_DRAW_LINE();
+#define DEFINE_BENCHMARK_GROUP(n)                          \
+  BENCHMARK_PARAM(u128ToStringFollyMeasure, n)             \
+  BENCHMARK_RELATIVE_PARAM(i128ToStringFollyMeasurePos, n) \
+  BENCHMARK_RELATIVE_PARAM(i128ToStringFollyMeasureNeg, n) \
+  BENCHMARK_DRAW_LINE()
 
 DEFINE_BENCHMARK_GROUP(1);
 DEFINE_BENCHMARK_GROUP(2);
@@ -856,12 +859,12 @@ BENCHMARK_DRAW_LINE();
 
 #endif
 
-#define DEFINE_BENCHMARK_GROUP(n)                      \
-  BENCHMARK_PARAM(clibAtoiMeasure, n);                 \
-  BENCHMARK_RELATIVE_PARAM(lexicalCastMeasure, n);     \
-  BENCHMARK_RELATIVE_PARAM(handwrittenAtoiMeasure, n); \
-  BENCHMARK_RELATIVE_PARAM(follyAtoiMeasure, n);       \
-  BENCHMARK_DRAW_LINE();
+#define DEFINE_BENCHMARK_GROUP(n)                     \
+  BENCHMARK_PARAM(clibAtoiMeasure, n)                 \
+  BENCHMARK_RELATIVE_PARAM(lexicalCastMeasure, n)     \
+  BENCHMARK_RELATIVE_PARAM(handwrittenAtoiMeasure, n) \
+  BENCHMARK_RELATIVE_PARAM(follyAtoiMeasure, n)       \
+  BENCHMARK_DRAW_LINE()
 
 DEFINE_BENCHMARK_GROUP(1);
 DEFINE_BENCHMARK_GROUP(2);
@@ -885,10 +888,10 @@ DEFINE_BENCHMARK_GROUP(19);
 
 #undef DEFINE_BENCHMARK_GROUP
 
-#define DEFINE_BENCHMARK_GROUP(T, n)             \
-  BENCHMARK_PARAM(T##VariadicToBM, n);           \
-  BENCHMARK_RELATIVE_PARAM(T##IdenticalToBM, n); \
-  BENCHMARK_DRAW_LINE();
+#define DEFINE_BENCHMARK_GROUP(T, n)            \
+  BENCHMARK_PARAM(T##VariadicToBM, n)           \
+  BENCHMARK_RELATIVE_PARAM(T##IdenticalToBM, n) \
+  BENCHMARK_DRAW_LINE()
 
 DEFINE_BENCHMARK_GROUP(string, 32);
 DEFINE_BENCHMARK_GROUP(string, 1024);

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,12 +18,25 @@
 
 #include <atomic>
 #include <thread>
+#include <utility>
 
 #include <folly/executors/InlineExecutor.h>
-#include <folly/futures/FutureException.h>
 #include <folly/futures/detail/Core.h>
+#include <folly/lang/Pretty.h>
 
 namespace folly {
+
+namespace futures {
+namespace detail {
+template <typename T>
+void coreDetachPromiseMaybeWithResult(Core<T>& core) {
+  if (!core.hasResult()) {
+    core.setResult(Try<T>(exception_wrapper(BrokenPromise(pretty_name<T>()))));
+  }
+  core.detachPromise();
+}
+} // namespace detail
+} // namespace futures
 
 template <class T>
 Promise<T> Promise<T>::makeEmpty() noexcept {
@@ -31,37 +44,25 @@ Promise<T> Promise<T>::makeEmpty() noexcept {
 }
 
 template <class T>
-Promise<T>::Promise()
-    : retrieved_(false), core_(new futures::detail::Core<T>()) {}
+Promise<T>::Promise() : retrieved_(false), core_(Core::make()) {}
 
 template <class T>
 Promise<T>::Promise(Promise<T>&& other) noexcept
-    : retrieved_(other.retrieved_), core_(other.core_) {
-  other.core_ = nullptr;
-  other.retrieved_ = false;
-}
+    : retrieved_(std::exchange(other.retrieved_, false)),
+      core_(std::exchange(other.core_, nullptr)) {}
 
 template <class T>
 Promise<T>& Promise<T>::operator=(Promise<T>&& other) noexcept {
-  std::swap(core_, other.core_);
-  std::swap(retrieved_, other.retrieved_);
+  detach();
+  retrieved_ = std::exchange(other.retrieved_, false);
+  core_ = std::exchange(other.core_, nullptr);
   return *this;
 }
 
 template <class T>
-void Promise<T>::throwIfFulfilled() {
-  if (!core_) {
-    throwNoState();
-  }
-  if (core_->ready()) {
-    throwPromiseAlreadySatisfied();
-  }
-}
-
-template <class T>
-void Promise<T>::throwIfRetrieved() {
-  if (retrieved_) {
-    throwFutureAlreadyRetrieved();
+void Promise<T>::throwIfFulfilled() const {
+  if (getCore().hasResult()) {
+    throw_exception<PromiseAlreadySatisfied>();
   }
 }
 
@@ -80,16 +81,18 @@ void Promise<T>::detach() {
     if (!retrieved_) {
       core_->detachFuture();
     }
-    core_->detachPromise();
+    futures::detail::coreDetachPromiseMaybeWithResult(*core_);
     core_ = nullptr;
   }
 }
 
 template <class T>
 SemiFuture<T> Promise<T>::getSemiFuture() {
-  throwIfRetrieved();
+  if (retrieved_) {
+    throw_exception<FutureAlreadyRetrieved>();
+  }
   retrieved_ = true;
-  return SemiFuture<T>(core_);
+  return SemiFuture<T>(&getCore());
 }
 
 template <class T>
@@ -107,20 +110,14 @@ Promise<T>::setException(E const& e) {
 }
 
 template <class T>
-void Promise<T>::setException(std::exception_ptr const& ep) {
-  setException(exception_wrapper::from_exception_ptr(ep));
-}
-
-template <class T>
 void Promise<T>::setException(exception_wrapper ew) {
-  throwIfFulfilled();
-  core_->setResult(Try<T>(std::move(ew)));
+  setTry(Try<T>(std::move(ew)));
 }
 
 template <class T>
-void Promise<T>::setInterruptHandler(
-  std::function<void(exception_wrapper const&)> fn) {
-  core_->setInterruptHandler(std::move(fn));
+template <typename F>
+void Promise<T>::setInterruptHandler(F&& fn) {
+  getCore().setInterruptHandler(std::forward<F>(fn));
 }
 
 template <class T>
@@ -130,10 +127,15 @@ void Promise<T>::setTry(Try<T>&& t) {
 }
 
 template <class T>
+void Promise<T>::setTry(Executor::KeepAlive<>&& ka, Try<T>&& t) {
+  throwIfFulfilled();
+  core_->setResult(std::move(ka), std::move(t));
+}
+
+template <class T>
 template <class M>
 void Promise<T>::setValue(M&& v) {
-  static_assert(!std::is_same<T, void>::value,
-                "Use setValue() instead");
+  static_assert(!std::is_same<T, void>::value, "Use setValue() instead");
 
   setTry(Try<T>(std::forward<M>(v)));
 }

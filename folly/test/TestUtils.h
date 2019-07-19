@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2015-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,14 +19,14 @@
 /*
  * This file contains additional gtest-style check macros to use in unit tests.
  *
- * - SKIP()
+ * - SKIP(), SKIP_IF(EXPR)
  * - EXPECT_THROW_RE(), ASSERT_THROW_RE()
  * - EXPECT_THROW_ERRNO(), ASSERT_THROW_ERRNO()
  * - AreWithinSecs()
  *
- * Additionally, it includes a PrintTo() function for StringPiece.
- * Including this file in your tests will ensure that StringPiece is printed
- * nicely when used in EXPECT_EQ() or EXPECT_NE() checks.
+ * It also imports PrintTo() functions for StringPiece, FixedString and
+ * FBString. Including this file in your tests will ensure that they are printed
+ * as strings by googletest - for example in failing EXPECT_EQ() checks.
  */
 
 #include <chrono>
@@ -36,15 +36,63 @@
 
 #include <folly/Conv.h>
 #include <folly/ExceptionString.h>
+#include <folly/FBString.h>
+#include <folly/FixedString.h>
 #include <folly/Range.h>
 #include <folly/portability/GTest.h>
 
-// We use this to indicate that tests have failed because of timing
-// or dependencies that may be flakey. Internally this is used by
-// our test runner to retry the test. To gtest this will look like
-// a normal test failure; there is only an effect if the test framework
-// interprets the message.
-#define SKIP() GTEST_FATAL_FAILURE_("Test skipped by client")
+// SKIP() is used to mark a test skipped if we could not successfully execute
+// the test due to runtime issues or behavior that do not necessarily indicate
+// a problem with the code.
+//
+// It used to be that `googletest` did NOT have a built-in mechanism to
+// report tests as skipped a run time.  As of the following commit, it has
+// fairly complete support for the feature -- i.e.  `SKIP` does what you
+// expect both in test fixture `SetUp` and in `Environment::SetUp`, as well
+// as in the test body:
+//
+// https://github.com/google/googletest/commit/67c75ff8baf4228e857c09d3aaacd3f1ddf53a8f
+//
+// Open-source projects depending on folly may still use the latest release
+// googletest-1.8.1, which does not have that feature.  Therefore, for
+// backwards compatibility, our `SKIP` only uses `GTEST_SKIP_` when
+// available.
+//
+// Difference from vanilla `GTEST_SKIP`: The skip message diverges from
+// upstream's "Skipped" in order to conform with the historical message in
+// `folly`.  The intention is not to break tooling that depends on that
+// specific pattern.
+//
+// Differences between the new `GTEST_SKIP_` path and the old
+// `GTEST_MESSAGE_` path:
+//   - New path: `SKIP` in `SetUp` prevents the test from running.  Running
+//     the gtest main directly clearly marks SKIPPED tests.
+//   - Old path: Without `skipIsFailure`, `SKIP` in `SetUp` would
+//     unexpectedly execute the test, potentially causing segfaults or
+//     undefined behavior.  We would either report the test as successful or
+//     failed based on whether the `FOLLY_SKIP_AS_FAILURE` environment
+//     variable is set.  The default is to report the test as successful.
+//     Enabling FOLLY_SKIP_AS_FAILURE was to be used with a test harness
+//     that can identify the "Test skipped by client" in the failure message
+//     and convert this into a skipped test result.
+#ifdef GTEST_SKIP_
+#define SKIP(msg) GTEST_SKIP_("Test skipped by client")
+#else
+#define SKIP()                                       \
+  GTEST_AMBIGUOUS_ELSE_BLOCKER_                      \
+  return GTEST_MESSAGE_(                             \
+      "Test skipped by client",                      \
+      ::folly::test::detail::skipIsFailure()         \
+          ? ::testing::TestPartResult::kFatalFailure \
+          : ::testing::TestPartResult::kSuccess)
+#endif
+
+// Encapsulate conditional-skip, since it's nontrivial to get right.
+#define SKIP_IF(expr)           \
+  GTEST_AMBIGUOUS_ELSE_BLOCKER_ \
+  if (!(expr)) {                \
+  } else                        \
+    SKIP()
 
 #define TEST_THROW_ERRNO_(statement, errnoValue, fail)       \
   GTEST_AMBIGUOUS_ELSE_BLOCKER_                              \
@@ -125,6 +173,11 @@ AreWithinSecs(T1 val1, T2 val2, std::chrono::seconds acceptableDeltaSecs) {
 
 namespace detail {
 
+inline bool skipIsFailure() {
+  const char* p = getenv("FOLLY_SKIP_AS_FAILURE");
+  return p && (0 == strcmp(p, "1"));
+}
+
 /**
  * Helper class for implementing test macros
  */
@@ -166,10 +219,13 @@ CheckResult checkThrowErrno(Fn&& fn, int errnoValue, const char* statementStr) {
   try {
     fn();
   } catch (const std::system_error& ex) {
-    // TODO: POSIX errno values should really use std::generic_category(),
-    // but folly/Exception.h throws them with std::system_category() at the
-    // moment.
-    if (ex.code().category() != std::system_category()) {
+    // TODO: POSIX errno values should use std::generic_category(), but
+    // folly/Exception.h incorrectly throws them using std::system_category()
+    // at the moment.
+    // For now we also accept std::system_category so that we will also handle
+    // exceptions from folly/Exception.h correctly.
+    if (ex.code().category() != std::generic_category() &&
+        ex.code().category() != std::system_category()) {
       return CheckResult(false)
           << "Expected: " << statementStr << " throws an exception with errno "
           << errnoValue << " (" << std::generic_category().message(errnoValue)
@@ -245,16 +301,41 @@ CheckResult checkThrowRegex(
 } // namespace detail
 } // namespace test
 
-// Define a PrintTo() function for StringPiece, so that gtest checks
-// will print it as a string.  Without this gtest identifies StringPiece as a
-// container type, and therefore tries printing its elements individually,
-// despite the fact that there is an ostream operator<<() defined for
-// StringPiece.
-inline void PrintTo(StringPiece sp, ::std::ostream* os) {
-  // gtest's PrintToString() function will quote the string and escape internal
-  // quotes and non-printable characters, the same way gtest does for the
-  // standard string types.
-  *os << ::testing::PrintToString(sp.str());
+// Define PrintTo() functions for StringPiece/FixedString/fbstring, so that
+// gtest checks will print them as strings.  Without these gtest identifies them
+// as container types, and therefore tries printing the elements individually,
+// despite the fact that there is an ostream operator<<() defined for each of
+// them.
+//
+// gtest's PrintToString() function is used to quote the string and escape
+// internal quotes and non-printable characters, the same way gtest does for the
+// string types it directly supports.
+inline void PrintTo(StringPiece const& stringPiece, std::ostream* out) {
+  *out << ::testing::PrintToString(stringPiece.str());
 }
 
+inline void PrintTo(
+    Range<wchar_t const*> const& stringPiece,
+    std::ostream* out) {
+  *out << ::testing::PrintToString(
+      std::wstring(stringPiece.begin(), stringPiece.size()));
+}
+
+template <typename CharT, size_t N>
+void PrintTo(
+    BasicFixedString<CharT, N> const& someFixedString,
+    std::ostream* out) {
+  *out << ::testing::PrintToString(someFixedString.toStdString());
+}
+
+template <typename CharT, class Storage>
+void PrintTo(
+    basic_fbstring<
+        CharT,
+        std::char_traits<CharT>,
+        std::allocator<CharT>,
+        Storage> const& someFbString,
+    std::ostream* out) {
+  *out << ::testing::PrintToString(someFbString.toStdString());
+}
 } // namespace folly

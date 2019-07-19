@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2012-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,7 +23,8 @@
 // Some utilities used by AtomicHashArray and AtomicHashMap
 //
 
-namespace folly { namespace detail {
+namespace folly {
+namespace detail {
 
 template <typename Cond>
 void atomic_hash_spin_wait(Cond condition) {

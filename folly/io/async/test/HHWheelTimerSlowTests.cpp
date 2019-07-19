@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -52,13 +52,6 @@ class TestTimeout : public HHWheelTimer::Callback {
   std::deque<TimePoint> timestamps;
   std::deque<TimePoint> canceledTimestamps;
   std::function<void()> fn;
-};
-
-class TestTimeoutDelayed : public TestTimeout {
- protected:
-  std::chrono::steady_clock::time_point getCurTime() override {
-    return std::chrono::steady_clock::now() - milliseconds(5);
-  }
 };
 
 struct HHWheelTimerTest : public ::testing::Test {

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,6 +27,7 @@
 
 #include <openssl/asn1.h>
 #include <openssl/bio.h>
+#include <openssl/bn.h>
 #include <openssl/crypto.h>
 #include <openssl/dh.h>
 #include <openssl/err.h>
@@ -61,13 +62,13 @@
 #define FOLLY_OPENSSL_IS_110 (OPENSSL_VERSION_NUMBER >= 0x10100000L)
 #endif
 
-#if !OPENSSL_IS_BORINGSSL && !FOLLY_OPENSSL_IS_100 && !FOLLY_OPENSSL_IS_101 && \
-    !FOLLY_OPENSSL_IS_102 && !FOLLY_OPENSSL_IS_110
+#if !defined(OPENSSL_IS_BORINGSSL) && !FOLLY_OPENSSL_IS_100 && \
+    !FOLLY_OPENSSL_IS_101 && !FOLLY_OPENSSL_IS_102 && !FOLLY_OPENSSL_IS_110
 #warning Compiling with unsupported OpenSSL version
 #endif
 
 // BoringSSL and OpenSSL 0.9.8f later with TLS extension support SNI.
-#if OPENSSL_IS_BORINGSSL || \
+#if defined(OPENSSL_IS_BORINGSSL) || \
     (OPENSSL_VERSION_NUMBER >= 0x00908070L && !defined(OPENSSL_NO_TLSEXT))
 #define FOLLY_OPENSSL_HAS_SNI 1
 #else
@@ -75,11 +76,36 @@
 #endif
 
 // BoringSSL and OpenSSL 1.0.2 later with TLS extension support ALPN.
-#if OPENSSL_IS_BORINGSSL || \
+#if defined(OPENSSL_IS_BORINGSSL) || \
     (OPENSSL_VERSION_NUMBER >= 0x1000200fL && !defined(OPENSSL_NO_TLSEXT))
 #define FOLLY_OPENSSL_HAS_ALPN 1
 #else
 #define FOLLY_OPENSSL_HAS_ALPN 0
+#endif
+
+// OpenSSL 1.1.1 and above have TLS 1.3 support
+#if OPENSSL_VERSION_NUMBER >= 0x1010100fL
+#define FOLLY_OPENSSL_HAS_TLS13 1
+#else
+#define FOLLY_OPENSSL_HAS_TLS13 0
+#endif
+
+#if FOLLY_OPENSSL_IS_110 && \
+    (!defined(OPENSSL_NO_CHACHA) || !defined(OPENSSL_NO_POLY1305))
+#define FOLLY_OPENSSL_HAS_CHACHA 1
+#else
+#define FOLLY_OPENSSL_HAS_CHACHA 0
+#endif
+
+#if !FOLLY_OPENSSL_IS_110
+#define OPENSSL_VERSION SSLEAY_VERSION
+#define OpenSSL_version SSLeay_version
+#define OpenSSL_version_num SSLeay
+#endif
+
+#if !FOLLY_OPENSSL_IS_110
+#define X509_get0_notAfter X509_get_notAfter
+#define X509_get0_notBefore X509_get_notBefore
 #endif
 
 // This attempts to "unify" the OpenSSL libcrypto/libssl APIs between
@@ -92,7 +118,7 @@ namespace folly {
 namespace portability {
 namespace ssl {
 
-#if OPENSSL_IS_BORINGSSL
+#ifdef OPENSSL_IS_BORINGSSL
 int SSL_CTX_set1_sigalgs_list(SSL_CTX* ctx, const char* sigalgs_list);
 int TLS1_get_client_version(SSL* s);
 #endif
@@ -110,6 +136,10 @@ int X509_get_signature_nid(X509* cert);
 int SSL_CTX_up_ref(SSL_CTX* session);
 int SSL_SESSION_up_ref(SSL_SESSION* session);
 int X509_up_ref(X509* x);
+int X509_STORE_up_ref(X509_STORE* v);
+void X509_STORE_CTX_set0_verified_chain(
+    X509_STORE_CTX* ctx,
+    STACK_OF(X509) * sk);
 int EVP_PKEY_up_ref(EVP_PKEY* evp);
 void RSA_get0_key(
     const RSA* r,
@@ -123,9 +153,23 @@ EC_KEY* EVP_PKEY_get0_EC_KEY(EVP_PKEY* pkey);
 #endif
 
 #if !FOLLY_OPENSSL_IS_110
+BIO_METHOD* BIO_meth_new(int type, const char* name);
 void BIO_meth_free(BIO_METHOD* biom);
 int BIO_meth_set_read(BIO_METHOD* biom, int (*read)(BIO*, char*, int));
 int BIO_meth_set_write(BIO_METHOD* biom, int (*write)(BIO*, const char*, int));
+int BIO_meth_set_puts(BIO_METHOD* biom, int (*bputs)(BIO*, const char*));
+int BIO_meth_set_gets(BIO_METHOD* biom, int (*bgets)(BIO*, char*, int));
+int BIO_meth_set_ctrl(BIO_METHOD* biom, long (*ctrl)(BIO*, int, long, void*));
+int BIO_meth_set_create(BIO_METHOD* biom, int (*create)(BIO*));
+int BIO_meth_set_destroy(BIO_METHOD* biom, int (*destroy)(BIO*));
+
+void BIO_set_data(BIO* bio, void* ptr);
+void* BIO_get_data(BIO* bio);
+void BIO_set_init(BIO* bio, int init);
+void BIO_set_shutdown(BIO* bio, int shutdown);
+
+const SSL_METHOD* TLS_server_method(void);
+const SSL_METHOD* TLS_client_method(void);
 
 const char* SSL_SESSION_get0_hostname(const SSL_SESSION* s);
 unsigned char* ASN1_STRING_get0_data(const ASN1_STRING* x);
@@ -145,6 +189,8 @@ void DH_get0_pqg(
     const BIGNUM** q,
     const BIGNUM** g);
 void DH_get0_key(const DH* dh, const BIGNUM** pub_key, const BIGNUM** priv_key);
+long DH_get_length(const DH* dh);
+int DH_set_length(DH* dh, long length);
 
 void DSA_get0_pqg(
     const DSA* dsa,
@@ -155,6 +201,8 @@ void DSA_get0_key(
     const DSA* dsa,
     const BIGNUM** pub_key,
     const BIGNUM** priv_key);
+
+STACK_OF(X509_OBJECT) * X509_STORE_get0_objects(X509_STORE* store);
 
 X509* X509_STORE_CTX_get0_cert(X509_STORE_CTX* ctx);
 STACK_OF(X509) * X509_STORE_CTX_get0_chain(X509_STORE_CTX* ctx);
@@ -176,6 +224,18 @@ void OPENSSL_cleanup();
 const ASN1_INTEGER* X509_REVOKED_get0_serialNumber(const X509_REVOKED* r);
 const ASN1_TIME* X509_REVOKED_get0_revocationDate(const X509_REVOKED* r);
 
+uint32_t X509_get_extension_flags(X509* x);
+uint32_t X509_get_key_usage(X509* x);
+uint32_t X509_get_extended_key_usage(X509* x);
+
+int X509_OBJECT_get_type(const X509_OBJECT* obj);
+X509* X509_OBJECT_get0_X509(const X509_OBJECT* obj);
+
+const ASN1_TIME* X509_CRL_get0_lastUpdate(const X509_CRL* crl);
+const ASN1_TIME* X509_CRL_get0_nextUpdate(const X509_CRL* crl);
+
+const X509_ALGOR* X509_get0_tbs_sigalg(const X509* x);
+
 #endif
 
 #if FOLLY_OPENSSL_IS_110
@@ -192,8 +252,6 @@ const ASN1_TIME* X509_REVOKED_get0_revocationDate(const X509_REVOKED* r);
 } // namespace folly
 
 FOLLY_PUSH_WARNING
-#if __CLANG_PREREQ(3, 0)
-FOLLY_GCC_DISABLE_WARNING("-Wheader-hygiene")
-#endif
+FOLLY_CLANG_DISABLE_WARNING("-Wheader-hygiene")
 /* using override */ using namespace folly::portability::ssl;
 FOLLY_POP_WARNING

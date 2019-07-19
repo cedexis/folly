@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-present Facebook, Inc.
+ * Copyright 2017-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,6 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+// AtomicSharedPtr-detail.h only works with libstdc++, so skip these tests for
+// other vendors
+#ifdef FOLLY_USE_LIBSTDCPP
+
 #include <folly/concurrency/AtomicSharedPtr.h>
 
 #include <sys/time.h>
@@ -24,29 +29,29 @@
 #include <thread>
 #include <vector>
 
-using std::shared_ptr;
-using std::make_shared;
+using std::atomic;
 using std::cerr;
+using std::condition_variable;
 using std::cout;
 using std::endl;
-using std::condition_variable;
-using std::unique_lock;
-using std::mutex;
-using std::vector;
-using std::thread;
+using std::is_same;
+using std::make_shared;
 using std::memory_order;
-using std::memory_order_relaxed;
-using std::memory_order_acquire;
-using std::memory_order_release;
 using std::memory_order_acq_rel;
+using std::memory_order_acquire;
+using std::memory_order_relaxed;
+using std::memory_order_release;
 using std::memory_order_seq_cst;
 using std::move;
+using std::mutex;
 using std::ref;
-using std::is_same;
-using std::atomic;
-using std::chrono::steady_clock;
+using std::shared_ptr;
+using std::thread;
+using std::unique_lock;
+using std::vector;
 using std::chrono::duration_cast;
 using std::chrono::microseconds;
+using std::chrono::steady_clock;
 
 static uint64_t nowMicro() {
   return duration_cast<microseconds>(steady_clock::now().time_since_epoch())
@@ -225,3 +230,11 @@ int main(int, char**) {
   runSuite<folly::atomic_shared_ptr<int>>();
   return 0;
 }
+
+#else // #ifdef FOLLY_USE_LIBSTDCPP
+
+int main(int, char**) {
+  return 1;
+}
+
+#endif // #ifdef FOLLY_USE_LIBSTDCPP

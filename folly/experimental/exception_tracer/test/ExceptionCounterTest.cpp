@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,6 +25,7 @@
 
 struct MyException {};
 
+// clang-format off
 [[noreturn]] void bar() {
   throw std::runtime_error("hello");
 }
@@ -36,6 +37,7 @@ struct MyException {};
 [[noreturn]] void baz() {
   foo();
 }
+// clang-format on
 
 using namespace folly::exception_tracer;
 

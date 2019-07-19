@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-present Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@
 
 #include <boost/intrusive/list.hpp>
 
+#include <folly/Chrono.h>
 #include <folly/Exception.h>
 #include <folly/Memory.h>
 #include <folly/io/async/AsyncTimeout.h>
@@ -69,6 +70,13 @@ struct TimeoutManager::CobTimeouts {
 
 TimeoutManager::TimeoutManager()
     : cobTimeouts_(std::make_unique<CobTimeouts>()) {}
+
+bool TimeoutManager::scheduleTimeoutHighRes(
+    AsyncTimeout* obj,
+    timeout_type_high_res timeout) {
+  timeout_type timeout_ms = folly::chrono::ceil<timeout_type>(timeout);
+  return scheduleTimeout(obj, timeout_ms);
+}
 
 void TimeoutManager::runAfterDelay(
     Func cob,

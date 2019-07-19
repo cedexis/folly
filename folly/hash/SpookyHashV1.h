@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2017-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -49,6 +49,8 @@
 
 namespace folly {
 namespace hash {
+
+// clang-format off
 
 class SpookyHashV1
 {
@@ -298,6 +300,8 @@ private:
     size_t m_length;                // total length of the input so far
     uint8_t  m_remainder;           // length of unhashed data stashed in m_data
 };
+
+// clang-format on
 
 } // namespace hash
 } // namespace folly

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,6 +34,13 @@ typedef DeterministicSchedule DSched;
 
 LIFOSEM_DECLARE_POOL(DeterministicAtomic, 100000)
 
+class LifoSemTest : public testing::Test {
+ private:
+  // pre-init the pool to avoid deadlock when using DeterministicAtomic
+  using Node = detail::LifoSemRawNode<DeterministicAtomic>;
+  Node::Pool& pool_{Node::pool()};
+};
+
 TEST(LifoSem, basic) {
   LifoSem sem;
   EXPECT_FALSE(sem.tryWait());
@@ -51,7 +58,7 @@ TEST(LifoSem, multi) {
   std::atomic<int> blocks(0);
 
   for (auto& thr : threads) {
-    thr = std::thread([&]{
+    thr = std::thread([&] {
       int b = 0;
       for (int i = 0; i < opsPerThread; ++i) {
         if (!sem.tryWait()) {
@@ -71,11 +78,11 @@ TEST(LifoSem, multi) {
     thr.join();
   }
 
-  LOG(INFO) << opsPerThread * sizeof(threads)/sizeof(threads[0])
+  LOG(INFO) << opsPerThread * sizeof(threads) / sizeof(threads[0])
             << " post/wait pairs, " << blocks << " blocked";
 }
 
-TEST(LifoSem, pingpong) {
+TEST_F(LifoSemTest, pingpong) {
   DSched sched(DSched::uniform(0));
 
   const int iters = 100;
@@ -84,7 +91,7 @@ TEST(LifoSem, pingpong) {
     DLifoSem a;
     DLifoSem b;
 
-    auto thr = DSched::thread([&]{
+    auto thr = DSched::thread([&] {
       for (int i = 0; i < iters; ++i) {
         a.wait();
         // main thread can't be running here
@@ -104,7 +111,7 @@ TEST(LifoSem, pingpong) {
   }
 }
 
-TEST(LifoSem, mutex) {
+TEST_F(LifoSemTest, mutex) {
   DSched sched(DSched::uniform(0));
 
   const int iters = 100;
@@ -112,7 +119,7 @@ TEST(LifoSem, mutex) {
   for (int pass = 0; pass < 10; ++pass) {
     DLifoSem a;
 
-    auto thr = DSched::thread([&]{
+    auto thr = DSched::thread([&] {
       for (int i = 0; i < iters; ++i) {
         a.wait();
         a.post();
@@ -128,7 +135,7 @@ TEST(LifoSem, mutex) {
   }
 }
 
-TEST(LifoSem, no_blocking) {
+TEST_F(LifoSemTest, no_blocking) {
   long seed = folly::randomNumberSeed() % 10000;
   LOG(INFO) << "seed=" << seed;
   DSched sched(DSched::uniform(seed));
@@ -142,7 +149,7 @@ TEST(LifoSem, no_blocking) {
 
     std::vector<std::thread> threads;
     while (threads.size() < numThreads) {
-      threads.emplace_back(DSched::thread([&]{
+      threads.emplace_back(DSched::thread([&] {
         for (int i = 0; i < iters; ++i) {
           a.post(width);
           for (int w = 0; w < width; ++w) {
@@ -157,7 +164,7 @@ TEST(LifoSem, no_blocking) {
   }
 }
 
-TEST(LifoSem, one_way) {
+TEST_F(LifoSemTest, one_way) {
   long seed = folly::randomNumberSeed() % 10000;
   LOG(INFO) << "seed=" << seed;
   DSched sched(DSched::uniformSubset(seed, 1, 6));
@@ -167,7 +174,7 @@ TEST(LifoSem, one_way) {
   for (int pass = 0; pass < 10; ++pass) {
     DLifoSem a;
 
-    auto thr = DSched::thread([&]{
+    auto thr = DSched::thread([&] {
       for (int i = 0; i < iters; ++i) {
         a.wait();
       }
@@ -179,52 +186,23 @@ TEST(LifoSem, one_way) {
   }
 }
 
-TEST(LifoSem, shutdown_race) {
-  long seed = folly::randomNumberSeed() % 10000;
-  LOG(INFO) << "seed=" << seed;
-
-  bool shutdownWon = false;
-  bool shutdownLost = false;
-  for (int pass = 0; pass < 1000; ++pass) {
-    DSched sched(DSched::uniformSubset(seed + pass, 1, 1 + (pass % 50)));
-
-    DLifoSem a;
-    int waitCount = 0;
-    auto thr = DSched::thread([&]{
-      try {
-        while (true) {
-          a.wait();
-          ++waitCount;
-        }
-      } catch (ShutdownSemError&) {
-        // expected
-        EXPECT_TRUE(a.isShutdown());
-      }
-    });
-    EXPECT_TRUE(!a.isShutdown());
-    a.shutdown();
-    EXPECT_TRUE(a.isShutdown());
-    a.post();
-    DSched::join(thr);
-    EXPECT_EQ(1, waitCount + a.valueGuess());
-    if (waitCount == 0) {
-      shutdownWon = true;
-    } else {
-      shutdownLost = true;
-    }
-  }
-  EXPECT_TRUE(shutdownWon);
-  EXPECT_TRUE(shutdownLost);
+TEST_F(LifoSemTest, shutdown_wait_order) {
+  DLifoSem a;
+  a.shutdown();
+  a.post();
+  a.wait();
+  EXPECT_THROW(a.wait(), ShutdownSemError);
+  EXPECT_TRUE(a.isShutdown());
 }
 
-TEST(LifoSem, shutdown_multi) {
+TEST_F(LifoSemTest, shutdown_multi) {
   DSched sched(DSched::uniform(0));
 
   for (int pass = 0; pass < 10; ++pass) {
     DLifoSem a;
     std::vector<std::thread> threads;
     while (threads.size() < 20) {
-      threads.push_back(DSched::thread([&]{
+      threads.push_back(DSched::thread([&] {
         try {
           a.wait();
           ADD_FAILURE();
@@ -244,11 +222,11 @@ TEST(LifoSem, shutdown_multi) {
 TEST(LifoSem, multi_try_wait_simple) {
   LifoSem sem;
   sem.post(5);
-  auto n = sem.tryWait(10);     // this used to trigger an assert
+  auto n = sem.tryWait(10); // this used to trigger an assert
   ASSERT_EQ(5, n);
 }
 
-TEST(LifoSem, multi_try_wait) {
+TEST_F(LifoSemTest, multi_try_wait) {
   long seed = folly::randomNumberSeed() % 10000;
   LOG(INFO) << "seed=" << seed;
   DSched sched(DSched::uniform(seed));
@@ -256,8 +234,8 @@ TEST(LifoSem, multi_try_wait) {
 
   const int NPOSTS = 1000;
 
-  auto producer = [&]{
-    for (int i=0; i<NPOSTS; ++i) {
+  auto producer = [&] {
+    for (int i = 0; i < NPOSTS; ++i) {
       sem.post();
     }
   };
@@ -265,7 +243,7 @@ TEST(LifoSem, multi_try_wait) {
   DeterministicAtomic<bool> consumer_stop(false);
   int consumed = 0;
 
-  auto consumer = [&]{
+  auto consumer = [&] {
     bool stop;
     do {
       stop = consumer_stop.load();
@@ -286,10 +264,93 @@ TEST(LifoSem, multi_try_wait) {
   ASSERT_EQ(NPOSTS, consumed);
 }
 
+TEST_F(LifoSemTest, timeout) {
+  long seed = folly::randomNumberSeed() % 10000;
+  LOG(INFO) << "seed=" << seed;
+  DSched sched(DSched::uniform(seed));
+  DeterministicAtomic<uint32_t> handoffs{0};
+
+  for (int pass = 0; pass < 10; ++pass) {
+    DLifoSem a;
+    std::vector<std::thread> threads;
+    while (threads.size() < 20) {
+      threads.push_back(DSched::thread([&] {
+        for (int i = 0; i < 10; i++) {
+          try {
+            if (a.try_wait_for(std::chrono::milliseconds(1))) {
+              handoffs--;
+            }
+          } catch (ShutdownSemError&) {
+            // expected
+            EXPECT_TRUE(a.isShutdown());
+          }
+        }
+      }));
+    }
+    std::vector<std::thread> threads2;
+    while (threads2.size() < 20) {
+      threads2.push_back(DSched::thread([&] {
+        for (int i = 0; i < 10; i++) {
+          a.post();
+          handoffs++;
+        }
+      }));
+    }
+    if (pass > 5) {
+      a.shutdown();
+    }
+    for (auto& thr : threads) {
+      DSched::join(thr);
+    }
+    for (auto& thr : threads2) {
+      DSched::join(thr);
+    }
+    // At least one timeout must occur.
+    EXPECT_GT(handoffs.load(), 0);
+  }
+}
+
+TEST_F(LifoSemTest, shutdown_try_wait_for) {
+  long seed = folly::randomNumberSeed() % 1000000;
+  LOG(INFO) << "seed=" << seed;
+  DSched sched(DSched::uniform(seed));
+
+  DLifoSem stopped;
+  std::thread worker1 = DSched::thread([&stopped] {
+    while (!stopped.isShutdown()) {
+      // i.e. poll for messages with timeout
+      LOG(INFO) << "thread polled";
+    }
+  });
+  std::thread worker2 = DSched::thread([&stopped] {
+    while (!stopped.isShutdown()) {
+      // Do some work every 1 second
+
+      try {
+        // this is normally 1 second in prod use case.
+        stopped.try_wait_for(std::chrono::milliseconds(1));
+      } catch (folly::ShutdownSemError& e) {
+        LOG(INFO) << "try_wait_for shutdown";
+      }
+    }
+  });
+
+  std::thread shutdown = DSched::thread([&stopped] {
+    LOG(INFO) << "LifoSem shutdown";
+    stopped.shutdown();
+    LOG(INFO) << "LifoSem shutdown done";
+  });
+
+  DSched::join(shutdown);
+  DSched::join(worker1);
+  DSched::join(worker2);
+  LOG(INFO) << "Threads joined";
+}
+
 BENCHMARK(lifo_sem_pingpong, iters) {
   LifoSem a;
   LifoSem b;
-  auto thr = std::thread([&]{
+  auto thr = std::thread([&] {
     for (size_t i = 0; i < iters; ++i) {
       a.wait();
       b.post();
@@ -304,7 +365,7 @@ BENCHMARK(lifo_sem_pingpong, iters) {
 
 BENCHMARK(lifo_sem_oneway, iters) {
   LifoSem a;
-  auto thr = std::thread([&]{
+  auto thr = std::thread([&] {
     for (size_t i = 0; i < iters; ++i) {
       a.wait();
     }
@@ -376,14 +437,14 @@ static void contendedUse(uint32_t n, int posters, int waiters) {
 
   BENCHMARK_SUSPEND {
     for (int t = 0; t < waiters; ++t) {
-      threads.emplace_back([=,&sem] {
+      threads.emplace_back([=, &sem] {
         for (uint32_t i = t; i < n; i += waiters) {
           sem.wait();
         }
       });
     }
     for (int t = 0; t < posters; ++t) {
-      threads.emplace_back([=,&sem,&go] {
+      threads.emplace_back([=, &sem, &go] {
         while (!go.load()) {
           std::this_thread::yield();
         }
@@ -400,7 +461,7 @@ static void contendedUse(uint32_t n, int posters, int waiters) {
   }
 }
 
-BENCHMARK_DRAW_LINE()
+BENCHMARK_DRAW_LINE();
 BENCHMARK_NAMED_PARAM(contendedUse, 1_to_1, 1, 1)
 BENCHMARK_NAMED_PARAM(contendedUse, 1_to_4, 1, 4)
 BENCHMARK_NAMED_PARAM(contendedUse, 1_to_32, 1, 32)
@@ -438,7 +499,7 @@ BENCHMARK_NAMED_PARAM(contendedUse, 32_to_1000, 32, 1000)
 // contendedUse(32_to_1000)                                   777.42ns    1.29M
 // ============================================================================
 
-int main(int argc, char ** argv) {
+int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
   gflags::ParseCommandLineFlags(&argc, &argv, true);
   int rv = RUN_ALL_TESTS();

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2017-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,11 @@
 
 #include <chrono>
 
+#include <folly/ScopeGuard.h>
 #include <folly/executors/CPUThreadPoolExecutor.h>
 #include <folly/executors/InlineExecutor.h>
 #include <folly/executors/SerialExecutor.h>
+#include <folly/io/async/Request.h>
 #include <folly/portability/GTest.h>
 #include <folly/synchronization/Baton.h>
 
@@ -31,14 +33,46 @@ void burnMs(uint64_t ms) {
 }
 } // namespace
 
-void SimpleTest(std::shared_ptr<folly::Executor> const& parent) {
-  SerialExecutor executor(parent);
+void simpleTest(std::shared_ptr<folly::Executor> const& parent) {
+  class SerialExecutorContextData : public folly::RequestData {
+   public:
+    static std::string kCtxKey() {
+      return typeid(SerialExecutorContextData).name();
+    }
+    explicit SerialExecutorContextData(int id) : id_(id) {}
+    bool hasCallback() override {
+      return false;
+    }
+    int getId() const {
+      return id_;
+    }
+
+   private:
+    const int id_;
+  };
+
+  auto executor =
+      SerialExecutor::create(folly::getKeepAliveToken(parent.get()));
 
   std::vector<int> values;
   std::vector<int> expected;
 
   for (int i = 0; i < 20; ++i) {
-    executor.add([i, &values] {
+    auto ctx = std::make_shared<folly::RequestContext>();
+    ctx->setContextData(
+        SerialExecutorContextData::kCtxKey(),
+        std::make_unique<SerialExecutorContextData>(i));
+    folly::RequestContextScopeGuard ctxGuard(ctx);
+    auto checkReqCtx = [i] {
+      EXPECT_EQ(
+          i,
+          dynamic_cast<SerialExecutorContextData*>(
+              folly::RequestContext::get()->getContextData(
+                  SerialExecutorContextData::kCtxKey()))
+              ->getId());
+    };
+    executor->add([i, checkReqCtx, g = folly::makeGuard(checkReqCtx), &values] {
+      checkReqCtx();
       // make this extra vulnerable to concurrent execution
       values.push_back(0);
       burnMs(10);
@@ -49,17 +83,17 @@ void SimpleTest(std::shared_ptr<folly::Executor> const& parent) {
 
   // wait until last task has executed
   folly::Baton<> finished_baton;
-  executor.add([&finished_baton] { finished_baton.post(); });
+  executor->add([&finished_baton] { finished_baton.post(); });
   finished_baton.wait();
 
   EXPECT_EQ(expected, values);
 }
 
 TEST(SerialExecutor, Simple) {
-  SimpleTest(std::make_shared<folly::CPUThreadPoolExecutor>(4));
+  simpleTest(std::make_shared<folly::CPUThreadPoolExecutor>(4));
 }
 TEST(SerialExecutor, SimpleInline) {
-  SimpleTest(std::make_shared<folly::InlineExecutor>());
+  simpleTest(std::make_shared<folly::InlineExecutor>());
 }
 
 // The Afterlife test only works with an asynchronous executor (not the
@@ -67,7 +101,8 @@ TEST(SerialExecutor, SimpleInline) {
 // destroy the SerialExecutor
 TEST(SerialExecutor, Afterlife) {
   auto cpu_executor = std::make_shared<folly::CPUThreadPoolExecutor>(4);
-  auto executor = std::make_unique<SerialExecutor>(cpu_executor);
+  auto executor =
+      SerialExecutor::create(folly::getKeepAliveToken(cpu_executor.get()));
 
   // block executor until we call start_baton.post()
   folly::Baton<> start_baton;
@@ -102,7 +137,8 @@ TEST(SerialExecutor, Afterlife) {
 }
 
 void RecursiveAddTest(std::shared_ptr<folly::Executor> const& parent) {
-  SerialExecutor executor(parent);
+  auto executor =
+      SerialExecutor::create(folly::getKeepAliveToken(parent.get()));
 
   folly::Baton<> finished_baton;
 
@@ -116,7 +152,7 @@ void RecursiveAddTest(std::shared_ptr<folly::Executor> const& parent) {
       values.push_back(0);
       burnMs(10);
       values.back() = i;
-      executor.add(lambda);
+      executor->add(lambda);
     } else if (i < 12) {
       // Below we will post this lambda three times to the executor. When
       // executed, the lambda will re-post itself during the first ten
@@ -128,9 +164,9 @@ void RecursiveAddTest(std::shared_ptr<folly::Executor> const& parent) {
     ++i;
   };
 
-  executor.add(lambda);
-  executor.add(lambda);
-  executor.add(lambda);
+  executor->add(lambda);
+  executor->add(lambda);
+  executor->add(lambda);
 
   // wait until last task has executed
   finished_baton.wait();
@@ -146,9 +182,9 @@ TEST(SerialExecutor, RecursiveAddInline) {
 }
 
 TEST(SerialExecutor, ExecutionThrows) {
-  SerialExecutor executor(std::make_shared<folly::InlineExecutor>());
+  auto executor = SerialExecutor::create();
 
   // an empty Func will throw std::bad_function_call when invoked,
   // but SerialExecutor should catch that exception
-  executor.add(folly::Func{});
+  executor->add(folly::Func{});
 }

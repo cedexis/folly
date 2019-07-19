@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2013-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,29 +30,28 @@ using folly::IOBuf;
 
 const size_t MIN_ALLOC_SIZE = 2000;
 const size_t MAX_ALLOC_SIZE = 8000;
-const size_t MAX_PACK_COPY = 4096;
 
 /**
  * Convenience function to append chain src to chain dst.
  */
-void
-appendToChain(unique_ptr<IOBuf>& dst, unique_ptr<IOBuf>&& src, bool pack) {
+void appendToChain(unique_ptr<IOBuf>& dst, unique_ptr<IOBuf>&& src, bool pack) {
   if (dst == nullptr) {
     dst = std::move(src);
   } else {
     IOBuf* tail = dst->prev();
     if (pack) {
-      // Copy up to MAX_PACK_COPY bytes if we can free buffers; this helps
+      // Copy up to kMaxPackCopy bytes if we can free buffers; this helps
       // reduce wastage (the tail's tailroom and the head's headroom) when
       // joining two IOBufQueues together.
-      size_t copyRemaining = MAX_PACK_COPY;
-      uint64_t n;
-      while (src &&
-             (n = src->length()) < copyRemaining &&
-             n < tail->tailroom()) {
-        memcpy(tail->writableTail(), src->data(), n);
-        tail->append(n);
-        copyRemaining -= n;
+      size_t copyRemaining = folly::IOBufQueue::kMaxPackCopy;
+      std::size_t n;
+      while (src && (n = src->length()) <= copyRemaining &&
+             n <= tail->tailroom()) {
+        if (n > 0) {
+          memcpy(tail->writableTail(), src->data(), n);
+          tail->append(n);
+          copyRemaining -= n;
+        }
         src = src->pop();
       }
     }
@@ -110,8 +109,7 @@ IOBufQueue& IOBufQueue::operator=(IOBufQueue&& other) {
   return *this;
 }
 
-std::pair<void*, uint64_t>
-IOBufQueue::headroom() {
+std::pair<void*, std::size_t> IOBufQueue::headroom() {
   // Note, headroom is independent from the tail, so we don't need to flush the
   // cache.
   if (head_) {
@@ -121,8 +119,7 @@ IOBufQueue::headroom() {
   }
 }
 
-void
-IOBufQueue::markPrepended(uint64_t n) {
+void IOBufQueue::markPrepended(std::size_t n) {
   if (n == 0) {
     return;
   }
@@ -133,8 +130,7 @@ IOBufQueue::markPrepended(uint64_t n) {
   chainLength_ += n;
 }
 
-void
-IOBufQueue::prepend(const void* buf, uint64_t n) {
+void IOBufQueue::prepend(const void* buf, std::size_t n) {
   // We're not touching the tail, so we don't need to flush the cache.
   auto hroom = head_->headroom();
   if (!head_ || hroom < n) {
@@ -145,8 +141,7 @@ IOBufQueue::prepend(const void* buf, uint64_t n) {
   chainLength_ += n;
 }
 
-void
-IOBufQueue::append(unique_ptr<IOBuf>&& buf, bool pack) {
+void IOBufQueue::append(unique_ptr<IOBuf>&& buf, bool pack) {
   if (!buf) {
     return;
   }
@@ -157,8 +152,43 @@ IOBufQueue::append(unique_ptr<IOBuf>&& buf, bool pack) {
   appendToChain(head_, std::move(buf), pack);
 }
 
-void
-IOBufQueue::append(IOBufQueue& other, bool pack) {
+void IOBufQueue::append(const folly::IOBuf& buf, bool pack) {
+  if (!head_ || !pack) {
+    append(buf.clone(), pack);
+    return;
+  }
+
+  auto guard = updateGuard();
+  if (options_.cacheChainLength) {
+    chainLength_ += buf.computeChainDataLength();
+  }
+
+  size_t copyRemaining = kMaxPackCopy;
+  std::size_t n;
+  const folly::IOBuf* src = &buf;
+  folly::IOBuf* tail = head_->prev();
+  while ((n = src->length()) <= copyRemaining && n <= tail->tailroom()) {
+    if (n > 0) {
+      memcpy(tail->writableTail(), src->data(), n);
+      tail->append(n);
+      copyRemaining -= n;
+    }
+    src = src->next();
+
+    // Consumed full input.
+    if (src == &buf) {
+      return;
+    }
+  }
+
+  // Clone the rest.
+  do {
+    head_->prependChain(src->cloneOne());
+    src = src->next();
+  } while (src != &buf);
+}
+
+void IOBufQueue::append(IOBufQueue& other, bool pack) {
   if (!other.head_) {
     return;
   }
@@ -176,20 +206,20 @@ IOBufQueue::append(IOBufQueue& other, bool pack) {
   other.chainLength_ = 0;
 }
 
-void
-IOBufQueue::append(const void* buf, size_t len) {
+void IOBufQueue::append(const void* buf, size_t len) {
   auto guard = updateGuard();
   auto src = static_cast<const uint8_t*>(buf);
   while (len != 0) {
     if ((head_ == nullptr) || head_->prev()->isSharedOne() ||
         (head_->prev()->tailroom() == 0)) {
-      appendToChain(head_,
-          IOBuf::create(std::max(MIN_ALLOC_SIZE,
-              std::min(len, MAX_ALLOC_SIZE))),
+      appendToChain(
+          head_,
+          IOBuf::create(
+              std::max(MIN_ALLOC_SIZE, std::min(len, MAX_ALLOC_SIZE))),
           false);
     }
     IOBuf* last = head_->prev();
-    uint64_t copyLen = std::min(len, (size_t)last->tailroom());
+    std::size_t copyLen = std::min(len, (size_t)last->tailroom());
     memcpy(last->writableTail(), src, copyLen);
     src += copyLen;
     last->append(copyLen);
@@ -198,8 +228,10 @@ IOBufQueue::append(const void* buf, size_t len) {
   }
 }
 
-void
-IOBufQueue::wrapBuffer(const void* buf, size_t len, uint64_t blockSize) {
+void IOBufQueue::wrapBuffer(
+    const void* buf,
+    size_t len,
+    std::size_t blockSize) {
   auto src = static_cast<const uint8_t*>(buf);
   while (len != 0) {
     size_t n = std::min(len, size_t(blockSize));
@@ -209,9 +241,10 @@ IOBufQueue::wrapBuffer(const void* buf, size_t len, uint64_t blockSize) {
   }
 }
 
-pair<void*,uint64_t>
-IOBufQueue::preallocateSlow(uint64_t min, uint64_t newAllocationSize,
-                            uint64_t max) {
+pair<void*, std::size_t> IOBufQueue::preallocateSlow(
+    std::size_t min,
+    std::size_t newAllocationSize,
+    std::size_t max) {
   // Avoid grabbing update guard, since we're manually setting the cache ptrs.
   flushCache();
   // Allocate a new buffer of the requested max size.
@@ -221,7 +254,7 @@ IOBufQueue::preallocateSlow(uint64_t min, uint64_t newAllocationSize,
   cachePtr_->cachedRange = std::pair<uint8_t*, uint8_t*>(
       tailStart_, tailStart_ + newBuf->tailroom());
   appendToChain(head_, std::move(newBuf), false);
-  return make_pair(writableTail(), std::min<uint64_t>(max, tailroom()));
+  return make_pair(writableTail(), std::min<std::size_t>(max, tailroom()));
 }
 
 unique_ptr<IOBuf> IOBufQueue::split(size_t n, bool throwOnUnderflow) {
@@ -362,7 +395,7 @@ void IOBufQueue::appendToString(std::string& out) const {
   }
 }
 
-void IOBufQueue::gather(uint64_t maxLength) {
+void IOBufQueue::gather(std::size_t maxLength) {
   auto guard = updateGuard();
   if (head_ != nullptr) {
     head_->gather(maxLength);

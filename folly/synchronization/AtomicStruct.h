@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2013-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -59,7 +59,7 @@ class AtomicStruct {
   static_assert(alignof(T) <= alignof(Raw), "underlying type is under-aligned");
   static_assert(sizeof(T) <= sizeof(Raw), "underlying type is under-sized");
   static_assert(
-      std::is_trivial<T>::value || folly::IsTriviallyCopyable<T>::value,
+      std::is_trivial<T>::value || is_trivially_copyable<T>::value,
       "target type must be trivially copyable");
 
   Atom<Raw> data;
@@ -68,21 +68,21 @@ class AtomicStruct {
     // we expect the compiler to optimize away the memcpy, but without
     // it we would violate strict aliasing rules
     Raw d = 0;
-    memcpy(&d, &v, sizeof(T));
+    memcpy(&d, static_cast<void*>(&v), sizeof(T));
     return d;
   }
 
   static T decode(Raw d) noexcept {
     T v;
-    memcpy(&v, &d, sizeof(T));
+    memcpy(static_cast<void*>(&v), &d, sizeof(T));
     return v;
   }
 
  public:
   AtomicStruct() = default;
   ~AtomicStruct() = default;
-  AtomicStruct(AtomicStruct<T> const &) = delete;
-  AtomicStruct<T>& operator= (AtomicStruct<T> const &) = delete;
+  AtomicStruct(AtomicStruct<T> const&) = delete;
+  AtomicStruct<T>& operator=(AtomicStruct<T> const&) = delete;
 
   constexpr /* implicit */ AtomicStruct(T v) noexcept : data(encode(v)) {}
 
@@ -134,7 +134,7 @@ class AtomicStruct {
     return decode(data.exchange(encode(v), mo));
   }
 
-  /* implicit */ operator T () const noexcept {
+  /* implicit */ operator T() const noexcept {
     return decode(data);
   }
 
@@ -142,7 +142,7 @@ class AtomicStruct {
     return decode(data.load(mo));
   }
 
-  T operator= (T v) noexcept {
+  T operator=(T v) noexcept {
     return decode(data = encode(v));
   }
 

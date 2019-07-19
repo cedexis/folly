@@ -27,6 +27,10 @@
 #include <folly/Utility.h>
 #include <folly/detail/TypeList.h>
 #include <folly/functional/Invoke.h>
+#include <folly/lang/Exception.h>
+#include <folly/lang/StaticConst.h>
+
+#include <folly/PolyException.h>
 
 namespace folly {
 /// \cond
@@ -177,33 +181,29 @@ itself, depending on the size of T and whether or not it has a noexcept move
 constructor.
 */
 
-template <class T>
-using Uncvref = std::remove_cv_t<std::remove_reference_t<T>>;
-
 template <class T, template <class...> class U>
 struct IsInstanceOf : std::false_type {};
 
 template <class... Ts, template <class...> class U>
 struct IsInstanceOf<U<Ts...>, U> : std::true_type {};
 
-template <class T>
-using Not = Bool<!T::value>;
-
-template <class T>
-struct StaticConst {
-  static constexpr T value{};
-};
-
-template <class T>
-constexpr T StaticConst<T>::value;
-
-template <class Fun>
-void if_constexpr(std::true_type, Fun fun) {
-  fun(Identity{});
+template <class Then>
+decltype(auto) if_constexpr(std::true_type, Then then) {
+  return then(Identity{});
 }
 
-template <class Fun>
-void if_constexpr(std::false_type, Fun) {}
+template <class Then>
+void if_constexpr(std::false_type, Then) {}
+
+template <class Then, class Else>
+decltype(auto) if_constexpr(std::true_type, Then then, Else) {
+  return then(Identity{});
+}
+
+template <class Then, class Else>
+decltype(auto) if_constexpr(std::false_type, Then, Else else_) {
+  return else_(Identity{});
+}
 
 enum class Op : short { eNuke, eMove, eCopy, eType, eAddr, eRefr };
 
@@ -220,21 +220,18 @@ struct PolyRef;
 struct PolyAccess;
 
 template <class T>
-using IsPoly = IsInstanceOf<Uncvref<T>, Poly>;
+using IsPoly = IsInstanceOf<remove_cvref_t<T>, Poly>;
 
 // Given an interface I and a concrete type T that satisfies the interface
 // I, create a list of member function bindings from members of T to members
 // of I.
 template <class I, class T>
-using MembersOf = typename I::template Members<Uncvref<T>>;
+using MembersOf = typename I::template Members<remove_cvref_t<T>>;
 
 // Given an interface I and a base type T, create a type that implements
 // the interface I in terms of the capabilities of T.
 template <class I, class T>
 using InterfaceOf = typename I::template Interface<T>;
-
-[[noreturn]] void throwBadPolyAccess();
-[[noreturn]] void throwBadPolyCast();
 
 #if !defined(__cpp_template_auto)
 template <class T, T V>
@@ -325,7 +322,9 @@ struct ArchetypeBase : Bottom {
   template <class T>
   /* implicit */ ArchetypeBase(T&&);
   template <std::size_t, class... As>
-  [[noreturn]] Bottom _polyCall_(As&&...) const { std::terminate(); }
+  [[noreturn]] Bottom _polyCall_(As&&...) const {
+    std::terminate();
+  }
 
   friend bool operator==(ArchetypeBase const&, ArchetypeBase const&);
   friend bool operator!=(ArchetypeBase const&, ArchetypeBase const&);
@@ -375,13 +374,13 @@ struct Data {
 
 template <class U, class I>
 using Arg =
-    If<std::is_same<Uncvref<U>, Archetype<I>>::value,
+    If<std::is_same<remove_cvref_t<U>, Archetype<I>>::value,
        Poly<AddCvrefOf<I, U const&>>,
        U>;
 
 template <class U, class I>
 using Ret =
-    If<std::is_same<Uncvref<U>, Archetype<I>>::value,
+    If<std::is_same<remove_cvref_t<U>, Archetype<I>>::value,
        AddCvrefOf<Poly<I>, U>,
        U>;
 
@@ -430,7 +429,7 @@ struct ThrowThunk {
   constexpr /* implicit */ operator FnPtr<R, Args...>() const noexcept {
     struct _ {
       static R call(Args...) {
-        throwBadPolyAccess();
+        throw_exception<BadPolyAccess>();
       }
     };
     return &_::call;
@@ -468,14 +467,22 @@ T const& get(Data const& d) noexcept {
 
 enum class State : short { eEmpty, eInSitu, eOnHeap };
 
-template <class, class U>
-U&& convert(U&& u) noexcept {
-  return static_cast<U&&>(u);
-}
+template <class T>
+struct IsPolyRef : std::false_type {};
 
-template <class Arg, class I>
-decltype(auto) convert(Poly<I&> u) {
-  return poly_cast<Uncvref<Arg>>(u.get());
+template <class T>
+struct IsPolyRef<Poly<T&>> : std::true_type {};
+
+template <class Arg, class U>
+decltype(auto) convert(U&& u) {
+  return detail::if_constexpr(
+      StrictConjunction<
+          IsPolyRef<remove_cvref_t<U>>,
+          Negation<std::is_convertible<U, Arg>>>(),
+      [&](auto id) -> decltype(auto) {
+        return poly_cast<remove_cvref_t<Arg>>(id(u).get());
+      },
+      [&](auto id) -> U&& { return static_cast<U&&>(id(u)); });
 }
 
 template <class Fun>
@@ -580,9 +587,9 @@ void* execOnHeap(Op op, Data* from, void* to) {
       if (*static_cast<std::type_info const*>(to) == typeid(T)) {
         return from->pobj_;
       }
-      throwBadPolyCast();
+      throw_exception<BadPolyCast>();
     case Op::eRefr:
-      return vtableForRef<I, Uncvref<T>>(
+      return vtableForRef<I, remove_cvref_t<T>>(
           static_cast<RefType>(reinterpret_cast<std::uintptr_t>(to)));
   }
   return nullptr;
@@ -591,7 +598,7 @@ void* execOnHeap(Op op, Data* from, void* to) {
 template <
     class I,
     class T,
-    std::enable_if_t<Not<std::is_reference<T>>::value, int> = 0>
+    std::enable_if_t<Negation<std::is_reference<T>>::value, int> = 0>
 void* execOnHeap(Op op, Data* from, void* to) {
   switch (op) {
     case Op::eNuke:
@@ -611,9 +618,9 @@ void* execOnHeap(Op op, Data* from, void* to) {
       if (*static_cast<std::type_info const*>(to) == typeid(T)) {
         return from->pobj_;
       }
-      throwBadPolyCast();
+      throw_exception<BadPolyCast>();
     case Op::eRefr:
-      return vtableForRef<I, Uncvref<T>>(
+      return vtableForRef<I, remove_cvref_t<T>>(
           static_cast<RefType>(reinterpret_cast<std::uintptr_t>(to)));
   }
   return nullptr;
@@ -642,9 +649,9 @@ void* execInSitu(Op op, Data* from, void* to) {
       if (*static_cast<std::type_info const*>(to) == typeid(T)) {
         return &from->buff_;
       }
-      throwBadPolyCast();
+      throw_exception<BadPolyCast>();
     case Op::eRefr:
-      return vtableForRef<I, Uncvref<T>>(
+      return vtableForRef<I, remove_cvref_t<T>>(
           static_cast<RefType>(reinterpret_cast<std::uintptr_t>(to)));
   }
   return nullptr;
@@ -652,7 +659,7 @@ void* execInSitu(Op op, Data* from, void* to) {
 
 inline void* noopExec(Op op, Data*, void*) {
   if (op == Op::eAddr)
-    throwBadPolyAccess();
+    throw_exception<BadPolyAccess>();
   return const_cast<void*>(static_cast<void const*>(&typeid(void)));
 }
 
@@ -723,10 +730,10 @@ struct PolyAccess {
   }
 
   template <class Poly>
-  using Iface = typename Uncvref<Poly>::_polyInterface_;
+  using Iface = typename remove_cvref_t<Poly>::_polyInterface_;
 
   template <class Node, class Tfx = MetaIdentity>
-  static typename Uncvref<Node>::template _polySelf_<Node, Tfx> self_();
+  static typename remove_cvref_t<Node>::template _polySelf_<Node, Tfx> self_();
 
   template <class T, class Poly, class I = Iface<Poly>>
   static decltype(auto) cast(Poly&& _this) {
@@ -750,7 +757,8 @@ struct PolyAccess {
   }
 
   template <class I>
-  static VTable<Uncvref<I>> const* vtable(PolyRoot<I> const& _this) noexcept {
+  static VTable<remove_cvref_t<I>> const* vtable(
+      PolyRoot<I> const& _this) noexcept {
     return _this.vptr_;
   }
 
@@ -819,8 +827,10 @@ struct PolyRoot : private PolyBase, private Data {
 };
 
 template <class I>
-using PolyImpl =
-    TypeFold<InclusiveSubsumptionsOf<Uncvref<I>>, PolyRoot<I>, MakePolyNode>;
+using PolyImpl = TypeFold<
+    InclusiveSubsumptionsOf<remove_cvref_t<I>>,
+    PolyRoot<I>,
+    MakePolyNode>;
 
 // A const-qualified function type means the user is trying to disambiguate
 // a member function pointer.
@@ -884,20 +894,31 @@ struct Sig<R(A&, As...)> : SigImpl<R, A&, As...> {
   }
 };
 
-template <
-    class T,
-    class I,
-    class U = std::decay_t<T>,
-    std::enable_if_t<Not<std::is_base_of<PolyBase, U>>::value, int> = 0,
-    std::enable_if_t<std::is_constructible<AddCvrefOf<U, I>, T>::value, int> =
-        0,
-    class = MembersOf<std::decay_t<I>, U>>
-std::true_type modelsInterface_(int);
-template <class T, class I>
-std::false_type modelsInterface_(long);
+template <class T, class I, class = void>
+struct ModelsInterface2_ : std::false_type {};
 
 template <class T, class I>
-struct ModelsInterface : decltype(modelsInterface_<T, I>(0)) {};
+struct ModelsInterface2_<
+    T,
+    I,
+    void_t<
+        std::enable_if_t<
+            std::is_constructible<AddCvrefOf<std::decay_t<T>, I>, T>::value>,
+        MembersOf<std::decay_t<I>, std::decay_t<T>>>> : std::true_type {};
+
+template <class T, class I, class = void>
+struct ModelsInterface_ : std::false_type {};
+
+template <class T, class I>
+struct ModelsInterface_<
+    T,
+    I,
+    std::enable_if_t<
+        Negation<std::is_base_of<PolyBase, std::decay_t<T>>>::value>>
+    : ModelsInterface2_<T, I> {};
+
+template <class T, class I>
+struct ModelsInterface : ModelsInterface_<T, I> {};
 
 template <class I1, class I2>
 struct ValueCompatible : std::is_base_of<I1, I2> {};

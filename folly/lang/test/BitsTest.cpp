@@ -16,14 +16,16 @@
 
 // @author Tudor Bosman (tudorb@fb.com)
 
-#include <folly/lang/Bits.h>
+#include <algorithm>
+#include <random>
+#include <vector>
 
 #include <folly/Random.h>
-#include <random>
+#include <folly/lang/Bits.h>
 
 #include <folly/portability/GTest.h>
 
-using namespace folly;
+namespace folly {
 
 // Test constexpr-ness.
 #if !defined(__clang__) && !defined(_MSC_VER)
@@ -41,12 +43,11 @@ namespace {
 template <class INT>
 void testFFS() {
   EXPECT_EQ(0, findFirstSet(static_cast<INT>(0)));
-  size_t bits = std::numeric_limits<
-    typename std::make_unsigned<INT>::type>::digits;
+  size_t bits =
+      std::numeric_limits<typename std::make_unsigned<INT>::type>::digits;
   for (size_t i = 0; i < bits; i++) {
-    INT v = (static_cast<INT>(1) << (bits - 1)) |
-            (static_cast<INT>(1) << i);
-    EXPECT_EQ(i+1, findFirstSet(v));
+    INT v = (static_cast<INT>(1) << (bits - 1)) | (static_cast<INT>(1) << i);
+    EXPECT_EQ(i + 1, findFirstSet(v));
   }
 }
 
@@ -61,6 +62,17 @@ void testFLS() {
 
     INT v2 = (static_cast<UINT_T>(1) << i) - 1;
     EXPECT_EQ(i, findLastSet(v2));
+  }
+}
+
+template <class UINT>
+void testEFS() {
+  EXPECT_EQ(0, extractFirstSet(static_cast<UINT>(0)));
+  size_t bits = std::numeric_limits<UINT>::digits;
+  for (size_t i = 0; i < bits; i++) {
+    UINT lsb = static_cast<UINT>(1) << i;
+    UINT v = (static_cast<UINT>(1) << (bits - 1)) | lsb;
+    EXPECT_EQ(lsb, extractFirstSet(v));
   }
 }
 
@@ -92,6 +104,14 @@ TEST(Bits, FindLastSet) {
   testFLS<unsigned long>();
   testFLS<long long>();
   testFLS<unsigned long long>();
+}
+
+TEST(Bits, ExtractFirstSet) {
+  testEFS<unsigned char>();
+  testEFS<unsigned short>();
+  testEFS<unsigned int>();
+  testEFS<unsigned long>();
+  testEFS<unsigned long long>();
 }
 
 TEST(Bits, nextPowTwoClz) {
@@ -154,12 +174,12 @@ TEST(Bits, isPowTwo) {
   EXPECT_FALSE(isPowTwo(511ul));
   EXPECT_TRUE(isPowTwo(512ul));
   EXPECT_FALSE(isPowTwo(513ul));
-  EXPECT_FALSE(isPowTwo((1ul<<31) - 1));
-  EXPECT_TRUE(isPowTwo(1ul<<31));
-  EXPECT_FALSE(isPowTwo((1ul<<31) + 1));
-  EXPECT_FALSE(isPowTwo((1ull<<63) - 1));
-  EXPECT_TRUE(isPowTwo(1ull<<63));
-  EXPECT_FALSE(isPowTwo((1ull<<63) + 1));
+  EXPECT_FALSE(isPowTwo((1ul << 31) - 1));
+  EXPECT_TRUE(isPowTwo(1ul << 31));
+  EXPECT_FALSE(isPowTwo((1ul << 31) + 1));
+  EXPECT_FALSE(isPowTwo((1ull << 63) - 1));
+  EXPECT_TRUE(isPowTwo(1ull << 63));
+  EXPECT_FALSE(isPowTwo((1ull << 63) + 1));
 }
 
 TEST(Bits, popcount) {
@@ -207,4 +227,44 @@ TEST(Bits, BitReverse) {
     uint32_t b = folly::Random::rand32();
     EXPECT_EQ(folly::bitReverse(b), reverse_simple(b) >> 32);
   }
+}
+
+TEST(Bits, PartialLoadUnaligned) {
+  std::vector<char> buf(128);
+  std::generate(
+      buf.begin(), buf.end(), [] { return folly::Random::rand32(255); });
+  for (size_t l = 0; l < 8; ++l) {
+    for (size_t pos = 0; pos <= buf.size() - l; ++pos) {
+      auto p = buf.data() + pos;
+      auto x = folly::partialLoadUnaligned<uint64_t>(p, l);
+
+      uint64_t expected = 0;
+      memcpy(&expected, p, l);
+
+      EXPECT_EQ(x, expected);
+
+      if (l < 4) {
+        auto x32 = folly::partialLoadUnaligned<uint32_t>(p, l);
+        EXPECT_EQ(x32, static_cast<uint32_t>(expected));
+      }
+    }
+  }
+}
+
+TEST(Bits, BitCastBasic) {
+  auto one = std::make_unique<int>();
+  auto two = folly::bit_cast<std::uintptr_t>(one.get());
+  EXPECT_EQ(folly::bit_cast<int*>(two), one.get());
+}
+
+} // namespace folly
+
+TEST(Bits, BitCastCompatibilityTest) {
+  using namespace folly;
+  using namespace std;
+
+  auto one = folly::Random::rand64();
+  auto pointer = bit_cast<std::uintptr_t>(one);
+  auto two = bit_cast<std::uint64_t>(pointer);
+  EXPECT_EQ(one, two);
 }

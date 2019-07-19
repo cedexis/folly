@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@
 
 #include <folly/SocketAddress.h>
 
+#include <cassert>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -33,6 +34,8 @@
 #include <folly/Exception.h>
 #include <folly/Format.h>
 #include <folly/hash/Hash.h>
+#include <folly/net/NetOps.h>
+#include <folly/net/NetworkSocket.h>
 
 namespace {
 
@@ -240,12 +243,12 @@ void SocketAddress::setFromPath(StringPiece path) {
   }
 }
 
-void SocketAddress::setFromPeerAddress(int socket) {
-  setFromSocket(socket, getpeername);
+void SocketAddress::setFromPeerAddress(NetworkSocket socket) {
+  setFromSocket(socket, netops::getpeername);
 }
 
-void SocketAddress::setFromLocalAddress(int socket) {
-  setFromSocket(socket, getsockname);
+void SocketAddress::setFromLocalAddress(NetworkSocket socket) {
+  setFromSocket(socket, netops::getsockname);
 }
 
 void SocketAddress::setFromSockaddr(const struct sockaddr* address) {
@@ -534,10 +537,11 @@ bool SocketAddress::operator==(const SocketAddress& other) const {
     case AF_INET:
     case AF_INET6:
       return (other.storage_.addr == storage_.addr) && (other.port_ == port_);
+    case AF_UNSPEC:
+      return other.storage_.addr.empty();
     default:
-      throw std::invalid_argument(
-          "SocketAddress: unsupported address family "
-          "for comparison");
+      throw_exception<std::invalid_argument>(
+          "SocketAddress: unsupported address family for comparison");
   }
 }
 
@@ -583,13 +587,15 @@ size_t SocketAddress::hash() const {
       break;
     }
     case AF_UNIX:
-      DCHECK(external_);
+      assert(external_);
       break;
     case AF_UNSPEC:
+      assert(storage_.addr.empty());
+      boost::hash_combine(seed, storage_.addr.hash());
+      break;
     default:
-      throw std::invalid_argument(
-          "SocketAddress: unsupported address family "
-          "for hashing");
+      throw_exception<std::invalid_argument>(
+          "SocketAddress: unsupported address family for comparison");
   }
 
   return seed;
@@ -645,8 +651,8 @@ void SocketAddress::setFromLocalAddr(const struct addrinfo* info) {
 }
 
 void SocketAddress::setFromSocket(
-    int socket,
-    int (*fn)(int, struct sockaddr*, socklen_t*)) {
+    NetworkSocket socket,
+    int (*fn)(NetworkSocket, struct sockaddr*, socklen_t*)) {
   // Try to put the address into a local storage buffer.
   sockaddr_storage tmp_sock;
   socklen_t addrLen = sizeof(tmp_sock);

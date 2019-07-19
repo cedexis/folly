@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2017-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,6 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+// AtomicSharedPtr-detail.h only works with libstdc++, so skip these tests for
+// other vendors
+#ifdef FOLLY_USE_LIBSTDCPP
 
 #include <memory>
 #include <thread>
@@ -67,7 +71,7 @@ void parallelRun(Operation op, size_t numThreads, size_t iters) {
 
   for (auto& t : threads) {
     t.join();
-}
+  }
 }
 
 void benchmarkSharedPtrCopy(size_t numThreads, size_t iters) {
@@ -199,3 +203,5 @@ int main(int argc, char** argv) {
 
   return ret;
 }
+
+#endif // #ifdef FOLLY_USE_LIBSTDCPP

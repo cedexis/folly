@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2015-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -36,12 +36,14 @@ struct Watchdog {
   }
 
   const size_t serial_number;
-  size_t livingWatchdogCount() const { return creation_order().size(); }
+  size_t livingWatchdogCount() const {
+    return creation_order().size();
+  }
 
   Watchdog(const Watchdog&) = delete;
   Watchdog& operator=(const Watchdog&) = delete;
   Watchdog(Watchdog&&) noexcept = default;
-  Watchdog& operator=(Watchdog&&) noexcept = default;
+  Watchdog& operator=(Watchdog&&) noexcept = delete;
 };
 
 // Some basic types we use for tracking.

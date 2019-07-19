@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2017-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -221,14 +221,14 @@ class FcCustomExample : public FlatCombining<
   // custom combined op processing - overrides FlatCombining::combinedOp(Req&)
   void combinedOp(Req& req) {
     switch (req.getType()) {
-      case Req::Type::ADD: {
+      case Req::Type::ADD:
         data_.add(req.getVal());
-      } break;
-      case Req::Type::FETCHADD: {
+        return;
+      case Req::Type::FETCHADD:
         req.setRes(data_.fetchAdd(req.getVal()));
-      } break;
-      default: { assert(false); }
+        return;
     }
+    assume_unreachable();
   }
 
  private:

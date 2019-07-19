@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-present Facebook, Inc.
+ * Copyright 2017-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#include <folly/io/async/SSLContext.h>
 #include <folly/io/async/SSLOptions.h>
+#include <folly/io/async/SSLContext.h>
 #include <folly/portability/GTest.h>
 #include <folly/ssl/OpenSSLPtrTypes.h>
 
@@ -32,7 +32,7 @@ TEST_F(SSLOptionsTest, TestSetCommonCipherList) {
 
   int i = 0;
   ssl::SSLUniquePtr ssl(ctx.createSSL());
-  for (auto& cipher : ssl::SSLCommonOptions::kCipherList) {
+  for (auto& cipher : ssl::SSLCommonOptions::ciphers()) {
     ASSERT_STREQ(cipher, SSL_get_cipher_list(ssl.get(), i++));
   }
   ASSERT_EQ(nullptr, SSL_get_cipher_list(ssl.get(), i));

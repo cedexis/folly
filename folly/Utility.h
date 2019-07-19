@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +17,13 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <type_traits>
 #include <utility>
 
 #include <folly/CPortability.h>
+#include <folly/Portability.h>
+#include <folly/Traits.h>
 
 namespace folly {
 
@@ -49,7 +52,7 @@ namespace folly {
  *  Note: If passed an rvalue, invokes the move-ctor, not the copy-ctor. This
  *  can be used to to force a move, where just using std::move would not:
  *
- *      std::copy(std::move(data)); // force-move, not just a cast to &&
+ *      folly::copy(std::move(data)); // force-move, not just a cast to &&
  *
  *  Note: The following text appears in the standard:
  *
@@ -84,7 +87,7 @@ constexpr typename std::decay<T>::type copy(T&& value) noexcept(
  *
  * Like C++17's std::as_const. See http://wg21.link/p0007
  */
-#if __cpp_lib_as_const || _MSC_VER
+#if __cpp_lib_as_const || _LIBCPP_STD_VER > 14 || _MSC_VER
 
 /* using override */ using std::as_const;
 
@@ -100,88 +103,11 @@ void as_const(T const&&) = delete;
 
 #endif
 
-namespace utility_detail {
-template <typename...>
-struct make_seq_cat;
-template <
-    template <typename T, T...> class S,
-    typename T,
-    T... Ta,
-    T... Tb,
-    T... Tc>
-struct make_seq_cat<S<T, Ta...>, S<T, Tb...>, S<T, Tc...>> {
-  using type =
-      S<T,
-        Ta...,
-        (sizeof...(Ta) + Tb)...,
-        (sizeof...(Ta) + sizeof...(Tb) + Tc)...>;
-};
-
-// Not parameterizing by `template <typename T, T...> class, typename` because
-// clang precisely v4.0 fails to compile that. Note that clang v3.9 and v5.0
-// handle that code correctly.
-//
-// For this to work, `S0` is required to be `Sequence<T>` and `S1` is required
-// to be `Sequence<T, 0>`.
-
-template <std::size_t Size>
-struct make_seq {
-  template <typename S0, typename S1>
-  using apply = typename make_seq_cat<
-      typename make_seq<Size / 2>::template apply<S0, S1>,
-      typename make_seq<Size / 2>::template apply<S0, S1>,
-      typename make_seq<Size % 2>::template apply<S0, S1>>::type;
-};
-template <>
-struct make_seq<1> {
-  template <typename S0, typename S1>
-  using apply = S1;
-};
-template <>
-struct make_seq<0> {
-  template <typename S0, typename S1>
-  using apply = S0;
-};
-} // namespace utility_detail
-
-#if __cpp_lib_integer_sequence || _MSC_VER
-
-/* using override */ using std::integer_sequence;
-/* using override */ using std::index_sequence;
-
-#else
-
-// TODO: Remove after upgrading to C++14 baseline
-
-template <class T, T... Ints>
-struct integer_sequence {
-  using value_type = T;
-
-  static constexpr std::size_t size() noexcept {
-    return sizeof...(Ints);
-  }
-};
-
-template <std::size_t... Ints>
-using index_sequence = integer_sequence<std::size_t, Ints...>;
-
-#endif
-
-#if FOLLY_HAS_BUILTIN(__make_integer_seq) || _MSC_FULL_VER >= 190023918
-
-template <typename T, std::size_t Size>
-using make_integer_sequence = __make_integer_seq<integer_sequence, T, Size>;
-
-#else
-
-template <typename T, std::size_t Size>
-using make_integer_sequence = typename utility_detail::make_seq<
-    Size>::template apply<integer_sequence<T>, integer_sequence<T, 0>>;
-
-#endif
-
-template <std::size_t Size>
-using make_index_sequence = make_integer_sequence<std::size_t, Size>;
+//  mimic: forward_like, p0847r0
+template <typename Src, typename Dst>
+constexpr like_t<Src, Dst>&& forward_like(Dst&& dst) noexcept {
+  return static_cast<like_t<Src, Dst>&&>(std::forward<Dst>(dst));
+}
 
 /**
  *  Backports from C++17 of:
@@ -223,7 +149,7 @@ inline in_place_index_tag<I> in_place_index(in_place_index_tag<I> = {}) {
  * construction.
  *
  * Further standard conforming compilers *strongly* favor an
- * std::initalizer_list overload for construction if one exists.  The
+ * std::initializer_list overload for construction if one exists.  The
  * following is a simple tag used to disambiguate construction with
  * initializer lists and regular uniform initialization.
  *
@@ -262,6 +188,59 @@ inline in_place_index_tag<I> in_place_index(in_place_index_tag<I> = {}) {
 struct initlist_construct_t {};
 constexpr initlist_construct_t initlist_construct{};
 
+//  sorted_unique_t, sorted_unique
+//
+//  A generic tag type and value to indicate that some constructor or method
+//  accepts a container in which the values are sorted and unique.
+//
+//  Example:
+//
+//    void takes_numbers(folly::sorted_unique_t, std::vector<int> alist) {
+//      assert(std::is_sorted(alist.begin(), alist.end()));
+//      assert(std::unique(alist.begin(), alist.end()) == alist.end());
+//      for (i : alist) {
+//        // some behavior which safe only when alist is sorted and unique
+//      }
+//    }
+//    void takes_numbers(std::vector<int> alist) {
+//      std::sort(alist.begin(), alist.end());
+//      alist.erase(std::unique(alist.begin(), alist.end()), alist.end());
+//      takes_numbers(folly::sorted_unique, alist);
+//    }
+//
+//  mimic: std::sorted_unique_t, std::sorted_unique, p0429r6
+struct sorted_unique_t {};
+constexpr sorted_unique_t sorted_unique;
+
+//  sorted_equivalent_t, sorted_equivalent
+//
+//  A generic tag type and value to indicate that some constructor or method
+//  accepts a container in which the values are sorted but not necessarily
+//  unique.
+//
+//  Example:
+//
+//    void takes_numbers(folly::sorted_equivalent_t, std::vector<int> alist) {
+//      assert(std::is_sorted(alist.begin(), alist.end()));
+//      for (i : alist) {
+//        // some behavior which safe only when alist is sorted
+//      }
+//    }
+//    void takes_numbers(std::vector<int> alist) {
+//      std::sort(alist.begin(), alist.end());
+//      takes_numbers(folly::sorted_equivalent, alist);
+//    }
+//
+//  mimic: std::sorted_equivalent_t, std::sorted_equivalent, p0429r6
+struct sorted_equivalent_t {};
+constexpr sorted_equivalent_t sorted_equivalent;
+
+template <typename T>
+struct transparent : T {
+  using is_transparent = void;
+  using T::T;
+};
+
 /**
  * A simple function object that passes its argument through unchanged.
  *
@@ -282,7 +261,6 @@ constexpr initlist_construct_t initlist_construct{};
  *                // is no longer valid
  */
 struct Identity {
-  using is_transparent = void;
   template <class T>
   constexpr T&& operator()(T&& x) const noexcept {
     return static_cast<T&&>(x);
@@ -311,10 +289,26 @@ class MoveOnly {
 
 using MoveOnly = moveonly_::MoveOnly;
 
-/**
- * A pithy alias for std::integral_constant<bool, B>.
- */
-template <bool B>
-using Bool = std::integral_constant<bool, B>;
+template <typename T>
+constexpr auto to_signed(T const& t) -> typename std::make_signed<T>::type {
+  using S = typename std::make_signed<T>::type;
+  // note: static_cast<S>(t) would be more straightforward, but it would also be
+  // implementation-defined behavior and that is typically to be avoided; the
+  // following code optimized into the same thing, though
+  constexpr auto m = static_cast<T>(std::numeric_limits<S>::max());
+  return m < t ? -static_cast<S>(~t) + S{-1} : static_cast<S>(t);
+}
+
+template <typename T>
+constexpr auto to_unsigned(T const& t) -> typename std::make_unsigned<T>::type {
+  using U = typename std::make_unsigned<T>::type;
+  return static_cast<U>(t);
+}
+
+template <class E>
+constexpr std::underlying_type_t<E> to_underlying(E e) noexcept {
+  static_assert(std::is_enum<E>::value, "not an enum type");
+  return static_cast<std::underlying_type_t<E>>(e);
+}
 
 } // namespace folly

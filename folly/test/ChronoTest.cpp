@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2017-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +24,11 @@ namespace {
 
 class ChronoTest : public testing::Test {};
 } // namespace
+
+TEST_F(ChronoTest, abs_duration) {
+  EXPECT_EQ(seconds(7), abs(seconds(7)));
+  EXPECT_EQ(seconds(7), abs(seconds(-7)));
+}
 
 TEST_F(ChronoTest, ceil_duration) {
   EXPECT_EQ(seconds(7), ceil<seconds>(seconds(7)));

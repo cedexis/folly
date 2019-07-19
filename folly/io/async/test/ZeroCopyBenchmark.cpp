@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2017-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,9 +30,10 @@ void runClient(
             << " numLoops = " << numLoops << " zeroCopy = " << zeroCopy
             << " bufferSize = " << bufferSize;
 
+  size_t counter = 1;
   EventBase evb;
-  std::unique_ptr<ZeroCopyTestAsyncSocket> client(
-      new ZeroCopyTestAsyncSocket(&evb, numLoops, bufferSize, zeroCopy));
+  std::unique_ptr<ZeroCopyTestAsyncSocket> client(new ZeroCopyTestAsyncSocket(
+      &counter, &evb, numLoops, bufferSize, zeroCopy));
   SocketAddress addr(host, port);
   evb.runInEventBaseThread([&]() { client->connect(addr); });
 
@@ -63,43 +64,62 @@ void runServer(uint16_t port, int numLoops, bool zeroCopy, size_t bufferSize) {
 
 static auto constexpr kMaxLoops = 20000;
 
-void zeroCopyOn(unsigned /* unused */, size_t bufferSize) {
-  ZeroCopyTest test(kMaxLoops, true, bufferSize);
+void zeroCopyOn(unsigned iters, size_t bufferSize, size_t numClients = 1) {
+  BenchmarkSuspender susp;
+  ZeroCopyTest test(numClients, iters, true, bufferSize);
+  susp.dismiss();
   test.run();
+  susp.rehire();
 }
 
-void zeroCopyOff(unsigned /* unused */, size_t bufferSize) {
-  ZeroCopyTest test(kMaxLoops, false, bufferSize);
+void zeroCopyOff(unsigned iters, size_t bufferSize, size_t numClients = 1) {
+  BenchmarkSuspender susp;
+  ZeroCopyTest test(numClients, iters, false, bufferSize);
+  susp.dismiss();
   test.run();
+  susp.rehire();
 }
 
-BENCHMARK_PARAM(zeroCopyOn, 4096);
-BENCHMARK_PARAM(zeroCopyOff, 4096);
-BENCHMARK_DRAW_LINE()
-BENCHMARK_PARAM(zeroCopyOn, 8192);
-BENCHMARK_PARAM(zeroCopyOff, 8192);
-BENCHMARK_DRAW_LINE()
-BENCHMARK_PARAM(zeroCopyOn, 16384);
-BENCHMARK_PARAM(zeroCopyOff, 16384);
-BENCHMARK_DRAW_LINE()
-BENCHMARK_PARAM(zeroCopyOn, 32768);
-BENCHMARK_PARAM(zeroCopyOff, 32768);
-BENCHMARK_DRAW_LINE()
-BENCHMARK_PARAM(zeroCopyOn, 65536);
-BENCHMARK_PARAM(zeroCopyOff, 65536);
-BENCHMARK_DRAW_LINE()
-BENCHMARK_PARAM(zeroCopyOn, 131072);
-BENCHMARK_PARAM(zeroCopyOff, 131072);
-BENCHMARK_DRAW_LINE()
-BENCHMARK_PARAM(zeroCopyOn, 262144);
-BENCHMARK_PARAM(zeroCopyOff, 262144);
-BENCHMARK_DRAW_LINE()
-BENCHMARK_PARAM(zeroCopyOn, 524288);
-BENCHMARK_PARAM(zeroCopyOff, 524288);
-BENCHMARK_DRAW_LINE()
-BENCHMARK_PARAM(zeroCopyOn, 1048576);
-BENCHMARK_PARAM(zeroCopyOff, 1048576);
-BENCHMARK_DRAW_LINE()
+static auto constexpr kNumClients = 40;
+
+void zeroCopyOnMulti(unsigned iters, size_t bufferSize) {
+  zeroCopyOn(iters, bufferSize, kNumClients);
+}
+
+void zeroCopyOffMulti(unsigned iters, size_t bufferSize) {
+  zeroCopyOff(iters, bufferSize, kNumClients);
+}
+
+BENCHMARK_PARAM(zeroCopyOn, 4096)
+BENCHMARK_PARAM(zeroCopyOff, 4096)
+BENCHMARK_DRAW_LINE();
+BENCHMARK_PARAM(zeroCopyOn, 8192)
+BENCHMARK_PARAM(zeroCopyOff, 8192)
+BENCHMARK_DRAW_LINE();
+BENCHMARK_PARAM(zeroCopyOn, 16384)
+BENCHMARK_PARAM(zeroCopyOff, 16384)
+BENCHMARK_DRAW_LINE();
+BENCHMARK_PARAM(zeroCopyOn, 32768)
+BENCHMARK_PARAM(zeroCopyOff, 32768)
+BENCHMARK_DRAW_LINE();
+BENCHMARK_PARAM(zeroCopyOn, 65536)
+BENCHMARK_PARAM(zeroCopyOff, 65536)
+BENCHMARK_DRAW_LINE();
+BENCHMARK_PARAM(zeroCopyOn, 131072)
+BENCHMARK_PARAM(zeroCopyOff, 131072)
+BENCHMARK_DRAW_LINE();
+BENCHMARK_PARAM(zeroCopyOn, 262144)
+BENCHMARK_PARAM(zeroCopyOff, 262144)
+BENCHMARK_DRAW_LINE();
+BENCHMARK_PARAM(zeroCopyOn, 524288)
+BENCHMARK_PARAM(zeroCopyOff, 524288)
+BENCHMARK_DRAW_LINE();
+BENCHMARK_PARAM(zeroCopyOn, 1048576)
+BENCHMARK_PARAM(zeroCopyOff, 1048576)
+BENCHMARK_DRAW_LINE();
+BENCHMARK_PARAM(zeroCopyOnMulti, 1048576)
+BENCHMARK_PARAM(zeroCopyOffMulti, 1048576)
+BENCHMARK_DRAW_LINE();
 
 DEFINE_bool(client, false, "client mode");
 DEFINE_bool(server, false, "server mode");

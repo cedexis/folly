@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-present Facebook, Inc.
+ * Copyright 2011-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,9 +41,9 @@
 #undef UNLIKELY
 
 #if defined(__GNUC__)
-#define LIKELY(x)   (__builtin_expect((x), 1))
+#define LIKELY(x) (__builtin_expect((x), 1))
 #define UNLIKELY(x) (__builtin_expect((x), 0))
 #else
-#define LIKELY(x)   (x)
+#define LIKELY(x) (x)
 #define UNLIKELY(x) (x)
 #endif

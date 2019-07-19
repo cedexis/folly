@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2012-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,8 @@
 
 #include <iostream>
 #include <stdexcept>
+
+#include <glog/logging.h>
 
 #include <folly/Format.h>
 #include <folly/Range.h>

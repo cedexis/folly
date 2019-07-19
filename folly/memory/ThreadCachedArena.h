@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2012-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -51,7 +51,7 @@ class ThreadCachedArena {
     return arena->allocate(size);
   }
 
-  void deallocate(void* /* p */) {
+  void deallocate(void* /* p */, size_t = 0) {
     // Deallocate? Never!
   }
 
@@ -75,13 +75,16 @@ class ThreadCachedArena {
   const size_t minBlockSize_;
   const size_t maxAlign_;
 
-  ThreadLocalPtr<SysArena, ThreadLocalPtrTag> arena_;  // Per-thread arena.
+  ThreadLocalPtr<SysArena, ThreadLocalPtrTag> arena_; // Per-thread arena.
 
   // Allocations from threads that are now dead.
   Synchronized<SysArena> zombies_;
 };
 
 template <>
-struct IsArenaAllocator<ThreadCachedArena> : std::true_type { };
+struct AllocatorHasTrivialDeallocate<ThreadCachedArena> : std::true_type {};
+
+template <typename T>
+using ThreadCachedArenaAllocator = CxxAllocatorAdaptor<T, ThreadCachedArena>;
 
 } // namespace folly

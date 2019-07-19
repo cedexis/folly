@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ namespace folly {
 namespace portability {
 namespace ssl {
 
-#if OPENSSL_IS_BORINGSSL
+#ifdef OPENSSL_IS_BORINGSSL
 int SSL_CTX_set1_sigalgs_list(SSL_CTX*, const char*) {
   return 1; // 0 implies error
 }
@@ -62,6 +62,17 @@ int SSL_SESSION_up_ref(SSL_SESSION* session) {
 
 int X509_up_ref(X509* x) {
   return CRYPTO_add(&x->references, 1, CRYPTO_LOCK_X509);
+}
+
+void X509_STORE_CTX_set0_verified_chain(
+    X509_STORE_CTX* ctx,
+    STACK_OF(X509) * sk) {
+  sk_X509_pop_free(ctx->chain, X509_free);
+  ctx->chain = sk;
+}
+
+int X509_STORE_up_ref(X509_STORE* v) {
+  return CRYPTO_add(&v->references, 1, CRYPTO_LOCK_X509_STORE);
 }
 
 int EVP_PKEY_up_ref(EVP_PKEY* evp) {
@@ -114,6 +125,17 @@ EC_KEY* EVP_PKEY_get0_EC_KEY(EVP_PKEY* pkey) {
 #endif
 
 #if !FOLLY_OPENSSL_IS_110
+BIO_METHOD* BIO_meth_new(int type, const char* name) {
+  BIO_METHOD* method = (BIO_METHOD*)OPENSSL_malloc(sizeof(BIO_METHOD));
+  if (method == nullptr) {
+    return nullptr;
+  }
+  memset(method, 0, sizeof(BIO_METHOD));
+  method->type = type;
+  method->name = name;
+  return method;
+}
+
 void BIO_meth_free(BIO_METHOD* biom) {
   OPENSSL_free((void*)biom);
 }
@@ -126,6 +148,55 @@ int BIO_meth_set_read(BIO_METHOD* biom, int (*read)(BIO*, char*, int)) {
 int BIO_meth_set_write(BIO_METHOD* biom, int (*write)(BIO*, const char*, int)) {
   biom->bwrite = write;
   return 1;
+}
+
+int BIO_meth_set_puts(BIO_METHOD* biom, int (*bputs)(BIO*, const char*)) {
+  biom->bputs = bputs;
+  return 1;
+}
+
+int BIO_meth_set_gets(BIO_METHOD* biom, int (*bgets)(BIO*, char*, int)) {
+  biom->bgets = bgets;
+  return 1;
+}
+
+int BIO_meth_set_ctrl(BIO_METHOD* biom, long (*ctrl)(BIO*, int, long, void*)) {
+  biom->ctrl = ctrl;
+  return 1;
+}
+
+int BIO_meth_set_create(BIO_METHOD* biom, int (*create)(BIO*)) {
+  biom->create = create;
+  return 1;
+}
+
+int BIO_meth_set_destroy(BIO_METHOD* biom, int (*destroy)(BIO*)) {
+  biom->destroy = destroy;
+  return 1;
+}
+
+void BIO_set_data(BIO* bio, void* ptr) {
+  bio->ptr = ptr;
+}
+
+void* BIO_get_data(BIO* bio) {
+  return bio->ptr;
+}
+
+void BIO_set_init(BIO* bio, int init) {
+  bio->init = init;
+}
+
+void BIO_set_shutdown(BIO* bio, int shutdown) {
+  bio->shutdown = shutdown;
+}
+
+const SSL_METHOD* TLS_server_method(void) {
+  return TLSv1_2_server_method();
+}
+
+const SSL_METHOD* TLS_client_method(void) {
+  return TLSv1_2_client_method();
 }
 
 const char* SSL_SESSION_get0_hostname(const SSL_SESSION* s) {
@@ -208,6 +279,19 @@ void DH_get0_key(
   }
 }
 
+long DH_get_length(const DH* dh) {
+  return dh->length;
+}
+
+int DH_set_length(DH* dh, long length) {
+  if (dh != nullptr) {
+    dh->length = length;
+    return 1;
+  } else {
+    return 0;
+  }
+}
+
 void DSA_get0_pqg(
     const DSA* dsa,
     const BIGNUM** p,
@@ -236,6 +320,10 @@ void DSA_get0_key(
   if (priv_key != nullptr) {
     *priv_key = dsa->priv_key;
   }
+}
+
+STACK_OF(X509_OBJECT) * X509_STORE_get0_objects(X509_STORE* store) {
+  return store->objs;
 }
 
 X509* X509_STORE_CTX_get0_cert(X509_STORE_CTX* ctx) {
@@ -381,7 +469,7 @@ int OPENSSL_init_ssl(uint64_t, const OPENSSL_INIT_SETTINGS*) {
   // The caller should have used SSLContext::setLockTypes() prior to calling
   // this function.
   folly::ssl::detail::installThreadingLocks();
-  return 0;
+  return 1;
 }
 
 void OPENSSL_cleanup() {
@@ -398,6 +486,41 @@ const ASN1_INTEGER* X509_REVOKED_get0_serialNumber(const X509_REVOKED* r) {
 
 const ASN1_TIME* X509_REVOKED_get0_revocationDate(const X509_REVOKED* r) {
   return r->revocationDate;
+}
+
+uint32_t X509_get_extension_flags(X509* x) {
+  return x->ex_flags;
+}
+
+uint32_t X509_get_key_usage(X509* x) {
+  return x->ex_kusage;
+}
+
+uint32_t X509_get_extended_key_usage(X509* x) {
+  return x->ex_xkusage;
+}
+
+int X509_OBJECT_get_type(const X509_OBJECT* obj) {
+  return obj->type;
+}
+
+X509* X509_OBJECT_get0_X509(const X509_OBJECT* obj) {
+  if (obj == nullptr || obj->type != X509_LU_X509) {
+    return nullptr;
+  }
+  return obj->data.x509;
+}
+
+const ASN1_TIME* X509_CRL_get0_lastUpdate(const X509_CRL* crl) {
+  return X509_CRL_get_lastUpdate(crl);
+}
+
+const ASN1_TIME* X509_CRL_get0_nextUpdate(const X509_CRL* crl) {
+  return X509_CRL_get_nextUpdate(crl);
+}
+
+const X509_ALGOR* X509_get0_tbs_sigalg(const X509* x) {
+  return x->cert_info->signature;
 }
 
 #endif // !FOLLY_OPENSSL_IS_110

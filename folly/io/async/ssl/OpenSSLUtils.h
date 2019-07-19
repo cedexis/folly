@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 #pragma once
 
 #include <folly/Range.h>
+#include <folly/net/NetworkSocket.h>
 #include <folly/portability/OpenSSL.h>
 #include <folly/portability/Sockets.h>
 #include <folly/ssl/OpenSSLPtrTypes.h>
@@ -62,9 +63,8 @@ class OpenSSLUtils {
    */
   // TODO(agartrell): Add support for things like common name when
   // necessary.
-  static bool validatePeerCertNames(X509* cert,
-                                    const sockaddr* addr,
-                                    socklen_t addrLen);
+  static bool
+  validatePeerCertNames(X509* cert, const sockaddr* addr, socklen_t addrLen);
 
   /**
    * Get the peer socket address from an X509_STORE_CTX*.  Unlike the
@@ -76,9 +76,10 @@ class OpenSSLUtils {
    * @param addrLen     out param for length of address
    * @return true on success, false on failure
    */
-  static bool getPeerAddressFromX509StoreCtx(X509_STORE_CTX* ctx,
-                                             sockaddr_storage* addrStorage,
-                                             socklen_t* addrLen);
+  static bool getPeerAddressFromX509StoreCtx(
+      X509_STORE_CTX* ctx,
+      sockaddr_storage* addrStorage,
+      socklen_t* addrLen);
 
   /**
    * Get a stringified cipher name (e.g., ECDHE-ECDSA-CHACHA20-POLY1305) given
@@ -105,9 +106,14 @@ class OpenSSLUtils {
   static SSL_CTX* getSSLInitialCtx(SSL* ssl);
 
   /**
-  * Wrappers for BIO operations that may be different across different
-  * versions/flavors of OpenSSL (including forks like BoringSSL)
-  */
+   * Get the common name out of a cert.  Return empty if x509 is null.
+   */
+  static std::string getCommonName(X509* x509);
+
+  /**
+   * Wrappers for BIO operations that may be different across different
+   * versions/flavors of OpenSSL (including forks like BoringSSL)
+   */
   static BioMethodUniquePtr newSocketBioMethod();
   static bool setCustomBioReadMethod(
       BIO_METHOD* bioMeth,
@@ -118,8 +124,8 @@ class OpenSSLUtils {
   static int getBioShouldRetryWrite(int ret);
   static void setBioAppData(BIO* b, void* ptr);
   static void* getBioAppData(BIO* b);
-  static int getBioFd(BIO* b, int* fd);
-  static void setBioFd(BIO* b, int fd, int flags);
+  static NetworkSocket getBioFd(BIO* b);
+  static void setBioFd(BIO* b, NetworkSocket fd, int flags);
 };
 
 } // namespace ssl

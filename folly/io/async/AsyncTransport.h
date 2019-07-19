@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@
 
 #include <folly/io/IOBuf.h>
 #include <folly/io/async/AsyncSocketBase.h>
+#include <folly/io/async/AsyncTransportCertificate.h>
 #include <folly/io/async/DelayedDestruction.h>
 #include <folly/io/async/EventBase.h>
 #include <folly/portability/OpenSSL.h>
@@ -28,11 +29,11 @@
 
 constexpr bool kOpenSslModeMoveBufferOwnership =
 #ifdef SSL_MODE_MOVE_BUFFER_OWNERSHIP
-  true
+    true
 #else
-  false
+    false
 #endif
-;
+    ;
 
 namespace folly {
 
@@ -51,9 +52,10 @@ enum class WriteFlags : uint32_t {
    */
   CORK = 0x01,
   /*
-   * for a socket that has ACK latency enabled, it will cause the kernel
-   * to fire a TCP ESTATS event when the last byte of the given write call
-   * will be acknowledged.
+   * Used to request timestamping when entire buffer ACKed by remote endpoint.
+   *
+   * How timestamping is performed is implementation specific and may rely on
+   * software or hardware timestamps
    */
   EOR = 0x02,
   /*
@@ -64,20 +66,27 @@ enum class WriteFlags : uint32_t {
    * use msg zerocopy if allowed
    */
   WRITE_MSG_ZEROCOPY = 0x08,
+  /*
+   * Used to request timestamping when entire buffer transmitted by the NIC.
+   *
+   * How timestamping is performed is implementation specific and may rely on
+   * software or hardware timestamps
+   */
+  TIMESTAMP_TX = 0x10,
 };
 
 /*
  * union operator
  */
-inline WriteFlags operator|(WriteFlags a, WriteFlags b) {
+constexpr WriteFlags operator|(WriteFlags a, WriteFlags b) {
   return static_cast<WriteFlags>(
-    static_cast<uint32_t>(a) | static_cast<uint32_t>(b));
+      static_cast<uint32_t>(a) | static_cast<uint32_t>(b));
 }
 
 /*
  * compound assignment union operator
  */
-inline WriteFlags& operator|=(WriteFlags& a, WriteFlags b) {
+constexpr WriteFlags& operator|=(WriteFlags& a, WriteFlags b) {
   a = a | b;
   return a;
 }
@@ -85,15 +94,15 @@ inline WriteFlags& operator|=(WriteFlags& a, WriteFlags b) {
 /*
  * intersection operator
  */
-inline WriteFlags operator&(WriteFlags a, WriteFlags b) {
+constexpr WriteFlags operator&(WriteFlags a, WriteFlags b) {
   return static_cast<WriteFlags>(
-    static_cast<uint32_t>(a) & static_cast<uint32_t>(b));
+      static_cast<uint32_t>(a) & static_cast<uint32_t>(b));
 }
 
 /*
  * compound assignment intersection operator
  */
-inline WriteFlags& operator&=(WriteFlags& a, WriteFlags b) {
+constexpr WriteFlags& operator&=(WriteFlags& a, WriteFlags b) {
   a = a & b;
   return a;
 }
@@ -101,24 +110,36 @@ inline WriteFlags& operator&=(WriteFlags& a, WriteFlags b) {
 /*
  * exclusion parameter
  */
-inline WriteFlags operator~(WriteFlags a) {
+constexpr WriteFlags operator~(WriteFlags a) {
   return static_cast<WriteFlags>(~static_cast<uint32_t>(a));
 }
 
 /*
  * unset operator
  */
-inline WriteFlags unSet(WriteFlags a, WriteFlags b) {
+constexpr WriteFlags unSet(WriteFlags a, WriteFlags b) {
   return a & ~b;
 }
 
 /*
  * inclusion operator
  */
-inline bool isSet(WriteFlags a, WriteFlags b) {
+constexpr bool isSet(WriteFlags a, WriteFlags b) {
   return (a & b) == b;
 }
 
+/**
+ * Write flags that are specifically for the final write call of a buffer.
+ *
+ * In some cases, buffers passed to send may be coalesced or split by the socket
+ * write handling logic. For instance, a buffer passed to AsyncSSLSocket may be
+ * split across multiple TLS records (and therefore multiple calls to write).
+ *
+ * When a buffer is split up, these flags will only be applied for the final
+ * call to write for that buffer.
+ */
+constexpr WriteFlags kEorRelevantWriteFlags =
+    WriteFlags::EOR | WriteFlags::TIMESTAMP_TX;
 
 /**
  * AsyncTransport defines an asynchronous API for streaming I/O.
@@ -379,14 +400,16 @@ class AsyncTransport : public DelayedDestruction, public AsyncSocketBase {
   }
 
   /**
-   * Get the certificate used to authenticate the peer.
+   * Get the peer certificate information if any
    */
-  virtual ssl::X509UniquePtr getPeerCert() const { return nullptr; }
+  virtual const AsyncTransportCertificate* getPeerCertificate() const {
+    return nullptr;
+  }
 
   /**
-   * The local certificate used for this connection. May be null
+   * Get the certificate information of this transport, if any
    */
-  virtual const X509* getSelfCert() const {
+  virtual const AsyncTransportCertificate* getSelfCertificate() const {
     return nullptr;
   }
 
@@ -395,7 +418,7 @@ class AsyncTransport : public DelayedDestruction, public AsyncSocketBase {
    * protocol. This is useful for transports which are used to tunnel other
    * protocols.
    */
-  virtual std::string getApplicationProtocol() noexcept {
+  virtual std::string getApplicationProtocol() const noexcept {
     return "";
   }
 
@@ -418,10 +441,34 @@ class AsyncTransport : public DelayedDestruction, public AsyncSocketBase {
   virtual size_t getAppBytesReceived() const = 0;
   virtual size_t getRawBytesReceived() const = 0;
 
+  /**
+   * Calculates the total number of bytes that are currently buffered in the
+   * transport to be written later.
+   */
+  virtual size_t getAppBytesBuffered() const {
+    return 0;
+  }
+  virtual size_t getRawBytesBuffered() const {
+    return 0;
+  }
+
+  /**
+   * Callback class to signal changes in the transport's internal buffers.
+   */
   class BufferCallback {
    public:
-    virtual ~BufferCallback() {}
+    virtual ~BufferCallback() = default;
+
+    /**
+     * onEgressBuffered() will be invoked when there's a partial write and it
+     * is necessary to buffer the remaining data.
+     */
     virtual void onEgressBuffered() = 0;
+
+    /**
+     * onEgressBufferCleared() will be invoked when whatever was buffered is
+     * written, or when it errors out.
+     */
     virtual void onEgressBufferCleared() = 0;
   };
 
@@ -444,7 +491,9 @@ class AsyncTransport : public DelayedDestruction, public AsyncSocketBase {
    * False if the transport does not have replay protection, but will in the
    * future.
    */
-  virtual bool isReplaySafe() const { return true; }
+  virtual bool isReplaySafe() const {
+    return true;
+  }
 
   /**
    * Set the ReplaySafeCallback on this transport.
@@ -565,8 +614,8 @@ class AsyncReader {
      * @param readBuf The unique pointer of read buffer.
      */
 
-    virtual void readBufferAvailable(std::unique_ptr<IOBuf> /*readBuf*/)
-      noexcept {}
+    virtual void readBufferAvailable(
+        std::unique_ptr<IOBuf> /*readBuf*/) noexcept {}
 
     /**
      * readEOF() will be invoked when the transport is closed.
@@ -621,18 +670,54 @@ class AsyncWriter {
      * @param bytesWritten      The number of bytes that were successfull
      * @param ex                An exception describing the error that occurred.
      */
-    virtual void writeErr(size_t bytesWritten,
-                          const AsyncSocketException& ex) noexcept = 0;
+    virtual void writeErr(
+        size_t bytesWritten,
+        const AsyncSocketException& ex) noexcept = 0;
   };
 
-  // Write methods that aren't part of AsyncTransport
-  virtual void write(WriteCallback* callback, const void* buf, size_t bytes,
-                     WriteFlags flags = WriteFlags::NONE) = 0;
-  virtual void writev(WriteCallback* callback, const iovec* vec, size_t count,
-                      WriteFlags flags = WriteFlags::NONE) = 0;
-  virtual void writeChain(WriteCallback* callback,
-                          std::unique_ptr<IOBuf>&& buf,
-                          WriteFlags flags = WriteFlags::NONE) = 0;
+  /**
+   * If you supply a non-null WriteCallback, exactly one of writeSuccess()
+   * or writeErr() will be invoked when the write completes. If you supply
+   * the same WriteCallback object for multiple write() calls, it will be
+   * invoked exactly once per call. The only way to cancel outstanding
+   * write requests is to close the socket (e.g., with closeNow() or
+   * shutdownWriteNow()). When closing the socket this way, writeErr() will
+   * still be invoked once for each outstanding write operation.
+   */
+  virtual void write(
+      WriteCallback* callback,
+      const void* buf,
+      size_t bytes,
+      WriteFlags flags = WriteFlags::NONE) = 0;
+
+  /**
+   * If you supply a non-null WriteCallback, exactly one of writeSuccess()
+   * or writeErr() will be invoked when the write completes. If you supply
+   * the same WriteCallback object for multiple write() calls, it will be
+   * invoked exactly once per call. The only way to cancel outstanding
+   * write requests is to close the socket (e.g., with closeNow() or
+   * shutdownWriteNow()). When closing the socket this way, writeErr() will
+   * still be invoked once for each outstanding write operation.
+   */
+  virtual void writev(
+      WriteCallback* callback,
+      const iovec* vec,
+      size_t count,
+      WriteFlags flags = WriteFlags::NONE) = 0;
+
+  /**
+   * If you supply a non-null WriteCallback, exactly one of writeSuccess()
+   * or writeErr() will be invoked when the write completes. If you supply
+   * the same WriteCallback object for multiple write() calls, it will be
+   * invoked exactly once per call. The only way to cancel outstanding
+   * write requests is to close the socket (e.g., with closeNow() or
+   * shutdownWriteNow()). When closing the socket this way, writeErr() will
+   * still be invoked once for each outstanding write operation.
+   */
+  virtual void writeChain(
+      WriteCallback* callback,
+      std::unique_ptr<IOBuf>&& buf,
+      WriteFlags flags = WriteFlags::NONE) = 0;
 
  protected:
   virtual ~AsyncWriter() = default;
@@ -648,8 +733,8 @@ class AsyncTransportWrapper : virtual public AsyncTransport,
 
   // Alias for inherited members from AsyncReader and AsyncWriter
   // to keep compatibility.
-  using ReadCallback    = AsyncReader::ReadCallback;
-  using WriteCallback   = AsyncWriter::WriteCallback;
+  using ReadCallback = AsyncReader::ReadCallback;
+  using WriteCallback = AsyncWriter::WriteCallback;
   void setReadCB(ReadCallback* callback) override = 0;
   ReadCallback* getReadCallback() const override = 0;
   void write(
@@ -696,7 +781,7 @@ class AsyncTransportWrapper : virtual public AsyncTransport,
   template <class T>
   T* getUnderlyingTransport() {
     return const_cast<T*>(static_cast<const AsyncTransportWrapper*>(this)
-        ->getUnderlyingTransport<T>());
+                              ->getUnderlyingTransport<T>());
   }
 };
 

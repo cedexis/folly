@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2011-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -49,7 +49,6 @@ std::string codePointToUtf8(char32_t cp) {
   return result;
 }
 
-
 char32_t utf8ToCodePoint(
     const unsigned char*& p,
     const unsigned char* const e,
@@ -64,7 +63,10 @@ char32_t utf8ToCodePoint(
    * 1111110x 10xxxxxx 10xxxxxx 10xxxxxx 10xxxxxx 10xxxxxx
    */
 
-  auto skip = [&] { ++p; return U'\ufffd'; };
+  const auto skip = [&] {
+    ++p;
+    return U'\ufffd';
+  };
 
   if (p >= e) {
     if (skipOnError) {
@@ -80,10 +82,10 @@ char32_t utf8ToCodePoint(
   }
 
   static const uint32_t bitMask[] = {
-    (1 << 7) - 1,
-    (1 << 11) - 1,
-    (1 << 16) - 1,
-    (1 << 21) - 1
+      (1 << 7) - 1,
+      (1 << 11) - 1,
+      (1 << 16) - 1,
+      (1 << 21) - 1,
   };
 
   // upper control bits are masked out later
@@ -93,20 +95,21 @@ char32_t utf8ToCodePoint(
     if (skipOnError) {
       return skip();
     }
-    throw std::runtime_error(to<std::string>("folly::utf8ToCodePoint i=0 d=", d));
+    throw std::runtime_error(
+        to<std::string>("folly::utf8ToCodePoint i=0 d=", d));
   }
 
   fst <<= 1;
 
-  for (unsigned int i = 1; i != 3 && p + i < e; ++i) {
-    unsigned char tmp = p[i];
+  for (unsigned int i = 1; i != 4 && p + i < e; ++i) {
+    const unsigned char tmp = p[i];
 
     if ((tmp & 0xC0) != 0x80) {
       if (skipOnError) {
         return skip();
       }
-      throw std::runtime_error(
-        to<std::string>("folly::utf8ToCodePoint i=", i, " tmp=", (uint32_t)tmp));
+      throw std::runtime_error(to<std::string>(
+          "folly::utf8ToCodePoint i=", i, " tmp=", (uint32_t)tmp));
     }
 
     d = (d << 6) | (tmp & 0x3F);
@@ -121,7 +124,7 @@ char32_t utf8ToCodePoint(
           return skip();
         }
         throw std::runtime_error(
-          to<std::string>("folly::utf8ToCodePoint i=", i, " d=", d));
+            to<std::string>("folly::utf8ToCodePoint i=", i, " d=", d));
       }
 
       // check for surrogates only needed for 3 bytes
@@ -131,7 +134,7 @@ char32_t utf8ToCodePoint(
             return skip();
           }
           throw std::runtime_error(
-            to<std::string>("folly::utf8ToCodePoint i=", i, " d=", d));
+              to<std::string>("folly::utf8ToCodePoint i=", i, " d=", d));
         }
       }
 

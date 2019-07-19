@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,7 +39,7 @@ class PMap;
  *       caller thread.
  */
 template <class Predicate, class PMap = detail::PMap<Predicate>>
-  PMap pmap(Predicate pred = Predicate(), size_t nThreads = 0) {
+PMap pmap(Predicate pred = Predicate(), size_t nThreads = 0) {
   return PMap(std::move(pred), nThreads);
 }
 } // namespace gen

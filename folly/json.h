@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2011-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -68,7 +68,8 @@ struct serialization_opts {
         double_num_digits(0), // ignored when mode is SHORTEST
         double_fallback(false),
         parse_numbers_as_strings(false),
-        recursion_limit(100) {}
+        recursion_limit(100),
+        extra_ascii_to_escape_bitmap{{0, 0}} {}
 
   // If true, keys in an object can be non-strings.  (In strict
   // JSON, object keys must be strings.)  This is used by dynamic's
@@ -86,7 +87,9 @@ struct serialization_opts {
   // try to be minimally "pretty".
   bool pretty_formatting;
 
-  // If true, non-ASCII utf8 characters would be encoded as \uXXXX.
+  // If true, non-ASCII utf8 characters would be encoded as \uXXXX:
+  // - if the code point is in [U+0000..U+FFFF] => encode as a single \uXXXX
+  // - if the code point is > U+FFFF => encode as 2 UTF-16 surrogate pairs.
   bool encode_non_ascii;
 
   // Check that strings are valid utf8
@@ -125,7 +128,21 @@ struct serialization_opts {
 
   // Recursion limit when parsing.
   unsigned int recursion_limit;
+
+  // Bitmap representing ASCII characters to escape with unicode
+  // representations. The least significant bit of the first in the pair is
+  // ASCII value 0; the most significant bit of the second in the pair is ASCII
+  // value 127. Some specific characters in this range are always escaped
+  // regardless of the bitmask - namely characters less than 0x20, \, and ".
+  std::array<uint64_t, 2> extra_ascii_to_escape_bitmap;
 };
+
+/*
+ * Generates a bitmap with bits set for each of the ASCII characters provided
+ * for use in the serialization_opts extra_ascii_to_escape_bitmap option. If any
+ * characters are not valid ASCII, they are ignored.
+ */
+std::array<uint64_t, 2> buildExtraAsciiToEscapeBitmap(StringPiece chars);
 
 /*
  * Main JSON serialization routine taking folly::dynamic parameters.
@@ -148,6 +165,24 @@ void escapeString(
  * Strip all C99-like comments (i.e. // and / * ... * /)
  */
 std::string stripComments(StringPiece jsonC);
+
+// may be extened in future to include offset, col, etc.
+struct parse_location {
+  uint32_t line{}; // 0-indexed
+};
+
+// may be extended in future to include end location
+struct parse_range {
+  parse_location begin;
+};
+
+struct parse_metadata {
+  parse_range key_range;
+  parse_range value_range;
+};
+
+using metadata_map = std::unordered_map<dynamic const*, parse_metadata>;
+
 } // namespace json
 
 //////////////////////////////////////////////////////////////////////
@@ -158,6 +193,12 @@ std::string stripComments(StringPiece jsonC);
  */
 dynamic parseJson(StringPiece, json::serialization_opts const&);
 dynamic parseJson(StringPiece);
+
+dynamic parseJsonWithMetadata(StringPiece range, json::metadata_map* map);
+dynamic parseJsonWithMetadata(
+    StringPiece range,
+    json::serialization_opts const& opts,
+    json::metadata_map* map);
 
 /*
  * Serialize a dynamic into a json string.

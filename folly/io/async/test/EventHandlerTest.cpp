@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,8 +31,7 @@ using namespace std;
 using namespace folly;
 using namespace testing;
 
-void runInThreadsAndWait(
-    size_t nthreads, function<void(size_t)> cb) {
+void runInThreadsAndWait(size_t nthreads, function<void(size_t)> cb) {
   vector<thread> threads(nthreads);
   for (size_t i = 0; i < nthreads; ++i) {
     threads[i] = thread(cb, i);
@@ -48,7 +47,8 @@ void runInThreadsAndWait(vector<function<void()>> cbs) {
 
 class EventHandlerMock : public EventHandler {
  public:
-  EventHandlerMock(EventBase* eb, int fd) : EventHandler(eb, fd) {}
+  EventHandlerMock(EventBase* eb, int fd)
+      : EventHandler(eb, NetworkSocket::fromFd(fd)) {}
   // gmock can't mock noexcept methods, so we need an intermediary
   MOCK_METHOD1(_handlerReady, void(uint16_t));
   void handlerReady(uint16_t events) noexcept override {
@@ -125,14 +125,12 @@ TEST_F(EventHandlerTest, many_concurrent_producers) {
         eb.loop();
       },
       [&] {
-        runInThreadsAndWait(nproducers,
-                            [&](size_t /* k */) {
-                              for (size_t i = 0; i < writes / nproducers; ++i) {
-                                this_thread::sleep_for(
-                                    std::chrono::milliseconds(1));
-                                efd_write(1);
-                              }
-                            });
+        runInThreadsAndWait(nproducers, [&](size_t /* k */) {
+          for (size_t i = 0; i < writes / nproducers; ++i) {
+            this_thread::sleep_for(std::chrono::milliseconds(1));
+            efd_write(1);
+          }
+        });
       },
   });
 
@@ -150,39 +148,35 @@ TEST_F(EventHandlerTest, many_concurrent_consumers) {
 
   runInThreadsAndWait({
       [&] {
-        runInThreadsAndWait(
-            nconsumers,
-            [&](size_t /* k */) {
-              size_t thReadsRemaining = writes / nconsumers;
-              EventBase eb;
-              EventHandlerMock eh(&eb, efd);
-              eh.registerHandler(EventHandler::READ | EventHandler::PERSIST);
-              EXPECT_CALL(eh, _handlerReady(_))
-                  .WillRepeatedly(Invoke([&](uint16_t /* events */) {
-                    nullptr_t val;
-                    if (!queue.readIfNotEmpty(val)) {
-                      return;
-                    }
-                    efd_read();
-                    --readsRemaining;
-                    if (--thReadsRemaining == 0) {
-                      eh.unregisterHandler();
-                    }
-                  }));
-              eb.loop();
-            });
+        runInThreadsAndWait(nconsumers, [&](size_t /* k */) {
+          size_t thReadsRemaining = writes / nconsumers;
+          EventBase eb;
+          EventHandlerMock eh(&eb, efd);
+          eh.registerHandler(EventHandler::READ | EventHandler::PERSIST);
+          EXPECT_CALL(eh, _handlerReady(_))
+              .WillRepeatedly(Invoke([&](uint16_t /* events */) {
+                nullptr_t val;
+                if (!queue.readIfNotEmpty(val)) {
+                  return;
+                }
+                efd_read();
+                --readsRemaining;
+                if (--thReadsRemaining == 0) {
+                  eh.unregisterHandler();
+                }
+              }));
+          eb.loop();
+        });
       },
       [&] {
-        runInThreadsAndWait(nproducers,
-                            [&](size_t /* k */) {
-                              for (size_t i = 0; i < writes / nproducers; ++i) {
-                                this_thread::sleep_for(
-                                    std::chrono::milliseconds(1));
-                                queue.blockingWrite(nullptr);
-                                efd_write(1);
-                                --writesRemaining;
-                              }
-                            });
+        runInThreadsAndWait(nproducers, [&](size_t /* k */) {
+          for (size_t i = 0; i < writes / nproducers; ++i) {
+            this_thread::sleep_for(std::chrono::milliseconds(1));
+            queue.blockingWrite(nullptr);
+            efd_write(1);
+            --writesRemaining;
+          }
+        });
       },
   });
 
@@ -205,33 +199,32 @@ class EventHandlerOobTest : public ::testing::Test {
   // clientOps(fd) where fd is the connection file descriptor
   //
   void runClient(std::function<void(int fd)> clientOps) {
-    clientThread = std::thread(
-        [ serverPortFuture = serverReady.get_future(), clientOps ]() mutable {
-          int clientFd = socket(AF_INET, SOCK_STREAM, 0);
-          SCOPE_EXIT {
-            close(clientFd);
-          };
-          struct hostent* he{nullptr};
-          struct sockaddr_in server;
+    clientThread = std::thread([serverPortFuture = serverReady.get_future(),
+                                clientOps]() mutable {
+      int clientFd = socket(AF_INET, SOCK_STREAM, 0);
+      SCOPE_EXIT {
+        close(clientFd);
+      };
+      struct hostent* he{nullptr};
+      struct sockaddr_in server;
 
-          std::array<const char, 10> hostname = {"localhost"};
-          he = gethostbyname(hostname.data());
-          PCHECK(he);
+      std::array<const char, 10> hostname = {"localhost"};
+      he = gethostbyname(hostname.data());
+      PCHECK(he);
 
-          memcpy(&server.sin_addr, he->h_addr_list[0], he->h_length);
-          server.sin_family = AF_INET;
+      memcpy(&server.sin_addr, he->h_addr_list[0], he->h_length);
+      server.sin_family = AF_INET;
 
-          // block here until port is known
-          server.sin_port = serverPortFuture.get();
-          LOG(INFO) << "Server is ready";
+      // block here until port is known
+      server.sin_port = serverPortFuture.get();
+      LOG(INFO) << "Server is ready";
 
-          PCHECK(
-              ::connect(clientFd, (struct sockaddr*)&server, sizeof(server)) ==
-              0);
-          LOG(INFO) << "Server connection available";
+      PCHECK(
+          ::connect(clientFd, (struct sockaddr*)&server, sizeof(server)) == 0);
+      LOG(INFO) << "Server connection available";
 
-          clientOps(clientFd);
-        });
+      clientOps(clientFd);
+    });
   }
 
   //
@@ -294,7 +287,8 @@ TEST_F(EventHandlerOobTest, EPOLLPRI) {
   acceptConn();
 
   struct SockEvent : public EventHandler {
-    SockEvent(EventBase* eb, int fd) : EventHandler(eb, fd), fd_(fd) {}
+    SockEvent(EventBase* eb, int fd)
+        : EventHandler(eb, NetworkSocket::fromFd(fd)), fd_(fd) {}
 
     void handlerReady(uint16_t events) noexcept override {
       EXPECT_TRUE(EventHandler::EventFlags::PRI & events);
@@ -343,7 +337,8 @@ TEST_F(EventHandlerOobTest, OOB_AND_NORMAL_DATA) {
   acceptConn();
 
   struct SockEvent : public EventHandler {
-    SockEvent(EventBase* eb, int fd) : EventHandler(eb, fd), eb_(eb), fd_(fd) {}
+    SockEvent(EventBase* eb, int fd)
+        : EventHandler(eb, NetworkSocket::fromFd(fd)), eb_(eb), fd_(fd) {}
 
     void handlerReady(uint16_t events) noexcept override {
       std::array<char, 255> buffer;
@@ -396,7 +391,8 @@ TEST_F(EventHandlerOobTest, SWALLOW_OOB) {
   acceptConn();
 
   struct SockEvent : public EventHandler {
-    SockEvent(EventBase* eb, int fd) : EventHandler(eb, fd), fd_(fd) {}
+    SockEvent(EventBase* eb, int fd)
+        : EventHandler(eb, NetworkSocket::fromFd(fd)), fd_(fd) {}
 
     void handlerReady(uint16_t events) noexcept override {
       std::array<char, 255> buffer;

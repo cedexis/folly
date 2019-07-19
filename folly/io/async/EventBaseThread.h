@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,6 +35,8 @@ class EventBaseThread {
   explicit EventBaseThread(EventBaseManager* ebm);
   ~EventBaseThread();
 
+  EventBaseThread(EventBaseThread const&) = delete;
+  EventBaseThread& operator=(EventBaseThread const&) = delete;
   EventBaseThread(EventBaseThread&&) noexcept;
   EventBaseThread& operator=(EventBaseThread&&) noexcept;
 
@@ -45,9 +47,6 @@ class EventBaseThread {
   void stop();
 
  private:
-  EventBaseThread(EventBaseThread const&) = default;
-  EventBaseThread& operator=(EventBaseThread const&) = default;
-
   EventBaseManager* ebm_;
   std::unique_ptr<ScopedEventBaseThread> th_;
 };

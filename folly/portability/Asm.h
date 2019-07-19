@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,13 +18,15 @@
 
 #include <folly/Portability.h>
 
+#include <cstdint>
+
 #ifdef _MSC_VER
 #include <intrin.h>
 #endif
 
 namespace folly {
 inline void asm_volatile_memory() {
-#if defined(__clang__) || defined(__GNUC__)
+#if defined(__GNUC__)
   asm volatile("" : : : "memory");
 #elif defined(_MSC_VER)
   ::_ReadWriteBarrier();

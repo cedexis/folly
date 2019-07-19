@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,39 +28,12 @@
 #include <folly/portability/Fcntl.h>
 #endif
 
+#include <folly/net/detail/SocketFileDescriptorMap.h>
+
 namespace folly {
 #ifdef _MSC_VER
 using libevent_fd_t = evutil_socket_t;
 #else
 using libevent_fd_t = int;
 #endif
-
-inline libevent_fd_t getLibeventFd(int fd) {
-#ifdef _MSC_VER
-  if (fd == -1) {
-    return (libevent_fd_t)INVALID_HANDLE_VALUE;
-  }
-  return _get_osfhandle(fd);
-#else
-  return fd;
-#endif
-}
-
-inline int libeventFdToFd(libevent_fd_t fd) {
-#ifdef _MSC_VER
-  if (fd == (libevent_fd_t)INVALID_HANDLE_VALUE) {
-    return -1;
-  }
-  return _open_osfhandle((intptr_t)fd, O_RDWR | O_BINARY);
-#else
-  return fd;
-#endif
-}
-
-using EventSetCallback = void (*)(libevent_fd_t, short, void*);
-inline void
-folly_event_set(event* e, int fd, short s, EventSetCallback f, void* arg) {
-  auto lfd = getLibeventFd(fd);
-  event_set(e, lfd, s, f, arg);
-}
 } // namespace folly

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright 2012-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,9 +18,11 @@
 
 #include <folly/experimental/exception_tracer/ExceptionTracer.h>
 
+// clang-format off
 [[noreturn]] void bar() {
   throw std::runtime_error("hello");
 }
+// clang-format on
 
 void dumpExceptions(const char* prefix) {
   std::cerr << "--- " << prefix << "\n";

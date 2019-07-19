@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2015-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,8 +40,7 @@ static void run(
   eb->loopForever();
 
   // must destruct in io thread for on-destruction callbacks
-  EventBase::StackFunctionLoopCallback cb([=] { ebm->clearEventBase(); });
-  eb->runOnDestruction(&cb);
+  eb->runOnDestruction([=] { ebm->clearEventBase(); });
   // wait until terminateLoopSoon() is complete
   stop->wait();
   eb->~EventBase();

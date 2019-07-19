@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2012-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,7 +40,7 @@ struct ProducerConsumerQueue {
   typedef T value_type;
 
   ProducerConsumerQueue(const ProducerConsumerQueue&) = delete;
-  ProducerConsumerQueue& operator = (const ProducerConsumerQueue&) = delete;
+  ProducerConsumerQueue& operator=(const ProducerConsumerQueue&) = delete;
 
   // size must be >= 2.
   //
@@ -48,11 +48,10 @@ struct ProducerConsumerQueue {
   // given time is actually (size-1), so if you start with an empty queue,
   // isFull() will return true after size-1 insertions.
   explicit ProducerConsumerQueue(uint32_t size)
-    : size_(size)
-    , records_(static_cast<T*>(std::malloc(sizeof(T) * size)))
-    , readIndex_(0)
-    , writeIndex_(0)
-  {
+      : size_(size),
+        records_(static_cast<T*>(std::malloc(sizeof(T) * size))),
+        readIndex_(0),
+        writeIndex_(0) {
     assert(size >= 2);
     if (!records_) {
       throw std::bad_alloc();
@@ -173,16 +172,16 @@ struct ProducerConsumerQueue {
   }
 
  private:
+  using AtomicIndex = std::atomic<unsigned int>;
+
   char pad0_[hardware_destructive_interference_size];
   const uint32_t size_;
   T* const records_;
 
-  alignas(hardware_destructive_interference_size)
-      std::atomic<unsigned int> readIndex_;
-  alignas(hardware_destructive_interference_size)
-      std::atomic<unsigned int> writeIndex_;
+  alignas(hardware_destructive_interference_size) AtomicIndex readIndex_;
+  alignas(hardware_destructive_interference_size) AtomicIndex writeIndex_;
 
-  char pad1_[hardware_destructive_interference_size - sizeof(writeIndex_)];
+  char pad1_[hardware_destructive_interference_size - sizeof(AtomicIndex)];
 };
 
 } // namespace folly

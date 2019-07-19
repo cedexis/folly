@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 
 #include <folly/Singleton.h>
+#include <folly/portability/Config.h>
 
 #ifndef _WIN32
 #include <dlfcn.h>
@@ -29,6 +30,7 @@
 #include <folly/Demangle.h>
 #include <folly/Format.h>
 #include <folly/ScopeGuard.h>
+#include <folly/detail/SingletonStackTrace.h>
 
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(__ANDROID__)
 #define FOLLY_SINGLETON_HAVE_DLSYM 1
@@ -68,6 +70,7 @@ std::string TypeDescriptor::name() const {
   return ret.toStdString();
 }
 
+// clang-format off
 [[noreturn]] void singletonWarnDoubleRegistrationAndAbort(
     const TypeDescriptor& type) {
   // Ensure the availability of std::cerr
@@ -92,11 +95,10 @@ std::string TypeDescriptor::name() const {
 
 [[noreturn]] void singletonWarnLeakyInstantiatingNotRegisteredAndAbort(
     const TypeDescriptor& type) {
-  auto ptr = SingletonVault::stackTraceGetter().load();
-  LOG(FATAL) << "Creating instance for unregistered singleton: "
-             << type.name() << "\n"
-             << "Stacktrace:"
-             << "\n" << (ptr ? (*ptr)() : "(not available)");
+  auto trace = detail::getSingletonStackTrace();
+  LOG(FATAL) << "Creating instance for unregistered singleton: " << type.name()
+             << "\n"
+             << "Stacktrace:\n" << (trace != "" ? trace : "(not available)");
 }
 
 [[noreturn]] void singletonWarnRegisterMockEarlyAndAbort(
@@ -125,43 +127,27 @@ void singletonWarnDestroyInstanceLeak(
 
 [[noreturn]] void singletonWarnCreateUnregisteredAndAbort(
     const TypeDescriptor& type) {
-  auto ptr = SingletonVault::stackTraceGetter().load();
-  LOG(FATAL) << "Creating instance for unregistered singleton: "
-             << type.name() << "\n"
-             << "Stacktrace:"
+  auto trace = detail::getSingletonStackTrace();
+  LOG(FATAL) << "Creating instance for unregistered singleton: " << type.name()
              << "\n"
-             << (ptr ? (*ptr)() : "(not available)");
+             << "Stacktrace:\n" << (trace != "" ? trace : "(not available)");
 }
 
 [[noreturn]] void singletonWarnCreateBeforeRegistrationCompleteAndAbort(
     const TypeDescriptor& type) {
-  auto stack_trace_getter = SingletonVault::stackTraceGetter().load();
-  auto stack_trace = stack_trace_getter ? stack_trace_getter() : "";
-  if (!stack_trace.empty()) {
-    stack_trace = "Stack trace:\n" + stack_trace;
-  }
-
+  auto trace = detail::getSingletonStackTrace();
   LOG(FATAL) << "Singleton " << type.name() << " requested before "
              << "registrationComplete() call.\n"
              << "This usually means that either main() never called "
              << "folly::init, or singleton was requested before main() "
              << "(which is not allowed).\n"
-             << stack_trace;
+             << "Stacktrace:\n" << (trace != "" ? trace : "(not available)");
 }
 
 void singletonPrintDestructionStackTrace(const TypeDescriptor& type) {
-  std::string output = "Singleton " + type.name() + " was released.\n";
-
-  auto stack_trace_getter = SingletonVault::stackTraceGetter().load();
-  auto stack_trace = stack_trace_getter ? stack_trace_getter() : "";
-  if (stack_trace.empty()) {
-    output += "Failed to get release stack trace.";
-  } else {
-    output += "Release stack trace:\n";
-    output += stack_trace;
-  }
-
-  LOG(ERROR) << output;
+  auto trace = detail::getSingletonStackTrace();
+  LOG(ERROR) << "Singleton " << type.name() << " was released.\n"
+             << "Stacktrace:\n" << (trace != "" ? trace : "(not available)");
 }
 
 [[noreturn]] void singletonThrowNullCreator(const std::type_info& type) {
@@ -178,10 +164,7 @@ void singletonPrintDestructionStackTrace(const TypeDescriptor& type) {
       " Singleton type is: " +
       type.name());
 }
-
-[[noreturn]] void SingletonVaultState::throwUnexpectedState(const char* msg) {
-  throw std::logic_error(msg);
-}
+// clang-format on
 
 } // namespace detail
 
@@ -195,7 +178,8 @@ struct FatalHelper {
         leakedTypes += "\t" + singleton.name() + "\n";
       }
       LOG(DFATAL) << "Singletons of the following types had living references "
-                  << "after destroyInstances was finished:\n" << leakedTypes
+                  << "after destroyInstances was finished:\n"
+                  << leakedTypes
                   << "beware! It is very likely that those singleton instances "
                   << "are leaked.";
     }
@@ -208,12 +192,14 @@ struct FatalHelper {
 // OS X doesn't support constructor priorities.
 FatalHelper fatalHelper;
 #else
-FatalHelper __attribute__ ((__init_priority__ (101))) fatalHelper;
+FatalHelper __attribute__((__init_priority__(101))) fatalHelper;
 #endif
 
 } // namespace
 
-SingletonVault::~SingletonVault() { destroyInstances(); }
+SingletonVault::~SingletonVault() {
+  destroyInstances();
+}
 
 void SingletonVault::registerSingleton(detail::SingletonHolderBase* entry) {
   auto state = state_.rlock();
@@ -243,7 +229,7 @@ void SingletonVault::addEagerInitSingleton(detail::SingletonHolderBase* entry) {
 }
 
 void SingletonVault::registrationComplete() {
-  std::atexit([](){ SingletonVault::singleton()->destroyInstances(); });
+  std::atexit([]() { SingletonVault::singleton()->destroyInstances(); });
 
   auto state = state_.wlock();
   state->check(detail::SingletonVaultState::Type::Running);
@@ -347,12 +333,12 @@ void SingletonVault::destroyInstances() {
     }
 
     for (auto& singleton_type : *creationOrder) {
-      auto singleton = singletons->at(singleton_type);
-      if (!singleton->hasLiveInstance()) {
+      auto instance = singletons->at(singleton_type);
+      if (!instance->hasLiveInstance()) {
         continue;
       }
 
-      fatalHelper.leakedSingletons_.push_back(singleton->type());
+      fatalHelper.leakedSingletons_.push_back(instance->type());
     }
   }
 
@@ -374,19 +360,7 @@ void SingletonVault::scheduleDestroyInstances() {
   // Add a dependency on folly::ThreadLocal to make sure all its static
   // singletons are initalized first.
   threadlocal_detail::StaticMeta<void, void>::instance();
-
-  class SingletonVaultDestructor {
-   public:
-    ~SingletonVaultDestructor() {
-      SingletonVault::singleton()->destroyInstances();
-    }
-  };
-
-  // Here we intialize a singleton, which calls destroyInstances in its
-  // destructor. Because of singleton destruction order - it will be destroyed
-  // before all the singletons, which were initialized before it and after all
-  // the singletons initialized after it.
-  static SingletonVaultDestructor singletonVaultDestructor;
+  std::atexit([] { SingletonVault::singleton()->destroyInstances(); });
 }
 
 } // namespace folly

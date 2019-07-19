@@ -21,7 +21,7 @@
 namespace folly {
 
 template <typename Tag>
-bool rcu_domain<Tag>::singleton_{false};
+bool rcu_domain<Tag>::singleton_ = false;
 
 template <typename Tag>
 rcu_domain<Tag>::rcu_domain(Executor* executor) noexcept
@@ -36,7 +36,7 @@ rcu_domain<Tag>::rcu_domain(Executor* executor) noexcept
   // that use read locks *is* supported.
   detail::AtFork::registerHandler(
       this,
-      [this]() { syncMutex_.lock(); },
+      [this]() { return syncMutex_.try_lock(); },
       [this]() { syncMutex_.unlock(); },
       [this]() {
         counters_.resetAfterFork();
@@ -50,16 +50,16 @@ rcu_domain<Tag>::~rcu_domain() {
 }
 
 template <typename Tag>
-rcu_token rcu_domain<Tag>::lock_shared() {
+rcu_token<Tag> rcu_domain<Tag>::lock_shared() {
   auto idx = version_.load(std::memory_order_acquire);
   idx &= 1;
   counters_.increment(idx);
 
-  return idx;
+  return rcu_token<Tag>(idx);
 }
 
 template <typename Tag>
-void rcu_domain<Tag>::unlock_shared(rcu_token&& token) {
+void rcu_domain<Tag>::unlock_shared(rcu_token<Tag>&& token) {
   DCHECK(0 == token.epoch_ || 1 == token.epoch_);
   counters_.decrement(token.epoch_);
 }
@@ -85,11 +85,13 @@ void rcu_domain<Tag>::retire(list_node* node) noexcept {
   uint64_t time = std::chrono::duration_cast<std::chrono::milliseconds>(
                       std::chrono::steady_clock::now().time_since_epoch())
                       .count();
-  if (time > syncTime_.load(std::memory_order_relaxed) + syncTimePeriod_) {
+  auto syncTime = syncTime_.load(std::memory_order_relaxed);
+  if (time > syncTime + syncTimePeriod_ &&
+      syncTime_.compare_exchange_strong(
+          syncTime, time, std::memory_order_relaxed)) {
     list_head finished;
     {
       std::lock_guard<std::mutex> g(syncMutex_);
-      syncTime_.store(time, std::memory_order_relaxed);
       half_sync(false, finished);
     }
     // callbacks are called outside of syncMutex_

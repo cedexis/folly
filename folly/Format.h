@@ -18,10 +18,12 @@
 #define FOLLY_FORMAT_H_
 
 #include <cstdio>
+#include <ios>
 #include <stdexcept>
 #include <tuple>
 #include <type_traits>
 
+#include <folly/CPortability.h>
 #include <folly/Conv.h>
 #include <folly/FormatArg.h>
 #include <folly/Range.h>
@@ -30,7 +32,7 @@
 
 // Ignore shadowing warnings within this file, so includers can use -Wshadow.
 FOLLY_PUSH_WARNING
-FOLLY_GCC_DISABLE_WARNING("-Wshadow")
+FOLLY_GNU_DISABLE_WARNING("-Wshadow")
 
 namespace folly {
 
@@ -240,9 +242,9 @@ class Formatter : public BaseFormatter<
 /**
  * Formatter objects can be written to streams.
  */
-template <bool containerMode, class... Args>
+template <class C, bool containerMode, class... Args>
 std::ostream& operator<<(
-    std::ostream& out,
+    std::basic_ostream<C>& out,
     const Formatter<containerMode, Args...>& formatter) {
   auto writer = [&out](StringPiece sp) {
     out.write(sp.data(), std::streamsize(sp.size()));
@@ -318,7 +320,7 @@ inline std::string svformat(StringPiece fmt, Container&& container) {
  * makes the exception type small and noexcept-copyable like std::out_of_range,
  * and therefore able to fit in-situ in exception_wrapper.
  */
-class FormatKeyNotFoundException : public std::out_of_range {
+class FOLLY_EXPORT FormatKeyNotFoundException : public std::out_of_range {
  public:
   explicit FormatKeyNotFoundException(StringPiece key);
 
@@ -329,10 +331,6 @@ class FormatKeyNotFoundException : public std::out_of_range {
  private:
   static constexpr StringPiece const kMessagePrefix = "format key not found: ";
 };
-
-namespace detail {
-[[noreturn]] void throwFormatKeyNotFoundException(StringPiece key);
-} // namespace detail
 
 /**
  * Wrap a sequence or associative container so that out-of-range lookups

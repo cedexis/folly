@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-present Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 #include <folly/io/async/test/SocketPair.h>
 
 #include <folly/Conv.h>
+#include <folly/net/NetOps.h>
 #include <folly/portability/Fcntl.h>
 #include <folly/portability/Sockets.h>
 #include <folly/portability/Unistd.h>
@@ -27,22 +28,23 @@
 namespace folly {
 
 SocketPair::SocketPair(Mode mode) {
-  if (socketpair(PF_UNIX, SOCK_STREAM, 0, fds_) != 0) {
-    throw std::runtime_error(
-      folly::to<std::string>("test::SocketPair: failed create socket pair",
-                             errno));
+  if (netops::socketpair(PF_UNIX, SOCK_STREAM, 0, fds_) != 0) {
+    throw std::runtime_error(folly::to<std::string>(
+        "test::SocketPair: failed create socket pair", errno));
   }
 
   if (mode == NONBLOCKING) {
-    if (fcntl(fds_[0], F_SETFL, O_NONBLOCK) != 0) {
-      throw std::runtime_error(
-        folly::to<std::string>("test::SocketPair: failed to set non-blocking "
-                               "read mode", errno));
+    if (netops::set_socket_non_blocking(fds_[0]) != 0) {
+      throw std::runtime_error(folly::to<std::string>(
+          "test::SocketPair: failed to set non-blocking "
+          "read mode",
+          errno));
     }
-    if (fcntl(fds_[1], F_SETFL, O_NONBLOCK) != 0) {
-      throw std::runtime_error(
-        folly::to<std::string>("test::SocketPair: failed to set non-blocking "
-                               "write mode", errno));
+    if (netops::set_socket_non_blocking(fds_[1]) != 0) {
+      throw std::runtime_error(folly::to<std::string>(
+          "test::SocketPair: failed to set non-blocking "
+          "write mode",
+          errno));
     }
   }
 }
@@ -53,16 +55,16 @@ SocketPair::~SocketPair() {
 }
 
 void SocketPair::closeFD0() {
-  if (fds_[0] >= 0) {
-    close(fds_[0]);
-    fds_[0] = -1;
+  if (fds_[0] != NetworkSocket()) {
+    netops::close(fds_[0]);
+    fds_[0] = NetworkSocket();
   }
 }
 
 void SocketPair::closeFD1() {
-  if (fds_[1] >= 0) {
-    close(fds_[1]);
-    fds_[1] = -1;
+  if (fds_[1] != NetworkSocket()) {
+    netops::close(fds_[1]);
+    fds_[1] = NetworkSocket();
   }
 }
 

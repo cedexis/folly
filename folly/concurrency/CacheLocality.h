@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2013-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,8 +34,7 @@
 #include <folly/Portability.h>
 #include <folly/hash/Hash.h>
 #include <folly/lang/Align.h>
-#include <folly/portability/BitsFunctexcept.h>
-#include <folly/portability/Memory.h>
+#include <folly/lang/Exception.h>
 #include <folly/system/ThreadId.h>
 
 namespace folly {
@@ -240,6 +239,24 @@ struct AccessSpreader {
                               [cpu % kMaxCpus];
   }
 
+#ifdef FOLLY_TLS
+  /// Returns the stripe associated with the current CPU.  The returned
+  /// value will be < numStripes.
+  /// This function caches the current cpu in a thread-local variable for a
+  /// certain small number of calls, which can make the result imprecise, but
+  /// it is more efficient (amortized 2 ns on my dev box, compared to 12 ns for
+  /// current()).
+  static size_t cachedCurrent(size_t numStripes) {
+    return widthAndCpuToStripe[std::min(size_t(kMaxCpus), numStripes)]
+                              [cpuCache.cpu()];
+  }
+#else
+  /// Fallback implementation when thread-local storage isn't available.
+  static size_t cachedCurrent(size_t numStripes) {
+    return current(numStripes);
+  }
+#endif
+
  private:
   /// If there are more cpus than this nothing will crash, but there
   /// might be unnecessary sharing
@@ -267,6 +284,30 @@ struct AccessSpreader {
   /// or modulo on the actual number of cpus, we just fill in the entire
   /// array.
   static CompactStripe widthAndCpuToStripe[kMaxCpus + 1][kMaxCpus];
+
+  /// Caches the current CPU and refreshes the cache every so often.
+  class CpuCache {
+   public:
+    unsigned cpu() {
+      if (UNLIKELY(cachedCpuUses_-- == 0)) {
+        unsigned cpu;
+        AccessSpreader::getcpuFunc(&cpu, nullptr, nullptr);
+        cachedCpu_ = cpu % kMaxCpus;
+        cachedCpuUses_ = kMaxCachedCpuUses - 1;
+      }
+      return cachedCpu_;
+    }
+
+   private:
+    static constexpr unsigned kMaxCachedCpuUses = 32;
+
+    unsigned cachedCpu_{0};
+    unsigned cachedCpuUses_{0};
+  };
+
+#ifdef FOLLY_TLS
+  static FOLLY_TLS CpuCache cpuCache;
+#endif
 
   static bool initialized;
 
@@ -331,6 +372,12 @@ Getcpu::Func AccessSpreader<Atom>::getcpuFunc =
 template <template <typename> class Atom>
 typename AccessSpreader<Atom>::CompactStripe
     AccessSpreader<Atom>::widthAndCpuToStripe[kMaxCpus + 1][kMaxCpus] = {};
+
+#ifdef FOLLY_TLS
+template <template <typename> class Atom>
+FOLLY_TLS
+    typename AccessSpreader<Atom>::CpuCache AccessSpreader<Atom>::cpuCache;
+#endif
 
 template <template <typename> class Atom>
 bool AccessSpreader<Atom>::initialized = AccessSpreader<Atom>::initialize();
@@ -406,7 +453,7 @@ class SimpleAllocator {
  * Note that allocation and deallocation takes a per-sizeclass lock.
  */
 template <size_t Stripes>
-class CoreAllocator {
+class CoreRawAllocator {
  public:
   class Allocator {
     static constexpr size_t AllocSize{4096};
@@ -435,16 +482,16 @@ class CoreAllocator {
         // Align to a cacheline
         size = size + (hardware_destructive_interference_size - 1);
         size &= ~size_t(hardware_destructive_interference_size - 1);
-        void* mem = detail::aligned_malloc(
-            size, hardware_destructive_interference_size);
+        void* mem =
+            aligned_malloc(size, hardware_destructive_interference_size);
         if (!mem) {
-          std::__throw_bad_alloc();
+          throw_exception<std::bad_alloc>();
         }
         return mem;
       }
       return allocators_[cl].allocate();
     }
-    void deallocate(void* mem) {
+    void deallocate(void* mem, size_t = 0) {
       if (!mem) {
         return;
       }
@@ -456,7 +503,7 @@ class CoreAllocator {
         auto allocator = *static_cast<SimpleAllocator**>(addr);
         allocator->deallocate(mem);
       } else {
-        detail::aligned_free(mem);
+        aligned_free(mem);
       }
     }
   };
@@ -470,19 +517,14 @@ class CoreAllocator {
   Allocator allocators_[Stripes];
 };
 
-template <size_t Stripes>
-typename CoreAllocator<Stripes>::Allocator* getCoreAllocator(size_t stripe) {
+template <typename T, size_t Stripes>
+CxxAllocatorAdaptor<T, typename CoreRawAllocator<Stripes>::Allocator>
+getCoreAllocator(size_t stripe) {
   // We cannot make sure that the allocator will be destroyed after
   // all the objects allocated with it, so we leak it.
-  static Indestructible<CoreAllocator<Stripes>> allocator;
-  return allocator->get(stripe);
-}
-
-template <typename T, size_t Stripes>
-StlAllocator<typename CoreAllocator<Stripes>::Allocator, T> getCoreAllocatorStl(
-    size_t stripe) {
-  auto alloc = getCoreAllocator<Stripes>(stripe);
-  return StlAllocator<typename CoreAllocator<Stripes>::Allocator, T>(alloc);
+  static Indestructible<CoreRawAllocator<Stripes>> allocator;
+  return CxxAllocatorAdaptor<T, typename CoreRawAllocator<Stripes>::Allocator>(
+      *allocator->get(stripe));
 }
 
 } // namespace folly

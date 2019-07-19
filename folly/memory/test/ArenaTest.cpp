@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2012-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 #include <folly/memory/Arena.h>
 #include <folly/Memory.h>
+#include <folly/portability/GFlags.h>
 #include <folly/portability/GTest.h>
 
 #include <set>
@@ -25,7 +26,7 @@
 
 using namespace folly;
 
-static_assert(IsArenaAllocator<SysArena>::value, "");
+static_assert(AllocatorHasTrivialDeallocate<SysArena>::value, "");
 
 TEST(Arena, SizeSanity) {
   std::set<size_t*> allocatedItems;
@@ -59,8 +60,8 @@ TEST(Arena, SizeSanity) {
     allocatedItems.insert(ptr);
   }
   minimum_size += 10 * requestedBlockSize;
-  maximum_size += 10 * goodMallocSize(requestedBlockSize
-                                      + SysArena::kBlockOverhead);
+  maximum_size +=
+      10 * goodMallocSize(requestedBlockSize + SysArena::kBlockOverhead);
   EXPECT_TRUE(arena.totalSize() >= minimum_size);
   EXPECT_TRUE(arena.totalSize() <= maximum_size);
   VLOG(4) << minimum_size << " < " << arena.totalSize() << " < "
@@ -70,8 +71,8 @@ TEST(Arena, SizeSanity) {
   ptr = static_cast<size_t*>(arena.allocate(10 * requestedBlockSize));
   allocatedItems.insert(ptr);
   minimum_size += 10 * requestedBlockSize;
-  maximum_size += goodMallocSize(10 * requestedBlockSize
-                                 + SysArena::kBlockOverhead);
+  maximum_size +=
+      goodMallocSize(10 * requestedBlockSize + SysArena::kBlockOverhead);
   EXPECT_TRUE(arena.totalSize() >= minimum_size);
   EXPECT_TRUE(arena.totalSize() <= maximum_size);
   VLOG(4) << minimum_size << " < " << arena.totalSize() << " < "
@@ -79,9 +80,9 @@ TEST(Arena, SizeSanity) {
 
   // Nuke 'em all
   for (const auto& item : allocatedItems) {
-    arena.deallocate(item);
+    arena.deallocate(item, 0 /* unused */);
   }
-  //The total size should be the same
+  // The total size should be the same
   EXPECT_TRUE(arena.totalSize() >= minimum_size);
   EXPECT_TRUE(arena.totalSize() <= maximum_size);
   VLOG(4) << minimum_size << " < " << arena.totalSize() << " < "
@@ -134,8 +135,8 @@ TEST(Arena, Vector) {
 
   EXPECT_EQ(arena.totalSize(), sizeof(SysArena));
 
-  std::vector<size_t, StlAllocator<SysArena, size_t>>
-    vec { {}, StlAllocator<SysArena, size_t>(&arena) };
+  std::vector<size_t, SysArenaAllocator<size_t>> vec{
+      {}, SysArenaAllocator<size_t>(arena)};
 
   for (size_t i = 0; i < 1000; i++) {
     vec.push_back(i);
@@ -157,18 +158,7 @@ TEST(Arena, SizeLimit) {
   EXPECT_THROW(arena.allocate(maxSize + 1), std::bad_alloc);
 }
 
-TEST(Arena, MoveArena) {
-  SysArena arena(sizeof(size_t) * 2);
-  arena.allocate(sizeof(size_t));
-  auto totalSize = arena.totalSize();
-  auto bytesUsed = arena.bytesUsed();
-
-  SysArena moved(std::move(arena));
-  EXPECT_EQ(totalSize, moved.totalSize());
-  EXPECT_EQ(bytesUsed, moved.bytesUsed());
-}
-
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
   testing::InitGoogleTest(&argc, argv);
   gflags::ParseCommandLineFlags(&argc, &argv, true);
   auto ret = RUN_ALL_TESTS();

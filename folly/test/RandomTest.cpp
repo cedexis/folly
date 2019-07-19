@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2012-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -83,16 +83,15 @@ TEST(Random, MultiThreaded) {
   std::vector<uint32_t> seeds(n);
   std::vector<std::thread> threads;
   for (int i = 0; i < n; ++i) {
-    threads.push_back(std::thread([i, &seeds] {
-      seeds[i] = randomNumberSeed();
-    }));
+    threads.push_back(
+        std::thread([i, &seeds] { seeds[i] = randomNumberSeed(); }));
   }
   for (auto& t : threads) {
     t.join();
   }
   std::sort(seeds.begin(), seeds.end());
-  for (int i = 0; i < n-1; ++i) {
-    EXPECT_LT(seeds[i], seeds[i+1]);
+  for (int i = 0; i < n - 1; ++i) {
+    EXPECT_LT(seeds[i], seeds[i + 1]);
   }
 }
 
@@ -138,3 +137,37 @@ TEST(Random, sanity) {
         std::unordered_set<uint64_t>(vals.begin(), vals.end()).size());
   }
 }
+
+#ifndef _WIN32
+TEST(Random, SecureFork) {
+  // Random buffer size is 128, must be less than that.
+  int retries = 100;
+  while (true) {
+    unsigned char buffer = 0;
+    // Init random buffer
+    folly::Random::secureRandom(&buffer, 1);
+
+    auto pid = fork();
+    EXPECT_NE(pid, -1);
+    if (pid) {
+      // parent
+      int status = 0;
+      folly::Random::secureRandom(&buffer, 1);
+      auto pid2 = wait(&status);
+      EXPECT_EQ(pid, pid2);
+      // Since this *is* random data, we could randomly end up with
+      // the same byte.  Try again a few times if so before assuming
+      // real failure.
+      if (WEXITSTATUS(status) == buffer && retries-- > 0) {
+        continue;
+      }
+      EXPECT_NE(WEXITSTATUS(status), buffer);
+      return;
+    } else {
+      // child
+      folly::Random::secureRandom(&buffer, 1);
+      exit(buffer); // Do not print gtest results
+    }
+  }
+}
+#endif

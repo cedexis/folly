@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2013-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,21 +26,21 @@ struct TwoBy32 {
 };
 
 TEST(AtomicStruct, two_by_32) {
-  AtomicStruct<TwoBy32> a(TwoBy32{ 10, 20 });
+  AtomicStruct<TwoBy32> a(TwoBy32{10, 20});
   TwoBy32 av = a;
   EXPECT_EQ(av.left, 10);
   EXPECT_EQ(av.right, 20);
-  EXPECT_TRUE(a.compare_exchange_strong(av, TwoBy32{ 30, 40 }));
-  EXPECT_FALSE(a.compare_exchange_weak(av, TwoBy32{ 31, 41 }));
+  EXPECT_TRUE(a.compare_exchange_strong(av, TwoBy32{30, 40}));
+  EXPECT_FALSE(a.compare_exchange_weak(av, TwoBy32{31, 41}));
   EXPECT_EQ(av.left, 30);
   EXPECT_TRUE(a.is_lock_free());
-  auto b = a.exchange(TwoBy32{ 50, 60 });
+  auto b = a.exchange(TwoBy32{50, 60});
   EXPECT_EQ(b.left, 30);
   EXPECT_EQ(b.right, 40);
   EXPECT_EQ(a.load().left, 50);
-  a = TwoBy32{ 70, 80 };
+  a = TwoBy32{70, 80};
   EXPECT_EQ(a.load().right, 80);
-  a.store(TwoBy32{ 90, 100 });
+  a.store(TwoBy32{90, 100});
   av = a;
   EXPECT_EQ(av.left, 90);
   AtomicStruct<TwoBy32> c;
@@ -48,22 +48,18 @@ TEST(AtomicStruct, two_by_32) {
   EXPECT_EQ(c.load().right, 40);
 }
 
-TEST(AtomicStruct, size_selection) {
-  struct S1 { char x[1]; };
-  struct S2 { char x[2]; };
-  struct S3 { char x[3]; };
-  struct S4 { char x[4]; };
-  struct S5 { char x[5]; };
-  struct S6 { char x[6]; };
-  struct S7 { char x[7]; };
-  struct S8 { char x[8]; };
+template <size_t I>
+struct S {
+  char x[I];
+};
 
-  EXPECT_EQ(sizeof(AtomicStruct<S1>), 1);
-  EXPECT_EQ(sizeof(AtomicStruct<S2>), 2);
-  EXPECT_EQ(sizeof(AtomicStruct<S3>), 4);
-  EXPECT_EQ(sizeof(AtomicStruct<S4>), 4);
-  EXPECT_EQ(sizeof(AtomicStruct<S5>), 8);
-  EXPECT_EQ(sizeof(AtomicStruct<S6>), 8);
-  EXPECT_EQ(sizeof(AtomicStruct<S7>), 8);
-  EXPECT_EQ(sizeof(AtomicStruct<S8>), 8);
+TEST(AtomicStruct, size_selection) {
+  EXPECT_EQ(sizeof(AtomicStruct<S<1>>), 1);
+  EXPECT_EQ(sizeof(AtomicStruct<S<2>>), 2);
+  EXPECT_EQ(sizeof(AtomicStruct<S<3>>), 4);
+  EXPECT_EQ(sizeof(AtomicStruct<S<4>>), 4);
+  EXPECT_EQ(sizeof(AtomicStruct<S<5>>), 8);
+  EXPECT_EQ(sizeof(AtomicStruct<S<6>>), 8);
+  EXPECT_EQ(sizeof(AtomicStruct<S<7>>), 8);
+  EXPECT_EQ(sizeof(AtomicStruct<S<8>>), 8);
 }

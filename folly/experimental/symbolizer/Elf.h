@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2012-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -246,7 +246,7 @@ class ElfFile {
       snprintf(
           msg,
           sizeof(msg),
-          "Offset (%lu + %lu) is not contained within our mmapped"
+          "Offset (%zu + %zu) is not contained within our mmapped"
           " file (%s) of length %zu",
           offset,
           sizeof(T),

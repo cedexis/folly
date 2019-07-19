@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2017-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,12 @@
 #include <glog/logging.h>
 
 #include <folly/detail/MemoryIdler.h>
+#include <folly/portability/GFlags.h>
+
+DEFINE_bool(
+    dynamic_iothreadpoolexecutor,
+    true,
+    "IOThreadPoolExecutor will dynamically create threads");
 
 namespace folly {
 
@@ -66,7 +72,11 @@ IOThreadPoolExecutor::IOThreadPoolExecutor(
     std::shared_ptr<ThreadFactory> threadFactory,
     EventBaseManager* ebm,
     bool waitForAll)
-    : ThreadPoolExecutor(numThreads, std::move(threadFactory), waitForAll),
+    : ThreadPoolExecutor(
+          numThreads,
+          FLAGS_dynamic_iothreadpoolexecutor ? 0 : numThreads,
+          std::move(threadFactory),
+          waitForAll),
       nextThread_(0),
       eventBaseManager_(ebm) {
   setNumThreads(numThreads);
@@ -84,23 +94,21 @@ void IOThreadPoolExecutor::add(
     Func func,
     std::chrono::milliseconds expiration,
     Func expireCallback) {
-  RWSpinLock::ReadHolder r{&threadListLock_};
+  ensureActiveThreads();
+  SharedMutex::ReadHolder r{&threadListLock_};
   if (threadList_.get().empty()) {
     throw std::runtime_error("No threads available");
   }
   auto ioThread = pickThread();
 
   auto task = Task(std::move(func), expiration, std::move(expireCallback));
-  auto wrappedFunc = [ ioThread, task = std::move(task) ]() mutable {
+  auto wrappedFunc = [ioThread, task = std::move(task)]() mutable {
     runTask(ioThread, std::move(task));
     ioThread->pendingTasks--;
   };
 
   ioThread->pendingTasks++;
-  if (!ioThread->eventBase->runInEventBaseThread(std::move(wrappedFunc))) {
-    ioThread->pendingTasks--;
-    throw std::runtime_error("Unable to run func in event base thread");
-  }
+  ioThread->eventBase->runInEventBaseThread(std::move(wrappedFunc));
 }
 
 std::shared_ptr<IOThreadPoolExecutor::IOThread>
@@ -117,6 +125,13 @@ IOThreadPoolExecutor::pickThread() {
   }
   auto n = ths.size();
   if (n == 0) {
+    // XXX I think the only way this can happen is if somebody calls
+    // getEventBase (1) from one of the executor's threads while the executor
+    // is stopping or getting downsized to zero or (2) from outside the executor
+    // when it has no threads. In the first case, it's not obvious what the
+    // correct behavior should be-- do we really want to return ourselves even
+    // though we're about to exit? (The comment above seems to imply no.) In
+    // the second case, `!me` so we'll crash anyway.
     return me;
   }
   auto thread = ths[nextThread_.fetch_add(1, std::memory_order_relaxed) % n];
@@ -124,7 +139,8 @@ IOThreadPoolExecutor::pickThread() {
 }
 
 EventBase* IOThreadPoolExecutor::getEventBase() {
-  RWSpinLock::ReadHolder r{&threadListLock_};
+  ensureActiveThreads();
+  SharedMutex::ReadHolder r{&threadListLock_};
   return pickThread()->eventBase;
 }
 
@@ -203,9 +219,8 @@ void IOThreadPoolExecutor::stopThreads(size_t n) {
 }
 
 // threadListLock_ is readlocked
-uint64_t IOThreadPoolExecutor::getPendingTaskCountImpl(
-    const folly::RWSpinLock::ReadHolder&) {
-  uint64_t count = 0;
+size_t IOThreadPoolExecutor::getPendingTaskCountImpl() const {
+  size_t count = 0;
   for (const auto& thread : threadList_.get()) {
     auto ioThread = std::static_pointer_cast<IOThread>(thread);
     size_t pendingTasks = ioThread->pendingTasks;

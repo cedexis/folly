@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,6 +29,9 @@ namespace folly {
  *
  * If `sizeof(T) <= alignof(T)` then the inner `T` will be entirely within one
  * false sharing range (AKA cache line).
+ *
+ * CachelinePadded may add padding both before and after the value. Consider
+ * whether alignas(folly::hardware_destructive_interference_size) suffices.
  */
 template <typename T>
 class CachelinePadded {

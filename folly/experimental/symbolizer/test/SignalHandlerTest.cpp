@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2013-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -54,7 +54,6 @@ TEST(SignalHandler, Simple) {
       "\\*\\*\\*\n"
       "\\*\\*\\* Signal 11 \\(SIGSEGV\\) \\(0x2a\\) received by PID [0-9]+ "
       "\\(pthread TID 0x[0-9a-f]+\\) \\(linux TID [0-9]+\\) "
-      "\\(maybe from PID [0-9]+, UID [0-9]+\\) "
       "\\(code: address not mapped to object\\), "
       "stack trace: \\*\\*\\*\n"
       ".*\n"

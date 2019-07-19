@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,14 +37,18 @@ struct Magic {
       : dtor_(std::move(dtor)), move_(std::move(move)) {
     ctor();
   }
-  Magic(Magic&& other) /* may throw */ { *this = std::move(other); }
+  Magic(Magic&& other) /* may throw */ {
+    *this = std::move(other);
+  }
   Magic& operator=(Magic&& other) {
     dtor_ = std::move(other.dtor_);
     move_ = std::move(other.move_);
     move_();
     return *this;
   }
-  ~Magic() { dtor_(); }
+  ~Magic() {
+    dtor_();
+  }
 };
 
 class IndestructibleTest : public testing::Test {};

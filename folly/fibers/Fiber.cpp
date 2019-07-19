@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "Fiber.h"
+#include <folly/fibers/Fiber.h>
 
 #include <glog/logging.h>
 #include <algorithm>
@@ -112,6 +112,9 @@ Fiber::~Fiber() {
 }
 
 void Fiber::recordStackPosition() {
+  // For ASAN builds, functions may run on fake stack.
+  // So we cannot get meaningful stack position.
+#ifndef FOLLY_SANITIZE_ADDRESS
   int stackDummy;
   auto currentPosition = static_cast<size_t>(
       fiberStackLimit_ + fiberStackSize_ -
@@ -119,6 +122,7 @@ void Fiber::recordStackPosition() {
   fiberManager_.stackHighWatermark_ =
       std::max(fiberManager_.stackHighWatermark_, currentPosition);
   VLOG(4) << "Stack usage: " << currentPosition;
+#endif
 }
 
 [[noreturn]] void Fiber::fiberFunc() {
@@ -170,6 +174,10 @@ void Fiber::preempt(State state) {
     DCHECK_EQ(fiberManager_.activeFiber_, this);
     DCHECK_EQ(state_, RUNNING);
     DCHECK_NE(state, RUNNING);
+    if (state != AWAITING_IMMEDIATE) {
+      CHECK(fiberManager_.currentException_ == std::current_exception());
+      CHECK_EQ(fiberManager_.numUncaughtExceptions_, uncaught_exceptions());
+    }
 
     state_ = state;
 

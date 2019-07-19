@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2015-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,21 +13,21 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 #pragma once
 
 // included by Future.h, do not include directly.
 
 namespace folly {
 
-template <class> class Promise;
+template <class>
+class Promise;
 
 template <class T>
 class SemiFuture;
 
 template <typename T>
 struct isSemiFuture : std::false_type {
-  using Inner = typename Unit::Lift<T>::type;
+  using Inner = lift_unit_t<T>;
 };
 
 template <typename T>
@@ -37,7 +37,7 @@ struct isSemiFuture<SemiFuture<T>> : std::true_type {
 
 template <typename T>
 struct isFuture : std::false_type {
-  using Inner = typename Unit::Lift<T>::type;
+  using Inner = lift_unit_t<T>;
 };
 
 template <typename T>
@@ -47,12 +47,24 @@ struct isFuture<Future<T>> : std::true_type {
 
 template <typename T>
 struct isFutureOrSemiFuture : std::false_type {
-  using Inner = typename Unit::Lift<T>::type;
+  using Inner = lift_unit_t<T>;
+  using Return = Inner;
+};
+
+template <typename T>
+struct isFutureOrSemiFuture<Try<T>> : std::false_type {
+  using Inner = lift_unit_t<T>;
   using Return = Inner;
 };
 
 template <typename T>
 struct isFutureOrSemiFuture<Future<T>> : std::true_type {
+  typedef T Inner;
+  using Return = Future<Inner>;
+};
+
+template <typename T>
+struct isFutureOrSemiFuture<Future<Try<T>>> : std::true_type {
   typedef T Inner;
   using Return = Future<Inner>;
 };
@@ -64,21 +76,16 @@ struct isFutureOrSemiFuture<SemiFuture<T>> : std::true_type {
 };
 
 template <typename T>
-struct isTry : std::false_type {};
-
-template <typename T>
-struct isTry<Try<T>> : std::true_type {};
+struct isFutureOrSemiFuture<SemiFuture<Try<T>>> : std::true_type {
+  typedef T Inner;
+  using Return = SemiFuture<Inner>;
+};
 
 namespace futures {
 namespace detail {
 
-template <class> class Core;
-template <class...> struct CollectAllVariadicContext;
-template <class...> struct CollectVariadicContext;
-template <class> struct CollectContext;
-
-template <typename F, typename... Args>
-using resultOf = decltype(std::declval<F>()(std::declval<Args>()...));
+template <class>
+class Core;
 
 template <typename...>
 struct ArgType;
@@ -86,6 +93,7 @@ struct ArgType;
 template <typename Arg, typename... Args>
 struct ArgType<Arg, Args...> {
   typedef Arg FirstArg;
+  typedef ArgType<Args...> Tail;
 };
 
 template <>
@@ -93,49 +101,89 @@ struct ArgType<> {
   typedef void FirstArg;
 };
 
-template <bool isTry, typename F, typename... Args>
+template <bool isTry_, typename F, typename... Args>
 struct argResult {
-  using Result = resultOf<F, Args...>;
-};
-
-template <typename F, typename... Args>
-struct callableWith {
-    template <typename T, typename = detail::resultOf<T, Args...>>
-    static constexpr std::true_type
-    check(std::nullptr_t) { return std::true_type{}; }
-
-    template <typename>
-    static constexpr std::false_type
-    check(...) { return std::false_type{}; }
-
-    typedef decltype(check<F>(nullptr)) type;
-    static constexpr bool value = type::value;
+  using Function = F;
+  using ArgList = ArgType<Args...>;
+  using Result = invoke_result_t<F, Args...>;
+  using ArgsSize = index_constant<sizeof...(Args)>;
+  static constexpr bool isTry() {
+    return isTry_;
+  }
 };
 
 template <typename T, typename F>
 struct callableResult {
   typedef typename std::conditional<
-    callableWith<F>::value,
-    detail::argResult<false, F>,
-    typename std::conditional<
-      callableWith<F, T&&>::value,
-      detail::argResult<false, F, T&&>,
+      is_invocable<F>::value,
+      detail::argResult<false, F>,
       typename std::conditional<
-        callableWith<F, T&>::value,
-        detail::argResult<false, F, T&>,
-        typename std::conditional<
-          callableWith<F, Try<T>&&>::value,
-          detail::argResult<true, F, Try<T>&&>,
-          detail::argResult<true, F, Try<T>&>>::type>::type>::type>::type Arg;
+          is_invocable<F, T&&>::value,
+          detail::argResult<false, F, T&&>,
+          detail::argResult<true, F, Try<T>&&>>::type>::type Arg;
   typedef isFutureOrSemiFuture<typename Arg::Result> ReturnsFuture;
   typedef Future<typename ReturnsFuture::Inner> Return;
 };
 
+template <typename T, typename F>
+struct executorCallableResult {
+  typedef typename std::conditional<
+      is_invocable<F, Executor::KeepAlive<>&&>::value,
+      detail::argResult<false, F, Executor::KeepAlive<>&&>,
+      typename std::conditional<
+          is_invocable<F, Executor::KeepAlive<>&&, T&&>::value,
+          detail::argResult<false, F, Executor::KeepAlive<>&&, T&&>,
+          detail::argResult<true, F, Executor::KeepAlive<>&&, Try<T>&&>>::
+          type>::type Arg;
+  typedef isFutureOrSemiFuture<typename Arg::Result> ReturnsFuture;
+  typedef Future<typename ReturnsFuture::Inner> Return;
+};
+
+template <
+    typename T,
+    typename F,
+    typename = std::enable_if_t<is_invocable<F, Try<T>&&>::value>>
+struct tryCallableResult {
+  typedef detail::argResult<true, F, Try<T>&&> Arg;
+  typedef isFutureOrSemiFuture<typename Arg::Result> ReturnsFuture;
+  typedef typename ReturnsFuture::Inner value_type;
+  typedef Future<value_type> Return;
+};
+
+template <
+    typename T,
+    typename F,
+    typename = std::enable_if_t<is_invocable<F, Executor*, Try<T>&&>::value>>
+struct tryExecutorCallableResult {
+  typedef detail::argResult<true, F, Executor::KeepAlive<>&&, Try<T>&&> Arg;
+  typedef isFutureOrSemiFuture<typename Arg::Result> ReturnsFuture;
+  typedef typename ReturnsFuture::Inner value_type;
+  typedef Future<value_type> Return;
+};
+
+template <typename T, typename F>
+struct valueCallableResult {
+  typedef detail::argResult<false, F, T&&> Arg;
+  typedef isFutureOrSemiFuture<typename Arg::Result> ReturnsFuture;
+  typedef typename ReturnsFuture::Inner value_type;
+  typedef typename Arg::ArgList::FirstArg FirstArg;
+  typedef Future<value_type> Return;
+};
+
+template <typename T, typename F>
+struct valueExecutorCallableResult {
+  typedef detail::argResult<false, F, Executor::KeepAlive<>&&, T&&> Arg;
+  typedef isFutureOrSemiFuture<typename Arg::Result> ReturnsFuture;
+  typedef typename ReturnsFuture::Inner value_type;
+  typedef typename Arg::ArgList::Tail::FirstArg ValueArg;
+  typedef Future<value_type> Return;
+};
+
 template <typename L>
-struct Extract : Extract<decltype(&L::operator())> { };
+struct Extract : Extract<decltype(&L::operator())> {};
 
 template <typename Class, typename R, typename... Args>
-struct Extract<R(Class::*)(Args...) const> {
+struct Extract<R (Class::*)(Args...) const> {
   typedef isFutureOrSemiFuture<R> ReturnsFuture;
   typedef Future<typename ReturnsFuture::Inner> Return;
   typedef typename ReturnsFuture::Inner RawReturn;
@@ -143,7 +191,7 @@ struct Extract<R(Class::*)(Args...) const> {
 };
 
 template <typename Class, typename R, typename... Args>
-struct Extract<R(Class::*)(Args...)> {
+struct Extract<R (Class::*)(Args...)> {
   typedef isFutureOrSemiFuture<R> ReturnsFuture;
   typedef Future<typename ReturnsFuture::Inner> Return;
   typedef typename ReturnsFuture::Inner RawReturn;
@@ -166,110 +214,29 @@ struct Extract<R (&)(Args...)> {
   typedef typename ArgType<Args...>::FirstArg FirstArg;
 };
 
-/**
- * Defer work until executor is actively boosted.
- *
- * NOTE: that this executor is a private implementation detail belonging to the
- * Folly Futures library and not intended to be used elsewhere. It is designed
- * specifically for the use case of deferring work on a SemiFuture. It is NOT
- * thread safe. Please do not use for any other purpose without great care.
- */
-class DeferredExecutor final : public Executor {
- public:
-  template <typename Class, typename F>
-  struct DeferredWorkWrapper;
+class DeferredExecutor;
 
-  /**
-   * Work wrapper class to capture the keepalive and forward the argument
-   * list to the captured function.
-   */
-  template <typename F, typename R, typename... Args>
-  struct DeferredWorkWrapper<F, R (F::*)(Args...) const> {
-    R operator()(Args... args) {
-      return func(std::forward<Args>(args)...);
-    }
-
-    Executor::KeepAlive a;
-    F func;
-  };
-
-  /**
-   * Construction is private to ensure that creation and deletion are
-   * symmetric
-   */
-  static KeepAlive create() {
-    std::unique_ptr<futures::detail::DeferredExecutor> devb{
-        new futures::detail::DeferredExecutor{}};
-    auto keepAlive = devb->getKeepAliveToken();
-    devb.release();
-    return keepAlive;
-  }
-
-  /// Enqueue a function to executed by this executor. This is not thread-safe.
-  void add(Func func) override {
-    // If we already have a function, wrap and chain. Otherwise assign.
-    if (func_) {
-      func_ = [oldFunc = std::move(func_), func = std::move(func)]() mutable {
-        oldFunc();
-        func();
+template <class T, class F>
+auto makeExecutorLambda(
+    F&& func,
+    typename std::enable_if<is_invocable<F>::value, int>::type = 0) {
+  return
+      [func = std::forward<F>(func)](Executor::KeepAlive<>&&, auto&&) mutable {
+        return std::forward<F>(func)();
       };
-    } else {
-      func_ = std::move(func);
-    }
-  }
+}
 
-  // Boost is like drive for certain types of deferred work
-  // Unlike drive it is safe to run on another executor because it
-  // will only be implemented on deferred-safe executors
-  void boost() {
-    // Ensure that the DeferredExecutor outlives its run operation
-    ++keepAliveCount_;
-    SCOPE_EXIT {
-      releaseAndTryFree();
-    };
-
-    // Drain the executor
-    while (auto func = std::move(func_)) {
-      func();
-    }
-  }
-
-  KeepAlive getKeepAliveToken() override {
-    keepAliveAcquire();
-    return makeKeepAlive();
-  }
-
-  ~DeferredExecutor() = default;
-
-  template <class F>
-  static auto wrap(Executor::KeepAlive keepAlive, F&& func)
-      -> DeferredWorkWrapper<F, decltype(&F::operator())> {
-    return DeferredExecutor::DeferredWorkWrapper<F, decltype(&F::operator())>{
-        std::move(keepAlive), std::forward<F>(func)};
-  }
-
- protected:
-  void keepAliveAcquire() override {
-    ++keepAliveCount_;
-  }
-
-  void keepAliveRelease() override {
-    releaseAndTryFree();
-  }
-
-  void releaseAndTryFree() {
-    --keepAliveCount_;
-    if (keepAliveCount_ == 0) {
-      delete this;
-    }
-  }
-
- private:
-  Func func_;
-  ssize_t keepAliveCount_{0};
-
-  DeferredExecutor() = default;
-};
+template <class T, class F>
+auto makeExecutorLambda(
+    F&& func,
+    typename std::enable_if<!is_invocable<F>::value, int>::type = 0) {
+  using R = futures::detail::callableResult<T, F&&>;
+  return [func = std::forward<F>(func)](
+             Executor::KeepAlive<>&&,
+             typename R::Arg::ArgList::FirstArg&& param) mutable {
+    return std::forward<F>(func)(std::forward<decltype(param)>(param));
+  };
+}
 
 } // namespace detail
 } // namespace futures

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright 2012-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -65,6 +65,10 @@ int ElfFile::openNoThrow(
     bool readOnly,
     const char** msg) noexcept {
   FOLLY_SAFE_CHECK(fd_ == -1, "File already open");
+  // Always close fd and unmap in case of failure along the way to avoid
+  // check failure above if we leave fd != -1 and the object is recycled
+  // like it is inside SignalSafeElfCache
+  auto guard = makeGuard([&] { reset(); });
   strncat(filepath_, name, kFilepathMaxLen - 1);
   fd_ = ::open(name, readOnly ? O_RDONLY : O_RDWR);
   if (fd_ == -1) {
@@ -73,10 +77,6 @@ int ElfFile::openNoThrow(
     }
     return kSystemError;
   }
-  // Always close fd and unmap in case of failure along the way to avoid
-  // check failure above if we leave fd != -1 and the object is recycled
-  // like it is inside SignalSafeElfCache
-  ScopeGuard guard = makeGuard([&] { reset(); });
   struct stat st;
   int r = fstat(fd_, &st);
   if (r == -1) {
@@ -99,6 +99,7 @@ int ElfFile::openNoThrow(
     return kSystemError;
   }
   if (!init(msg)) {
+    reset();
     errno = EINVAL;
     return kInvalidElfFile;
   }
@@ -210,11 +211,22 @@ bool ElfFile::init(const char** msg) {
     return false;
   }
 
-  // Validate ELF magic numbers
-  if (file_[EI_MAG0] != ELFMAG0 || file_[EI_MAG1] != ELFMAG1 ||
-      file_[EI_MAG2] != ELFMAG2 || file_[EI_MAG3] != ELFMAG3) {
+  std::array<char, 5> elfMagBuf = {{0, 0, 0, 0, 0}};
+  if (::lseek(fd_, 0, SEEK_SET) != 0 || ::read(fd_, elfMagBuf.data(), 4) != 4) {
+    if (msg) {
+      *msg = "unable to read ELF file for magic number";
+    }
+    return false;
+  }
+  if (std::strncmp(elfMagBuf.data(), ELFMAG, sizeof(ELFMAG)) != 0) {
     if (msg) {
       *msg = "invalid ELF magic";
+    }
+    return false;
+  }
+  if (::lseek(fd_, 0, SEEK_SET) != 0) {
+    if (msg) {
+      *msg = "unable to reset file descriptor after reading ELF magic number";
     }
     return false;
   }
@@ -342,22 +354,15 @@ const ElfShdr* ElfFile::getSectionByName(const char* name) const {
     return nullptr; // no section name string table
   }
 
-  // Find offset in the section name string table of the requested name
   const ElfShdr& sectionNames = *getSectionByIndex(elfHeader().e_shstrndx);
-  const char* foundName = iterateStrings(
-      sectionNames, [&](const char* s) { return !strcmp(name, s); });
-  if (foundName == nullptr) {
-    return nullptr;
-  }
-
-  size_t offset = foundName - (file_ + sectionNames.sh_offset);
+  const char* start = file_ + sectionNames.sh_offset;
 
   // Find section with the appropriate sh_name offset
   const ElfShdr* foundSection = iterateSections([&](const ElfShdr& sh) {
-    if (sh.sh_name == offset) {
-      return true;
+    if (sh.sh_name >= sectionNames.sh_size) {
+      return false;
     }
-    return false;
+    return !strcmp(start + sh.sh_name, name);
   });
   return foundSection;
 }

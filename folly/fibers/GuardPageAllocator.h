@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2015-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,10 +31,10 @@ class StackCacheEntry;
 class GuardPageAllocator {
  public:
   /**
-   * @param useGuardPages if true, protect limited amount of stacks with guard
-   *                      pages, otherwise acts as std::allocator.
+   * @param guardPagesPerStack  Protect a small number of fiber stacks
+   *   with this many guard pages.  If 0, acts as std::allocator.
    */
-  explicit GuardPageAllocator(bool useGuardPages);
+  explicit GuardPageAllocator(size_t guardPagesPerStack);
   ~GuardPageAllocator();
 
   /**
@@ -50,7 +50,7 @@ class GuardPageAllocator {
  private:
   std::unique_ptr<StackCacheEntry> stackCache_;
   std::allocator<unsigned char> fallbackAllocator_;
-  bool useGuardPages_{true};
+  size_t guardPagesPerStack_{0};
 };
 } // namespace fibers
 } // namespace folly

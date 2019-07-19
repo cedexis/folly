@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2015-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,8 +25,8 @@ namespace folly {
  * Helper class that redirects write() and writev() calls to writeChain().
  */
 template <class T>
-class WriteChainAsyncTransportWrapper :
-  public DecoratedAsyncTransportWrapper<T> {
+class WriteChainAsyncTransportWrapper
+    : public DecoratedAsyncTransportWrapper<T> {
  public:
   using DecoratedAsyncTransportWrapper<T>::DecoratedAsyncTransportWrapper;
 
@@ -44,21 +44,8 @@ class WriteChainAsyncTransportWrapper :
       const iovec* vec,
       size_t count,
       folly::WriteFlags flags = folly::WriteFlags::NONE) override {
-    std::unique_ptr<folly::IOBuf> writeBuffer;
-
-    for (size_t i = 0; i < count; ++i) {
-      size_t len = vec[i].iov_len;
-      void* data = vec[i].iov_base;
-      auto buf = folly::IOBuf::wrapBuffer(data, len);
-      if (i == 0) {
-        writeBuffer = std::move(buf);
-      } else {
-        writeBuffer->prependChain(std::move(buf));
-      }
-    }
-    if (writeBuffer) {
-      writeChain(callback, std::move(writeBuffer), flags);
-    }
+    auto writeBuffer = folly::IOBuf::wrapIov(vec, count);
+    writeChain(callback, std::move(writeBuffer), flags);
   }
 
   /**

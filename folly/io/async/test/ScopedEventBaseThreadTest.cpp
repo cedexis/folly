@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2015-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -83,8 +83,7 @@ TEST_F(ScopedEventBaseThreadTest, eb_dtor_in_io_thread) {
 
   auto const eb = sebt->getEventBase();
   thread::id eb_dtor_thread_id;
-  eb->runOnDestruction(new EventBase::FunctionLoopCallback(
-      [&] { eb_dtor_thread_id = this_thread::get_id(); }));
+  eb->runOnDestruction([&] { eb_dtor_thread_id = std::this_thread::get_id(); });
   sebt.clear();
   EXPECT_EQ(io_thread_id, eb_dtor_thread_id);
 }

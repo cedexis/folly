@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -55,9 +55,7 @@ Optional<std::string> getCurrentThreadName();
  * is not available.
  */
 bool setThreadName(std::thread::id tid, StringPiece name);
-#if FOLLY_HAVE_PTHREAD
 bool setThreadName(pthread_t pid, StringPiece name);
-#endif
 
 /**
  * Equivalent to setThreadName(std::this_thread::get_id(), name);

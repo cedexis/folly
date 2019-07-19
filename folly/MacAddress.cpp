@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 #include <folly/MacAddress.h>
 
+#include <cassert>
 #include <ostream>
 
 #include <folly/Exception.h>
@@ -38,7 +39,7 @@ MacAddress::MacAddress(StringPiece str) {
 
 MacAddress MacAddress::createMulticast(IPAddressV6 v6addr) {
   // This method should only be used for multicast addresses.
-  DCHECK(v6addr.isMulticast());
+  assert(v6addr.isMulticast());
 
   uint8_t bytes[SIZE];
   bytes[0] = 0x33;

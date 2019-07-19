@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2017-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -61,7 +61,7 @@ class SSLServerAcceptCallbackBase : public AsyncServerSocket::AcceptCallback {
   }
 
   void connectionAccepted(
-      int fd,
+      folly::NetworkSocket fd,
       const SocketAddress& /* clientAddr */) noexcept override {
     if (socket_) {
       socket_->detachEventBase();
@@ -75,7 +75,7 @@ class SSLServerAcceptCallbackBase : public AsyncServerSocket::AcceptCallback {
       LOG(ERROR) << "Exception %s caught while creating a AsyncSSLSocket "
                     "object with socket "
                  << e.what() << fd;
-      ::close(fd);
+      folly::netops::close(fd);
       acceptError(e);
       return;
     }
@@ -86,7 +86,9 @@ class SSLServerAcceptCallbackBase : public AsyncServerSocket::AcceptCallback {
   virtual void connAccepted(const std::shared_ptr<AsyncSSLSocket>& s) = 0;
 
   void detach() {
-    socket_->detachEventBase();
+    if (socket_) {
+      socket_->detachEventBase();
+    }
   }
 
   StateEnum state;

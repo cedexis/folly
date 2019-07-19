@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2013-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@
 #include <folly/Conv.h>
 #include <folly/Expected.h>
 #include <folly/Likely.h>
+#include <folly/Portability.h>
 #include <folly/Range.h>
 
 namespace folly {
@@ -55,6 +56,13 @@ constexpr size_t kMaxVarintLength64 = 10;
  * kMaxVarintLength64 bytes to encode arbitrary 64-bit values)
  */
 size_t encodeVarint(uint64_t val, uint8_t* buf);
+
+/**
+ * Determine the number of bytes needed to represent "val".
+ * 32-bit values need at most 5 bytes.
+ * 64-bit values need at most 10 bytes.
+ */
+int encodeVarintSize(uint64_t val);
 
 /**
  * Decode a value from a given buffer, advances data past the returned value.
@@ -108,6 +116,21 @@ inline size_t encodeVarint(uint64_t val, uint8_t* buf) {
   return size_t(p - buf);
 }
 
+inline int encodeVarintSize(uint64_t val) {
+  if (folly::kIsArchAmd64) {
+    // __builtin_clzll is undefined for 0
+    int highBit = 64 - __builtin_clzll(val | 1);
+    return (highBit + 6) / 7;
+  } else {
+    int s = 1;
+    while (val >= 128) {
+      ++s;
+      val >>= 7;
+    }
+    return s;
+  }
+}
+
 template <class T>
 inline uint64_t decodeVarint(Range<T*>& data) {
   auto expected = tryDecodeVarint(data);
@@ -133,7 +156,7 @@ inline Expected<uint64_t, DecodeVarintError> tryDecodeVarint(Range<T*>& data) {
   uint64_t val = 0;
 
   // end is always greater than or equal to begin, so this subtraction is safe
-  if (LIKELY(size_t(end - begin) >= kMaxVarintLength64)) {  // fast path
+  if (LIKELY(size_t(end - begin) >= kMaxVarintLength64)) { // fast path
     int64_t b;
     do {
       b = *p++;

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -76,7 +76,6 @@ void trylockTestThread(TryLockState<LOCK>* state, size_t count) {
       }
       break;
     }
-
 
     if (ret) {
       // We got lock2.

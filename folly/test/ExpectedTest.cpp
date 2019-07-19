@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2016-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,8 +27,8 @@
 
 #include <glog/logging.h>
 
-using std::unique_ptr;
 using std::shared_ptr;
+using std::unique_ptr;
 
 namespace folly {
 
@@ -187,7 +187,7 @@ TEST(Expected, value_or_noncopyable) {
 }
 
 struct ExpectingDeleter {
-  explicit ExpectingDeleter(int expected) : expected(expected) {}
+  explicit ExpectingDeleter(int expected_) : expected(expected_) {}
   int expected;
   void operator()(const int* ptr) {
     EXPECT_EQ(*ptr, expected);
@@ -288,20 +288,28 @@ TEST(Expected, Shared) {
 
 TEST(Expected, Order) {
   std::vector<Expected<int, E>> vect{
-      {unexpected, E::E1}, {3}, {1}, {unexpected, E::E1}, {2},
+      {unexpected, E::E1},
+      {3},
+      {1},
+      {unexpected, E::E1},
+      {2},
   };
   std::vector<Expected<int, E>> expected{
-      {unexpected, E::E1}, {unexpected, E::E1}, {1}, {2}, {3},
+      {unexpected, E::E1},
+      {unexpected, E::E1},
+      {1},
+      {2},
+      {3},
   };
   std::sort(vect.begin(), vect.end());
   EXPECT_EQ(vect, expected);
 }
 
-TEST(Expected, Swap) {
+TEST(Expected, SwapMethod) {
   Expected<std::string, E> a;
   Expected<std::string, E> b;
 
-  swap(a, b);
+  a.swap(b);
   EXPECT_FALSE(a.hasValue());
   EXPECT_FALSE(b.hasValue());
 
@@ -310,7 +318,7 @@ TEST(Expected, Swap) {
   EXPECT_FALSE(b.hasValue());
   EXPECT_EQ("hello", a.value());
 
-  swap(a, b);
+  b.swap(a);
   EXPECT_FALSE(a.hasValue());
   EXPECT_TRUE(b.hasValue());
   EXPECT_EQ("hello", b.value());
@@ -319,7 +327,63 @@ TEST(Expected, Swap) {
   EXPECT_TRUE(a.hasValue());
   EXPECT_EQ("bye", a.value());
 
-  swap(a, b);
+  a.swap(b);
+  EXPECT_EQ("hello", a.value());
+  EXPECT_EQ("bye", b.value());
+}
+
+TEST(Expected, StdSwapFunction) {
+  Expected<std::string, E> a;
+  Expected<std::string, E> b;
+
+  std::swap(a, b);
+  EXPECT_FALSE(a.hasValue());
+  EXPECT_FALSE(b.hasValue());
+
+  a = "greeting";
+  EXPECT_TRUE(a.hasValue());
+  EXPECT_FALSE(b.hasValue());
+  EXPECT_EQ("greeting", a.value());
+
+  std::swap(a, b);
+  EXPECT_FALSE(a.hasValue());
+  EXPECT_TRUE(b.hasValue());
+  EXPECT_EQ("greeting", b.value());
+
+  a = "goodbye";
+  EXPECT_TRUE(a.hasValue());
+  EXPECT_EQ("goodbye", a.value());
+
+  std::swap(a, b);
+  EXPECT_EQ("greeting", a.value());
+  EXPECT_EQ("goodbye", b.value());
+}
+
+TEST(Expected, FollySwapFunction) {
+  Expected<std::string, E> a;
+  Expected<std::string, E> b;
+
+  folly::swap(a, b);
+  EXPECT_FALSE(a.hasValue());
+  EXPECT_FALSE(b.hasValue());
+
+  a = "salute";
+  EXPECT_TRUE(a.hasValue());
+  EXPECT_FALSE(b.hasValue());
+  EXPECT_EQ("salute", a.value());
+
+  folly::swap(a, b);
+  EXPECT_FALSE(a.hasValue());
+  EXPECT_TRUE(b.hasValue());
+  EXPECT_EQ("salute", b.value());
+
+  a = "adieu";
+  EXPECT_TRUE(a.hasValue());
+  EXPECT_EQ("adieu", a.value());
+
+  folly::swap(a, b);
+  EXPECT_EQ("salute", a.value());
+  EXPECT_EQ("adieu", b.value());
 }
 
 TEST(Expected, Comparisons) {
@@ -453,24 +517,15 @@ TEST(Expected, MakeOptional) {
   EXPECT_EQ(**exIntPtr, 3);
 }
 
-#if __CLANG_PREREQ(3, 6)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wself-move"
-#endif
-
 TEST(Expected, SelfAssignment) {
   Expected<std::string, E> a = "42";
-  a = a;
+  a = static_cast<decltype(a)&>(a); // suppress self-assign warning
   ASSERT_TRUE(a.hasValue() && a.value() == "42");
 
   Expected<std::string, E> b = "23333333";
-  b = std::move(b);
+  b = static_cast<decltype(b)&&>(b); // suppress self-move warning
   ASSERT_TRUE(b.hasValue() && b.value() == "23333333");
 }
-
-#if __CLANG_PREREQ(3, 6)
-#pragma clang diagnostic pop
-#endif
 
 class ContainsExpected {
  public:
@@ -577,13 +632,12 @@ struct NoSelfAssign {
 #ifdef __GNUC__
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpragmas"
-#pragma GCC diagnostic ignored "-Wself-move"
 #endif
 
 TEST(Expected, NoSelfAssign) {
-  folly::Expected<NoSelfAssign, int> e {NoSelfAssign{}};
-  e = e; // @nolint
-  e = std::move(e); // @nolint
+  folly::Expected<NoSelfAssign, int> e{NoSelfAssign{}};
+  e = static_cast<decltype(e)&>(e); // suppress self-assign warning
+  e = static_cast<decltype(e)&&>(e); // @nolint suppress self-move warning
 }
 
 #ifdef __GNUC__
@@ -612,36 +666,30 @@ struct WithConstructor {
   WithConstructor();
 };
 
+// libstdc++ with GCC 4.x doesn't have std::is_trivially_copyable
+#if (defined(__clang__) && !defined(_LIBCPP_VERSION)) || \
+    !(defined(__GNUC__) && !defined(__clang__))
 TEST(Expected, TriviallyCopyable) {
   // These could all be static_asserts but EXPECT_* give much nicer output on
   // failure.
-  EXPECT_TRUE((IsTriviallyCopyable<Expected<int, E>>::value));
-  EXPECT_TRUE((IsTriviallyCopyable<Expected<char*, E>>::value));
-  EXPECT_TRUE(
-      (IsTriviallyCopyable<Expected<NoDestructor, E>>::value));
-  EXPECT_FALSE(
-      (IsTriviallyCopyable<Expected<WithDestructor, E>>::value));
-  EXPECT_TRUE(
-      (IsTriviallyCopyable<Expected<NoConstructor, E>>::value));
-  EXPECT_FALSE(
-      (IsTriviallyCopyable<Expected<std::string, E>>::value));
-  EXPECT_FALSE(
-      (IsTriviallyCopyable<Expected<int, std::string>>::value));
-// libstdc++ with GCC 4.x doesn't have std::is_trivially_copyable
-#if (defined(__clang__) && !defined(_LIBCPP_VERSION)) || \
-    !(defined(__GNUC__) && !defined(__clang__) && __GNUC__ < 5)
-  EXPECT_TRUE(
-      (IsTriviallyCopyable<Expected<WithConstructor, E>>::value));
-#endif
-  EXPECT_TRUE(
-      (IsTriviallyCopyable<Expected<Expected<int, E>, E>>::value));
+  EXPECT_TRUE((is_trivially_copyable<Expected<int, E>>::value));
+  EXPECT_TRUE((is_trivially_copyable<Expected<char*, E>>::value));
+  EXPECT_TRUE((is_trivially_copyable<Expected<NoDestructor, E>>::value));
+  EXPECT_FALSE((is_trivially_copyable<Expected<WithDestructor, E>>::value));
+  EXPECT_TRUE((is_trivially_copyable<Expected<NoConstructor, E>>::value));
+  EXPECT_FALSE((is_trivially_copyable<Expected<std::string, E>>::value));
+  EXPECT_FALSE((is_trivially_copyable<Expected<int, std::string>>::value));
+  EXPECT_TRUE((is_trivially_copyable<Expected<WithConstructor, E>>::value));
+  EXPECT_TRUE((is_trivially_copyable<Expected<Expected<int, E>, E>>::value));
 }
+#endif
 
 TEST(Expected, Then) {
   // Lifting
   {
-    Expected<int, E> ex = Expected<std::unique_ptr<int>, E>{
-        in_place, new int(42)}.then([](std::unique_ptr<int> p) { return *p; });
+    Expected<int, E> ex =
+        Expected<std::unique_ptr<int>, E>{in_place, new int(42)}.then(
+            [](std::unique_ptr<int> p) { return *p; });
     EXPECT_TRUE(bool(ex));
     EXPECT_EQ(42, *ex);
   }
@@ -657,8 +705,9 @@ TEST(Expected, Then) {
 
   // Void
   {
-    Expected<Unit, E> ex = Expected<std::unique_ptr<int>, E>{
-        in_place, new int(42)}.then([](std::unique_ptr<int>) {});
+    Expected<Unit, E> ex =
+        Expected<std::unique_ptr<int>, E>{in_place, new int(42)}.then(
+            [](std::unique_ptr<int>) {});
     EXPECT_TRUE(bool(ex));
   }
 
@@ -674,11 +723,12 @@ TEST(Expected, Then) {
 
   {
     // Error case:
-    Expected<int, E> ex = Expected<std::unique_ptr<int>, E>{
-        unexpected, E::E1}.then([](std::unique_ptr<int> p) -> int {
-      ADD_FAILURE();
-      return *p;
-    });
+    Expected<int, E> ex =
+        Expected<std::unique_ptr<int>, E>{unexpected, E::E1}.then(
+            [](std::unique_ptr<int> p) -> int {
+              ADD_FAILURE();
+              return *p;
+            });
     EXPECT_FALSE(bool(ex));
     EXPECT_EQ(E::E1, ex.error());
   }
@@ -742,6 +792,94 @@ TEST(Expected, ThenOrThrow) {
         (Expected<std::unique_ptr<int>, E>{unexpected, E::E1}.thenOrThrow(
             [](std::unique_ptr<int> p) { return *p; }, [](E) {})),
         Unexpected<E>::BadExpectedAccess);
+  }
+}
+
+namespace {
+struct Source {};
+
+struct SmallPODConstructTo {
+  SmallPODConstructTo() = default;
+  explicit SmallPODConstructTo(Source) {}
+};
+
+struct LargePODConstructTo {
+  explicit LargePODConstructTo(Source) {}
+  int64_t array[10];
+};
+
+struct NonPODConstructTo {
+  explicit NonPODConstructTo(Source) {}
+  NonPODConstructTo(NonPODConstructTo const&) {}
+  NonPODConstructTo& operator=(NonPODConstructTo const&) { return *this; }
+};
+
+struct ConvertTo {
+  explicit ConvertTo(Source) {}
+  ConvertTo& operator=(Source) { return *this; }
+};
+
+static_assert(
+    expected_detail::getStorageType<int, SmallPODConstructTo>() ==
+        expected_detail::StorageType::ePODStruct,
+    "SmallPODConstructTo is ePODStruct");
+static_assert(
+    expected_detail::getStorageType<int, LargePODConstructTo>() ==
+        expected_detail::StorageType::ePODUnion,
+    "LargePODConstructTo is ePODUnion");
+static_assert(
+    expected_detail::getStorageType<int, NonPODConstructTo>() ==
+        expected_detail::StorageType::eUnion,
+    "NonPODConstructTo is eUnion");
+
+template <typename Target>
+constexpr bool constructibleNotConvertible() {
+  return std::is_constructible<Target, Source>() &&
+      !expected_detail::IsConvertible<Source, Target>();
+}
+
+static_assert(constructibleNotConvertible<SmallPODConstructTo>(), "");
+static_assert(constructibleNotConvertible<LargePODConstructTo>(), "");
+static_assert(constructibleNotConvertible<NonPODConstructTo>(), "");
+
+static_assert(expected_detail::IsConvertible<Source, ConvertTo>(),
+    "convertible");
+} // namespace
+
+TEST(Expected, GitHubIssue1111) {
+  // See https://github.com/facebook/folly/issues/1111
+  Expected<int, SmallPODConstructTo> a = folly::makeExpected<Source>(5);
+  EXPECT_EQ(a.value(), 5);
+}
+
+TEST(Expected, ConstructorConstructibleNotConvertible) {
+  const Expected<int, Source> v = makeExpected<Source>(5);
+  const Expected<int, Source> e = makeUnexpected(Source());
+  // Test construction and assignment for each ExpectedStorage backend
+  {
+    folly::Expected<int, SmallPODConstructTo> cv(v);
+    folly::Expected<int, SmallPODConstructTo> ce(e);
+    cv = v;
+    ce = e;
+  }
+  {
+    folly::Expected<int, LargePODConstructTo> cv(v);
+    folly::Expected<int, LargePODConstructTo> ce(e);
+    cv = v;
+    ce = e;
+  }
+  {
+    folly::Expected<int, NonPODConstructTo> cv(v);
+    folly::Expected<int, NonPODConstructTo> ce(e);
+    cv = v;
+    ce = e;
+  }
+  // Test convertible construction and assignment
+  {
+    folly::Expected<int, ConvertTo> cv(v);
+    folly::Expected<int, ConvertTo> ce(e);
+    cv = v;
+    ce = e;
   }
 }
 } // namespace folly

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2017-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,7 +35,7 @@ class NamedThreadFactory : public ThreadFactory {
   std::thread newThread(Func&& func) override {
     auto name = folly::to<std::string>(prefix_, suffix_++);
     return std::thread(
-        [ func = std::move(func), name = std::move(name) ]() mutable {
+        [func = std::move(func), name = std::move(name)]() mutable {
           folly::setThreadName(name);
           func();
         });

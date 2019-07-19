@@ -19,13 +19,14 @@
 #include <functional>
 #include <limits>
 
+#include <folly/Indestructible.h>
 #include <folly/Optional.h>
 #include <folly/detail/TurnSequencer.h>
 #include <folly/executors/QueuedImmediateExecutor.h>
 #include <folly/synchronization/detail/ThreadCachedInts.h>
 #include <folly/synchronization/detail/ThreadCachedLists.h>
 
-// Implementation of proposed RCU C++ API
+// Implementation of proposed Read-Copy-Update (RCU) C++ API
 // http://open-std.org/JTC1/SC22/WG21/docs/papers/2017/p0566r3.pdf
 
 // Overview
@@ -174,7 +175,7 @@
 //   callers should only ever use the default, global domain.
 //
 //   Creation of a domain takes a template tag argument, which
-//   defaults to void. To access different domains, you have to pass a
+//   defaults to RcuTag. To access different domains, you have to pass a
 //   different tag.  The global domain is preferred for almost all
 //   purposes, unless a different executor is required.
 //
@@ -287,9 +288,9 @@ class rcu_domain;
 
 // Opaque token used to match up lock_shared() and unlock_shared()
 // pairs.
+template <typename Tag>
 class rcu_token {
  public:
-  rcu_token(uint64_t epoch) : epoch_(epoch) {}
   rcu_token() {}
   ~rcu_token() = default;
 
@@ -299,8 +300,9 @@ class rcu_token {
   rcu_token& operator=(rcu_token&& other) = default;
 
  private:
-  template <typename Tag>
-  friend class rcu_domain;
+  explicit rcu_token(uint64_t epoch) : epoch_(epoch) {}
+
+  friend class rcu_domain<Tag>;
   uint64_t epoch_;
 };
 
@@ -316,7 +318,7 @@ class rcu_domain {
    * If an executor is passed, it is used to run calls and delete
    * retired objects.
    */
-  rcu_domain(Executor* executor = nullptr) noexcept;
+  explicit rcu_domain(Executor* executor = nullptr) noexcept;
 
   rcu_domain(const rcu_domain&) = delete;
   rcu_domain(rcu_domain&&) = delete;
@@ -329,8 +331,8 @@ class rcu_domain {
   // all preceding lock_shared() sections are finished.
 
   // Note: can potentially allocate on thread first use.
-  FOLLY_ALWAYS_INLINE rcu_token lock_shared();
-  FOLLY_ALWAYS_INLINE void unlock_shared(rcu_token&&);
+  FOLLY_ALWAYS_INLINE rcu_token<Tag> lock_shared();
+  FOLLY_ALWAYS_INLINE void unlock_shared(rcu_token<Tag>&&);
 
   // Call a function after concurrent critical sections have finished.
   // Does not block unless the queue is full, then may block to wait
@@ -379,81 +381,109 @@ class rcu_domain {
   void half_sync(bool blocking, list_head& cbs);
 };
 
-extern rcu_domain<RcuTag> rcu_default_domain_;
+extern folly::Indestructible<rcu_domain<RcuTag>*> rcu_default_domain_;
 
 inline rcu_domain<RcuTag>* rcu_default_domain() {
-  return &rcu_default_domain_;
+  return *rcu_default_domain_;
 }
 
 // Main reader guard class.
-class rcu_reader {
+template <typename Tag = RcuTag>
+class rcu_reader_domain {
  public:
-  FOLLY_ALWAYS_INLINE rcu_reader() noexcept
-      : epoch_(rcu_default_domain()->lock_shared()) {}
-  rcu_reader(std::defer_lock_t) noexcept {}
-  rcu_reader(const rcu_reader&) = delete;
-  rcu_reader(rcu_reader&& other) noexcept : epoch_(std::move(other.epoch_)) {}
-  rcu_reader& operator=(const rcu_reader&) = delete;
-  rcu_reader& operator=(rcu_reader&& other) noexcept {
+  explicit FOLLY_ALWAYS_INLINE rcu_reader_domain(
+      rcu_domain<Tag>* domain = rcu_default_domain()) noexcept
+      : epoch_(domain->lock_shared()), domain_(domain) {}
+  explicit rcu_reader_domain(
+      std::defer_lock_t,
+      rcu_domain<Tag>* domain = rcu_default_domain()) noexcept
+      : domain_(domain) {}
+  rcu_reader_domain(const rcu_reader_domain&) = delete;
+  rcu_reader_domain(rcu_reader_domain&& other) noexcept
+      : epoch_(std::move(other.epoch_)),
+        domain_(std::exchange(other.domain_, nullptr)) {}
+  rcu_reader_domain& operator=(const rcu_reader_domain&) = delete;
+  rcu_reader_domain& operator=(rcu_reader_domain&& other) noexcept {
     if (epoch_.has_value()) {
-      rcu_default_domain()->unlock_shared(std::move(epoch_.value()));
+      domain_->unlock_shared(std::move(epoch_.value()));
     }
     epoch_ = std::move(other.epoch_);
+    domain_ = std::move(other.domain_);
     return *this;
   }
 
-  FOLLY_ALWAYS_INLINE ~rcu_reader() noexcept {
+  FOLLY_ALWAYS_INLINE ~rcu_reader_domain() noexcept {
     if (epoch_.has_value()) {
-      rcu_default_domain()->unlock_shared(std::move(epoch_.value()));
+      domain_->unlock_shared(std::move(epoch_.value()));
     }
   }
 
-  void swap(rcu_reader& other) noexcept {
+  void swap(rcu_reader_domain& other) noexcept {
     std::swap(epoch_, other.epoch_);
+    std::swap(domain_, other.domain_);
   }
 
   FOLLY_ALWAYS_INLINE void lock() noexcept {
     DCHECK(!epoch_.has_value());
-    epoch_ = rcu_default_domain()->lock_shared();
+    epoch_ = domain_->lock_shared();
   }
 
   FOLLY_ALWAYS_INLINE void unlock() noexcept {
     DCHECK(epoch_.has_value());
-    rcu_default_domain()->unlock_shared(std::move(epoch_.value()));
+    domain_->unlock_shared(std::move(epoch_.value()));
   }
 
  private:
-  Optional<rcu_token> epoch_;
+  Optional<rcu_token<Tag>> epoch_;
+  rcu_domain<Tag>* domain_;
 };
 
-inline void swap(rcu_reader& a, rcu_reader& b) noexcept {
+using rcu_reader = rcu_reader_domain<RcuTag>;
+
+template <typename Tag = RcuTag>
+inline void swap(
+    rcu_reader_domain<Tag>& a,
+    rcu_reader_domain<Tag>& b) noexcept {
   a.swap(b);
 }
 
-inline void synchronize_rcu() noexcept {
-  rcu_default_domain()->synchronize();
+template <typename Tag = RcuTag>
+inline void synchronize_rcu(
+    rcu_domain<Tag>* domain = rcu_default_domain()) noexcept {
+  domain->synchronize();
 }
 
-inline void rcu_barrier() noexcept {
-  rcu_default_domain()->synchronize();
+template <typename Tag = RcuTag>
+inline void rcu_barrier(
+    rcu_domain<Tag>* domain = rcu_default_domain()) noexcept {
+  domain->synchronize();
 }
 
 // Free-function retire.  Always allocates.
-template <typename T, typename D = std::default_delete<T>>
-void rcu_retire(T* p, D d = {}) {
-  rcu_default_domain()->call([p, del = std::move(d)]() { del(p); });
+template <
+    typename T,
+    typename D = std::default_delete<T>,
+    typename Tag = RcuTag>
+void rcu_retire(
+    T* p,
+    D d = {},
+    rcu_domain<Tag>* domain = rcu_default_domain()) {
+  domain->call([p, del = std::move(d)]() { del(p); });
 }
 
 // Base class for rcu objects.  retire() will use preallocated storage
 // from rcu_obj_base, vs.  rcu_retire() which always allocates.
-template <typename T, typename D = std::default_delete<T>>
+template <
+    typename T,
+    typename D = std::default_delete<T>,
+    typename Tag = RcuTag>
 class rcu_obj_base : detail::ThreadCachedListsBase::Node {
  public:
-  void retire(D d = {}) {
+  void retire(D d = {}, rcu_domain<Tag>* domain = rcu_default_domain()) {
     // This implementation assumes folly::Function has enough
     // inline storage for D, otherwise, it allocates.
     this->cb_ = [this, d = std::move(d)]() { d(static_cast<T*>(this)); };
-    rcu_default_domain()->retire(this);
+    domain->retire(this);
   }
 };
 

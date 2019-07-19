@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2013-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,7 @@
 
 #pragma once
 
-#include <boost/noncopyable.hpp>
-#include <glog/logging.h>
+#include <cassert>
 
 #include <folly/File.h>
 #include <folly/Range.h>
@@ -29,7 +28,7 @@ namespace folly {
  *
  * @author Tudor Bosman (tudorb@fb.com)
  */
-class MemoryMapping : boost::noncopyable {
+class MemoryMapping {
  public:
   /**
    * Lock the pages in memory?
@@ -38,11 +37,11 @@ class MemoryMapping : boost::noncopyable {
    */
   enum class LockMode {
     TRY_LOCK,
-    MUST_LOCK
+    MUST_LOCK,
   };
   /**
-   * Map a portion of the file indicated by filename in memory, causing a CHECK
-   * failure on error.
+   * Map a portion of the file indicated by filename in memory, causing SIGABRT
+   * on error.
    *
    * By default, map the whole file.  length=-1: map from offset to EOF.
    * Unlike the mmap() system call, offset and length don't need to be
@@ -55,12 +54,30 @@ class MemoryMapping : boost::noncopyable {
     Options() {}
 
     // Convenience methods; return *this for chaining.
-    Options& setPageSize(off_t v) { pageSize = v; return *this; }
-    Options& setShared(bool v) { shared = v; return *this; }
-    Options& setPrefault(bool v) { prefault = v; return *this; }
-    Options& setReadable(bool v) { readable = v; return *this; }
-    Options& setWritable(bool v) { writable = v; return *this; }
-    Options& setGrow(bool v) { grow = v; return *this; }
+    Options& setPageSize(off_t v) {
+      pageSize = v;
+      return *this;
+    }
+    Options& setShared(bool v) {
+      shared = v;
+      return *this;
+    }
+    Options& setPrefault(bool v) {
+      prefault = v;
+      return *this;
+    }
+    Options& setReadable(bool v) {
+      readable = v;
+      return *this;
+    }
+    Options& setWritable(bool v) {
+      writable = v;
+      return *this;
+    }
+    Options& setGrow(bool v) {
+      grow = v;
+      return *this;
+    }
 
     // Page size. 0 = use appropriate page size.
     // (On Linux, we use a huge page size if the file is on a hugetlbfs
@@ -103,34 +120,39 @@ class MemoryMapping : boost::noncopyable {
   }
 
   enum AnonymousType {
-    kAnonymous
+    kAnonymous,
   };
 
   /**
    * Create an anonymous mapping.
    */
-  MemoryMapping(AnonymousType, off_t length, Options options=Options());
+  MemoryMapping(AnonymousType, off_t length, Options options = Options());
 
-  explicit MemoryMapping(File file,
-                         off_t offset=0,
-                         off_t length=-1,
-                         Options options=Options());
+  explicit MemoryMapping(
+      File file,
+      off_t offset = 0,
+      off_t length = -1,
+      Options options = Options());
 
-  explicit MemoryMapping(const char* name,
-                         off_t offset=0,
-                         off_t length=-1,
-                         Options options=Options());
+  explicit MemoryMapping(
+      const char* name,
+      off_t offset = 0,
+      off_t length = -1,
+      Options options = Options());
 
-  explicit MemoryMapping(int fd,
-                         off_t offset=0,
-                         off_t length=-1,
-                         Options options=Options());
+  explicit MemoryMapping(
+      int fd,
+      off_t offset = 0,
+      off_t length = -1,
+      Options options = Options());
 
+  MemoryMapping(const MemoryMapping&) = delete;
   MemoryMapping(MemoryMapping&&) noexcept;
 
   ~MemoryMapping();
 
-  MemoryMapping& operator=(MemoryMapping);
+  MemoryMapping& operator=(const MemoryMapping&) = delete;
+  MemoryMapping& operator=(MemoryMapping&&);
 
   void swap(MemoryMapping& other) noexcept;
 
@@ -165,9 +187,8 @@ class MemoryMapping : boost::noncopyable {
   template <class T>
   Range<const T*> asRange() const {
     size_t count = data_.size() / sizeof(T);
-    return Range<const T*>(static_cast<const T*>(
-                             static_cast<const void*>(data_.data())),
-                           count);
+    return Range<const T*>(
+        static_cast<const T*>(static_cast<const void*>(data_.data())), count);
   }
 
   /**
@@ -183,18 +204,16 @@ class MemoryMapping : boost::noncopyable {
    */
   template <class T>
   Range<T*> asWritableRange() const {
-    DCHECK(options_.writable);  // you'll segfault anyway...
+    assert(options_.writable); // you'll segfault anyway...
     size_t count = data_.size() / sizeof(T);
-    return Range<T*>(static_cast<T*>(
-                       static_cast<void*>(data_.data())),
-                     count);
+    return Range<T*>(static_cast<T*>(static_cast<void*>(data_.data())), count);
   }
 
   /**
    * A range of mutable bytes mapped by this mapping.
    */
   MutableByteRange writableRange() const {
-    DCHECK(options_.writable);  // you'll segfault anyway...
+    assert(options_.writable); // you'll segfault anyway...
     return data_;
   }
 
@@ -210,7 +229,9 @@ class MemoryMapping : boost::noncopyable {
     return locked_;
   }
 
-  int fd() const { return file_.fd(); }
+  int fd() const {
+    return file_.fd();
+  }
 
  private:
   MemoryMapping();

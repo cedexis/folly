@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,10 +31,8 @@ LIFOSEM_DECLARE_POOL(std::atomic, 1000000)
 namespace folly {
 
 ShutdownSemError::ShutdownSemError(const std::string& msg)
-  : std::runtime_error(msg)
-{}
+    : std::runtime_error(msg) {}
 
-ShutdownSemError::~ShutdownSemError() noexcept {
-}
+ShutdownSemError::~ShutdownSemError() noexcept {}
 
 } // namespace folly

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 #pragma once
 
 #include <algorithm>
@@ -23,17 +22,21 @@
 #include <memory>
 #include <system_error>
 
+#include <folly/CPortability.h>
 #include <folly/CachelinePadded.h>
 #include <folly/IndexedMemPool.h>
 #include <folly/Likely.h>
+#include <folly/Portability.h>
+#include <folly/Traits.h>
+#include <folly/lang/SafeAssert.h>
 #include <folly/synchronization/AtomicStruct.h>
-#include <folly/synchronization/Baton.h>
+#include <folly/synchronization/SaturatingSemaphore.h>
 
 namespace folly {
 
 template <
     template <typename> class Atom = std::atomic,
-    class BatonType = Baton<true, Atom>>
+    class BatonType = SaturatingSemaphore<true, Atom>>
 struct LifoSemImpl;
 
 /// LifoSem is a semaphore that wakes its waiters in a manner intended to
@@ -71,6 +74,11 @@ struct LifoSemImpl;
 ///
 /// -- wait() -- waits until tryWait() can succeed.  Compare to sem_wait().
 ///
+/// -- timed wait variants - will wait until timeout.  Note when these
+///    timeout, the current implementation takes a lock, blocking
+///    concurrent pushes and pops.  (If timed wait calls are
+///    substantial, consider re-working this code to be lock-free).
+///
 /// LifoSem also has the notion of a shutdown state, in which any calls
 /// that would block (or are already blocked) throw ShutdownSemError.
 /// Note the difference between a call to wait() and a call to wait()
@@ -81,16 +89,14 @@ struct LifoSemImpl;
 /// you can just check isShutdown() yourself (preferrably wrapped in
 /// an UNLIKELY).  This fast-stop behavior is easy to add, but difficult
 /// to remove if you want the draining behavior, which is why we have
-/// chosen the former.  Since wait() is the only method that can block,
-/// it is the only one that is affected by the shutdown state.
+/// chosen the former.
 ///
-/// All LifoSem operations operations except valueGuess() are guaranteed
-/// to be linearizable.
+/// All LifoSem operations except valueGuess() are guaranteed to be
+/// linearizable.
 typedef LifoSemImpl<> LifoSem;
 
-
 /// The exception thrown when wait()ing on an isShutdown() LifoSem
-struct ShutdownSemError : public std::runtime_error {
+struct FOLLY_EXPORT ShutdownSemError : public std::runtime_error {
   explicit ShutdownSemError(const std::string& msg);
   ~ShutdownSemError() noexcept override;
 };
@@ -117,18 +123,30 @@ namespace detail {
 /// a large static IndexedMemPool of nodes, instead of per-type pools
 template <template <typename> class Atom>
 struct LifoSemRawNode {
-  std::aligned_storage<sizeof(void*),alignof(void*)>::type raw;
+  aligned_storage_for_t<void*> raw;
 
   /// The IndexedMemPool index of the next node in this chain, or 0
   /// if none.  This will be set to uint32_t(-1) if the node is being
   /// posted due to a shutdown-induced wakeup
-  uint32_t next;
+  Atom<uint32_t> next{0};
 
-  bool isShutdownNotice() const { return next == uint32_t(-1); }
-  void clearShutdownNotice() { next = 0; }
-  void setShutdownNotice() { next = uint32_t(-1); }
+  bool isShutdownNotice() const {
+    return next.load(std::memory_order_relaxed) == uint32_t(-1);
+  }
+  void clearShutdownNotice() {
+    next.store(0, std::memory_order_relaxed);
+  }
+  void setShutdownNotice() {
+    next.store(uint32_t(-1), std::memory_order_relaxed);
+  }
 
-  typedef folly::IndexedMemPool<LifoSemRawNode<Atom>,32,200,Atom> Pool;
+  typedef folly::IndexedMemPool<
+      LifoSemRawNode<Atom>,
+      32,
+      200,
+      Atom,
+      IndexedMemPoolTraitsLazyRecycle<LifoSemRawNode<Atom>>>
+      Pool;
 
   /// Storage for all of the waiter nodes for LifoSem-s that use Atom
   static Pool& pool();
@@ -154,23 +172,23 @@ struct LifoSemRawNode {
 /// LifoSemBase::wait accordingly.
 template <typename Handoff, template <typename> class Atom>
 struct LifoSemNode : public LifoSemRawNode<Atom> {
-
-  static_assert(sizeof(Handoff) <= sizeof(LifoSemRawNode<Atom>::raw),
+  static_assert(
+      sizeof(Handoff) <= sizeof(LifoSemRawNode<Atom>::raw),
       "Handoff too big for small-object optimization, use indirection");
-  static_assert(alignof(Handoff) <=
-                alignof(decltype(LifoSemRawNode<Atom>::raw)),
+  static_assert(
+      alignof(Handoff) <= alignof(decltype(LifoSemRawNode<Atom>::raw)),
       "Handoff alignment constraint not satisfied");
 
-  template <typename ...Args>
+  template <typename... Args>
   void init(Args&&... args) {
     new (&this->raw) Handoff(std::forward<Args>(args)...);
   }
 
   void destroy() {
     handoff().~Handoff();
-#ifndef NDEBUG
-    memset(&this->raw, 'F', sizeof(this->raw));
-#endif
+    if (kIsDebug) {
+      memset(&this->raw, 'F', sizeof(this->raw));
+    }
   }
 
   Handoff& handoff() {
@@ -184,7 +202,7 @@ struct LifoSemNode : public LifoSemRawNode<Atom> {
 
 template <typename Handoff, template <typename> class Atom>
 struct LifoSemNodeRecycler {
-  void operator()(LifoSemNode<Handoff,Atom>* elem) const {
+  void operator()(LifoSemNode<Handoff, Atom>* elem) const {
     elem->destroy();
     auto idx = LifoSemRawNode<Atom>::pool().locateElem(elem);
     LifoSemRawNode<Atom>::pool().recycleIndex(idx);
@@ -212,17 +230,18 @@ class LifoSemHead {
   enum {
     IsNodeIdxShift = 32,
     IsShutdownShift = 33,
-    SeqShift = 34,
+    IsLockedShift = 34,
+    SeqShift = 35,
   };
   enum : uint64_t {
     IsNodeIdxMask = uint64_t(1) << IsNodeIdxShift,
     IsShutdownMask = uint64_t(1) << IsShutdownShift,
+    IsLockedMask = uint64_t(1) << IsLockedShift,
     SeqIncr = uint64_t(1) << SeqShift,
     SeqMask = ~(SeqIncr - 1),
   };
 
  public:
-
   uint64_t bits;
 
   //////// getters
@@ -242,6 +261,9 @@ class LifoSemHead {
   inline constexpr bool isShutdown() const {
     return (bits & IsShutdownMask) != 0;
   }
+  inline constexpr bool isLocked() const {
+    return (bits & IsLockedMask) != 0;
+  }
   inline constexpr uint32_t seq() const {
     return uint32_t(bits >> SeqShift);
   }
@@ -251,61 +273,78 @@ class LifoSemHead {
   /// This should only be used for initial construction, not for setting
   /// the value, because it clears the sequence number
   static inline constexpr LifoSemHead fresh(uint32_t value) {
-    return LifoSemHead{ value };
+    return LifoSemHead{value};
   }
 
   /// Returns the LifoSemHead that results from popping a waiter node,
   /// given the current waiter node's next ptr
   inline LifoSemHead withPop(uint32_t idxNext) const {
+    assert(!isLocked());
     assert(isNodeIdx());
     if (idxNext == 0) {
       // no isNodeIdx bit or data bits.  Wraparound of seq bits is okay
-      return LifoSemHead{ (bits & (SeqMask | IsShutdownMask)) + SeqIncr };
+      return LifoSemHead{(bits & (SeqMask | IsShutdownMask)) + SeqIncr};
     } else {
       // preserve sequence bits (incremented with wraparound okay) and
       // isNodeIdx bit, replace all data bits
-      return LifoSemHead{
-          (bits & (SeqMask | IsShutdownMask | IsNodeIdxMask)) +
-          SeqIncr + idxNext };
+      return LifoSemHead{(bits & (SeqMask | IsShutdownMask | IsNodeIdxMask)) +
+                         SeqIncr + idxNext};
     }
   }
 
   /// Returns the LifoSemHead that results from pushing a new waiter node
   inline LifoSemHead withPush(uint32_t _idx) const {
+    assert(!isLocked());
     assert(isNodeIdx() || value() == 0);
     assert(!isShutdown());
     assert(_idx != 0);
-    return LifoSemHead{ (bits & SeqMask) | IsNodeIdxMask | _idx };
+    return LifoSemHead{(bits & SeqMask) | IsNodeIdxMask | _idx};
   }
 
   /// Returns the LifoSemHead with value increased by delta, with
   /// saturation if the maximum value is reached
   inline LifoSemHead withValueIncr(uint32_t delta) const {
+    assert(!isLocked());
     assert(!isNodeIdx());
-    auto rv = LifoSemHead{ bits + SeqIncr + delta };
+    auto rv = LifoSemHead{bits + SeqIncr + delta};
     if (UNLIKELY(rv.isNodeIdx())) {
       // value has overflowed into the isNodeIdx bit
-      rv = LifoSemHead{ (rv.bits & ~IsNodeIdxMask) | (IsNodeIdxMask - 1) };
+      rv = LifoSemHead{(rv.bits & ~IsNodeIdxMask) | (IsNodeIdxMask - 1)};
     }
     return rv;
   }
 
   /// Returns the LifoSemHead that results from decrementing the value
   inline LifoSemHead withValueDecr(uint32_t delta) const {
+    assert(!isLocked());
     assert(delta > 0 && delta <= value());
-    return LifoSemHead{ bits + SeqIncr - delta };
+    return LifoSemHead{bits + SeqIncr - delta};
   }
 
   /// Returns the LifoSemHead with the same state as the current node,
   /// but with the shutdown bit set
   inline LifoSemHead withShutdown() const {
-    return LifoSemHead{ bits | IsShutdownMask };
+    return LifoSemHead{bits | IsShutdownMask};
   }
 
-  inline constexpr bool operator== (const LifoSemHead& rhs) const {
+  // Returns LifoSemHead with lock bit set, but rest of bits unchanged.
+  inline LifoSemHead withLock() const {
+    assert(!isLocked());
+    return LifoSemHead{bits | IsLockedMask};
+  }
+
+  // Returns LifoSemHead with lock bit unset, and updated seqno based
+  // on idx.
+  inline LifoSemHead withoutLock(uint32_t idxNext) const {
+    assert(isLocked());
+    // We need to treat this as a pop, as we may change the list head.
+    return LifoSemHead{bits & ~IsLockedMask}.withPop(idxNext);
+  }
+
+  inline constexpr bool operator==(const LifoSemHead& rhs) const {
     return bits == rhs.bits;
   }
-  inline constexpr bool operator!= (const LifoSemHead& rhs) const {
+  inline constexpr bool operator!=(const LifoSemHead& rhs) const {
     return !(*this == rhs);
   }
 };
@@ -319,7 +358,6 @@ class LifoSemHead {
 /// See LifoSemNode for more information on how to make your own.
 template <typename Handoff, template <typename> class Atom = std::atomic>
 struct LifoSemBase {
-
   /// Constructor
   constexpr explicit LifoSemBase(uint32_t initialValue = 0)
       : head_(LifoSemHead::fresh(initialValue)) {}
@@ -328,11 +366,13 @@ struct LifoSemBase {
   LifoSemBase& operator=(LifoSemBase const&) = delete;
 
   /// Silently saturates if value is already 2^32-1
-  void post() {
+  bool post() {
     auto idx = incrOrPop(1);
     if (idx != 0) {
       idxToNode(idx).handoff().post();
+      return true;
     }
+    return false;
   }
 
   /// Equivalent to n calls to post(), except may be much more efficient.
@@ -367,6 +407,12 @@ struct LifoSemBase {
     // first set the shutdown bit
     auto h = head_->load(std::memory_order_acquire);
     while (!h.isShutdown()) {
+      if (h.isLocked()) {
+        std::this_thread::yield();
+        h = head_->load(std::memory_order_acquire);
+        continue;
+      }
+
       if (head_->compare_exchange_strong(h, h.withShutdown())) {
         // success
         h = h.withShutdown();
@@ -377,8 +423,13 @@ struct LifoSemBase {
 
     // now wake up any waiters
     while (h.isNodeIdx()) {
+      if (h.isLocked()) {
+        std::this_thread::yield();
+        h = head_->load(std::memory_order_acquire);
+        continue;
+      }
       auto& node = idxToNode(h.idx());
-      auto repl = h.withPop(node.next);
+      auto repl = h.withPop(node.next.load(std::memory_order_relaxed));
       if (head_->compare_exchange_strong(h, repl)) {
         // successful pop, wake up the waiter and move on.  The next
         // field is used to convey that this wakeup didn't consume a value
@@ -393,8 +444,9 @@ struct LifoSemBase {
   bool tryWait() {
     uint32_t n = 1;
     auto rv = decrOrPush(n, 0);
-    assert((rv == WaitResult::DECR && n == 0) ||
-           (rv != WaitResult::DECR && n == 1));
+    assert(
+        (rv == WaitResult::DECR && n == 0) ||
+        (rv != WaitResult::DECR && n == 1));
     // SHUTDOWN is okay here, since we don't actually wait
     return rv == WaitResult::DECR;
   }
@@ -409,8 +461,9 @@ struct LifoSemBase {
       auto prev = n;
 #endif
       auto rv = decrOrPush(n, 0);
-      assert((rv == WaitResult::DECR && n < prev) ||
-             (rv != WaitResult::DECR && n == prev));
+      assert(
+          (rv == WaitResult::DECR && n < prev) ||
+          (rv != WaitResult::DECR && n == prev));
       if (rv != WaitResult::DECR) {
         break;
       }
@@ -424,10 +477,27 @@ struct LifoSemBase {
   /// Note that wait() doesn't throw during shutdown if tryWait() would
   /// return true
   void wait() {
+    auto const deadline = std::chrono::steady_clock::time_point::max();
+    auto res = try_wait_until(deadline);
+    FOLLY_SAFE_DCHECK(res, "infinity time has passed");
+  }
+
+  bool try_wait() {
+    return tryWait();
+  }
+
+  template <typename Rep, typename Period>
+  bool try_wait_for(const std::chrono::duration<Rep, Period>& timeout) {
+    return try_wait_until(timeout + std::chrono::steady_clock::now());
+  }
+
+  template <typename Clock, typename Duration>
+  bool try_wait_until(
+      const std::chrono::time_point<Clock, Duration>& deadline) {
     // early check isn't required for correctness, but is an important
     // perf win if we can avoid allocating and deallocating a node
     if (tryWait()) {
-      return;
+      return true;
     }
 
     // allocateNode() won't compile unless Handoff has a default
@@ -441,10 +511,23 @@ struct LifoSemBase {
     }
 
     if (rv == WaitResult::PUSH) {
-      node->handoff().wait();
+      if (!node->handoff().try_wait_until(deadline)) {
+        if (tryRemoveNode(*node)) {
+          return false;
+        } else {
+          // We could not remove our node. Return to waiting.
+          //
+          // This only happens if we lose a removal race with post(),
+          // so we are not likely to wait long.  This is only
+          // necessary to ensure we don't return node's memory back to
+          // IndexedMemPool before post() has had a chance to post to
+          // handoff().  In a stronger memory reclamation scheme, such
+          // as hazptr or rcu, this would not be necessary.
+          node->handoff().wait();
+        }
+      }
       if (UNLIKELY(node->isShutdownNotice())) {
         // this wait() didn't consume a value, it was triggered by shutdown
-        assert(isShutdown());
         throw ShutdownSemError(
             "blocking wait() interrupted by semaphore shutdown");
       }
@@ -454,6 +537,7 @@ struct LifoSemBase {
       // recycle the node now
     }
     // else node wasn't pushed, so it is safe to recycle
+    return true;
   }
 
   /// Returns a guess at the current value, designed for debugging.
@@ -468,7 +552,6 @@ struct LifoSemBase {
   }
 
  protected:
-
   enum class WaitResult {
     PUSH,
     DECR,
@@ -477,8 +560,9 @@ struct LifoSemBase {
 
   /// The type of a std::unique_ptr that will automatically return a
   /// LifoSemNode to the appropriate IndexedMemPool
-  typedef std::unique_ptr<LifoSemNode<Handoff, Atom>,
-                          LifoSemNodeRecycler<Handoff, Atom>> UniquePtr;
+  typedef std::
+      unique_ptr<LifoSemNode<Handoff, Atom>, LifoSemNodeRecycler<Handoff, Atom>>
+          UniquePtr;
 
   /// Returns a node that can be passed to decrOrLink
   template <typename... Args>
@@ -510,6 +594,60 @@ struct LifoSemBase {
     return decrOrPush(n, nodeToIdx(waiterNode));
   }
 
+  // Locks the list head (blocking concurrent pushes and pops)
+  // and attempts to remove this node.  Returns true if node was
+  // found and removed, false if not found.
+  bool tryRemoveNode(const LifoSemNode<Handoff, Atom>& removenode) {
+    auto removeidx = nodeToIdx(removenode);
+    auto head = head_->load(std::memory_order_acquire);
+    // Try to lock the head.
+    while (true) {
+      if (head.isLocked()) {
+        std::this_thread::yield();
+        head = head_->load(std::memory_order_acquire);
+        continue;
+      }
+      if (!head.isNodeIdx()) {
+        return false;
+      }
+      if (head_->compare_exchange_weak(
+              head,
+              head.withLock(),
+              std::memory_order_acquire,
+              std::memory_order_relaxed)) {
+        break;
+      }
+    }
+    // Update local var to what head_ is, for better assert() checking.
+    head = head.withLock();
+    bool result = false;
+    auto idx = head.idx();
+    if (idx == removeidx) {
+      // pop from head.  Head seqno is updated.
+      head_->store(
+          head.withoutLock(removenode.next.load(std::memory_order_relaxed)),
+          std::memory_order_release);
+      return true;
+    }
+    auto node = &idxToNode(idx);
+    idx = node->next.load(std::memory_order_relaxed);
+    while (idx) {
+      if (idx == removeidx) {
+        // Pop from mid-list.
+        node->next.store(
+            removenode.next.load(std::memory_order_relaxed),
+            std::memory_order_relaxed);
+        result = true;
+        break;
+      }
+      node = &idxToNode(idx);
+      idx = node->next.load(std::memory_order_relaxed);
+    }
+    // Unlock and return result
+    head_->store(head.withoutLock(head.idx()), std::memory_order_release);
+    return result;
+  }
+
  private:
   CachelinePadded<folly::AtomicStruct<LifoSemHead, Atom>> head_;
 
@@ -530,9 +668,15 @@ struct LifoSemBase {
       assert(n > 0);
 
       auto head = head_->load(std::memory_order_acquire);
+      if (head.isLocked()) {
+        std::this_thread::yield();
+        continue;
+      }
       if (head.isNodeIdx()) {
         auto& node = idxToNode(head.idx());
-        if (head_->compare_exchange_strong(head, head.withPop(node.next))) {
+        if (head_->compare_exchange_strong(
+                head,
+                head.withPop(node.next.load(std::memory_order_relaxed)))) {
           // successful pop
           return head.idx();
         }
@@ -560,6 +704,11 @@ struct LifoSemBase {
     while (true) {
       auto head = head_->load(std::memory_order_acquire);
 
+      if (head.isLocked()) {
+        std::this_thread::yield();
+        continue;
+      }
+
       if (!head.isNodeIdx() && head.value() > 0) {
         // decr
         auto delta = std::min(n, head.value());
@@ -578,7 +727,8 @@ struct LifoSemBase {
         }
 
         auto& node = idxToNode(idx);
-        node.next = head.isNodeIdx() ? head.idx() : 0;
+        node.next.store(
+            head.isNodeIdx() ? head.idx() : 0, std::memory_order_relaxed);
         if (head_->compare_exchange_strong(head, head.withPush(idx))) {
           // push succeeded
           return WaitResult::PUSH;
@@ -594,7 +744,7 @@ struct LifoSemBase {
 template <template <typename> class Atom, class BatonType>
 struct LifoSemImpl : public detail::LifoSemBase<BatonType, Atom> {
   constexpr explicit LifoSemImpl(uint32_t v = 0)
-    : detail::LifoSemBase<BatonType, Atom>(v) {}
+      : detail::LifoSemBase<BatonType, Atom>(v) {}
 };
 
 } // namespace folly

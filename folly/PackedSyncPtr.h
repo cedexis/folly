@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2011-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@
 #include <glog/logging.h>
 
 #include <folly/Portability.h>
-#include <folly/SmallLocks.h>
+#include <folly/synchronization/SmallLocks.h>
 
 #if !FOLLY_X64 && !FOLLY_PPC64 && !FOLLY_AARCH64
 #error "PackedSyncPtr is x64, ppc64 or aarch64 specific code."
@@ -103,15 +103,27 @@ class PackedSyncPtr {
   T* get() const {
     return reinterpret_cast<T*>(data_.getData() & (-1ull >> 16));
   }
-  T* operator->() const { return get(); }
-  reference operator*() const { return *get(); }
-  reference operator[](std::ptrdiff_t i) const { return get()[i]; }
+  T* operator->() const {
+    return get();
+  }
+  reference operator*() const {
+    return *get();
+  }
+  reference operator[](std::ptrdiff_t i) const {
+    return get()[i];
+  }
 
   // Synchronization (logically const, even though this mutates our
   // locked state: you can lock a const PackedSyncPtr<T> to read it).
-  void lock() const { data_.lock(); }
-  void unlock() const { data_.unlock(); }
-  bool try_lock() const { return data_.try_lock(); }
+  void lock() const {
+    data_.lock();
+  }
+  void unlock() const {
+    data_.unlock();
+  }
+  bool try_lock() const {
+    return data_.try_lock();
+  }
 
   /*
    * Access extra data stored in unused bytes of the pointer.
@@ -141,9 +153,10 @@ class PackedSyncPtr {
 static_assert(
     std::is_pod<PackedSyncPtr<void>>::value,
     "PackedSyncPtr must be kept a POD type.");
-static_assert(sizeof(PackedSyncPtr<void>) == 8,
-              "PackedSyncPtr should be only 8 bytes---something is "
-              "messed up");
+static_assert(
+    sizeof(PackedSyncPtr<void>) == 8,
+    "PackedSyncPtr should be only 8 bytes---something is "
+    "messed up");
 
 template <typename T>
 std::ostream& operator<<(std::ostream& os, const PackedSyncPtr<T>& ptr) {

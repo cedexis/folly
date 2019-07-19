@@ -36,17 +36,18 @@ namespace detail {
 
 template <typename Tag>
 class ThreadCachedInts {
-  std::atomic<int64_t> orphan_inc_[2];
-  std::atomic<int64_t> orphan_dec_[2];
-  folly::detail::Futex<> waiting_;
+  std::atomic<int64_t> orphan_inc_[2] = {};
+  std::atomic<int64_t> orphan_dec_[2] = {};
+  folly::detail::Futex<> waiting_{0};
 
   class Integer {
    public:
     ThreadCachedInts* ints_;
     constexpr Integer(ThreadCachedInts* ints) noexcept
-        : ints_(ints), inc_{}, dec_{} {}
+        : ints_(ints), inc_{}, dec_{}, cache_(ints->int_cache_) {}
     std::atomic<int64_t> inc_[2];
     std::atomic<int64_t> dec_[2];
+    Integer*& cache_; // reference to the cached ptr
     ~Integer() noexcept {
       // Increment counts must be set before decrement counts
       ints_->orphan_inc_[0].fetch_add(
@@ -59,7 +60,9 @@ class ThreadCachedInts {
       ints_->orphan_dec_[1].fetch_add(
           dec_[1].load(std::memory_order_relaxed), std::memory_order_relaxed);
       ints_->waiting_.store(0, std::memory_order_release);
-      ints_->waiting_.futexWake();
+      detail::futexWake(&ints_->waiting_);
+      // reset the cache_ on destructor so we can handle the delete/recreate
+      cache_ = nullptr;
     }
   };
   folly::ThreadLocalPtr<Integer, Tag> cs_;
@@ -99,7 +102,7 @@ class ThreadCachedInts {
     folly::asymmetricLightBarrier(); // C
     if (waiting_.load(std::memory_order_acquire)) {
       waiting_.store(0, std::memory_order_release);
-      waiting_.futexWake();
+      detail::futexWake(&waiting_);
     }
   }
 
@@ -147,7 +150,7 @@ class ThreadCachedInts {
       if (readFull(phase) == 0) {
         break;
       }
-      waiting_.futexWait(1);
+      detail::futexWait(&waiting_, 1);
     }
     waiting_.store(0, std::memory_order_relaxed);
   }
@@ -171,7 +174,7 @@ class ThreadCachedInts {
 
 template <typename Tag>
 thread_local typename detail::ThreadCachedInts<Tag>::Integer*
-    detail::ThreadCachedInts<Tag>::int_cache_{nullptr};
+    detail::ThreadCachedInts<Tag>::int_cache_ = nullptr;
 
 } // namespace detail
 } // namespace folly

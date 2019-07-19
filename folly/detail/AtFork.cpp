@@ -13,12 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/detail/AtFork.h>
 
 #include <list>
 #include <mutex>
 
-#include <folly/Exception.h>
+#include <folly/lang/Exception.h>
+#include <folly/portability/PThread.h>
 
 namespace folly {
 
@@ -28,7 +30,7 @@ namespace {
 
 struct AtForkTask {
   void* object;
-  folly::Function<void()> prepare;
+  folly::Function<bool()> prepare;
   folly::Function<void()> parent;
   folly::Function<void()> child;
 };
@@ -42,9 +44,20 @@ class AtForkList {
 
   static void prepare() noexcept {
     instance().tasksLock.lock();
-    auto& tasks = instance().tasks;
-    for (auto task = tasks.rbegin(); task != tasks.rend(); ++task) {
-      task->prepare();
+    while (true) {
+      auto& tasks = instance().tasks;
+      auto task = tasks.rbegin();
+      for (; task != tasks.rend(); ++task) {
+        if (!task->prepare()) {
+          break;
+        }
+      }
+      if (task == tasks.rend()) {
+        return;
+      }
+      for (auto untask = tasks.rbegin(); untask != task; ++untask) {
+        untask->parent();
+      }
     }
   }
 
@@ -72,7 +85,10 @@ class AtForkList {
 #if FOLLY_HAVE_PTHREAD_ATFORK
     int ret = pthread_atfork(
         &AtForkList::prepare, &AtForkList::parent, &AtForkList::child);
-    checkPosixError(ret, "pthread_atfork failed");
+    if (ret != 0) {
+      throw_exception<std::system_error>(
+          ret, std::generic_category(), "pthread_atfork failed");
+    }
 #elif !__ANDROID__ && !defined(_MSC_VER)
 // pthread_atfork is not part of the Android NDK at least as of n9d. If
 // something is trying to call native fork() directly at all with Android's
@@ -91,7 +107,7 @@ void AtFork::init() {
 
 void AtFork::registerHandler(
     void* object,
-    folly::Function<void()> prepare,
+    folly::Function<bool()> prepare,
     folly::Function<void()> parent,
     folly::Function<void()> child) {
   std::lock_guard<std::mutex> lg(AtForkList::instance().tasksLock);

@@ -18,8 +18,10 @@
 
 #include <folly/Likely.h>
 #include <folly/detail/Futex.h>
+#include <folly/detail/MemoryIdler.h>
 #include <folly/portability/Asm.h>
 #include <folly/synchronization/WaitOptions.h>
+#include <folly/synchronization/detail/Spin.h>
 
 #include <glog/logging.h>
 
@@ -125,7 +127,7 @@ class SaturatingSemaphore {
   };
 
  public:
-  FOLLY_ALWAYS_INLINE static WaitOptions wait_options() {
+  FOLLY_ALWAYS_INLINE static constexpr WaitOptions wait_options() {
     return {};
   }
 
@@ -266,7 +268,7 @@ FOLLY_NOINLINE void SaturatingSemaphore<MayBlock, Atom>::postSlowWaiterMayBlock(
             READY,
             std::memory_order_release,
             std::memory_order_relaxed)) {
-      state_.futexWake();
+      detail::futexWake(&state_);
       return;
     }
   }
@@ -278,40 +280,50 @@ template <typename Clock, typename Duration>
 FOLLY_NOINLINE bool SaturatingSemaphore<MayBlock, Atom>::tryWaitSlow(
     const std::chrono::time_point<Clock, Duration>& deadline,
     const WaitOptions& opt) noexcept {
-  auto tbegin = Clock::now();
-  while (true) {
-    auto before = state_.load(std::memory_order_acquire);
+  switch (detail::spin_pause_until(deadline, opt, [=] { return ready(); })) {
+    case detail::spin_result::success:
+      return true;
+    case detail::spin_result::timeout:
+      return false;
+    case detail::spin_result::advance:
+      break;
+  }
+
+  if (!MayBlock) {
+    switch (detail::spin_yield_until(deadline, [=] { return ready(); })) {
+      case detail::spin_result::success:
+        return true;
+      case detail::spin_result::timeout:
+        return false;
+      case detail::spin_result::advance:
+        break;
+    }
+  }
+
+  auto before = state_.load(std::memory_order_relaxed);
+  while (before == NOTREADY &&
+         !state_.compare_exchange_strong(
+             before,
+             BLOCKED,
+             std::memory_order_relaxed,
+             std::memory_order_relaxed)) {
     if (before == READY) {
+      // TODO: move the acquire to the compare_exchange failure load after C++17
+      std::atomic_thread_fence(std::memory_order_acquire);
       return true;
     }
-    if (Clock::now() >= deadline) {
+  }
+
+  while (true) {
+    auto rv = detail::MemoryIdler::futexWaitUntil(state_, BLOCKED, deadline);
+    if (rv == detail::FutexResult::TIMEDOUT) {
+      assert(deadline != (std::chrono::time_point<Clock, Duration>::max()));
       return false;
     }
-    if (MayBlock) {
-      auto tnow = Clock::now();
-      if (tnow < tbegin) {
-        // backward time discontinuity in Clock, revise spin_max starting point
-        tbegin = tnow;
-      }
-      auto dur = std::chrono::duration_cast<Duration>(tnow - tbegin);
-      if (dur >= opt.spin_max()) {
-        if (before == NOTREADY) {
-          if (!state_.compare_exchange_strong(
-                  before,
-                  BLOCKED,
-                  std::memory_order_relaxed,
-                  std::memory_order_relaxed)) {
-            continue;
-          }
-        }
-        if (deadline == std::chrono::time_point<Clock, Duration>::max()) {
-          state_.futexWait(BLOCKED);
-        } else {
-          state_.futexWaitUntil(BLOCKED, deadline);
-        }
-      }
+
+    if (ready()) {
+      return true;
     }
-    asm_volatile_pause();
   }
 }
 

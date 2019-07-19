@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2017-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,8 @@
  */
 
 #pragma once
+
+#include <folly/functional/Invoke.h>
 #include <folly/futures/Future.h>
 
 namespace folly {
@@ -37,17 +39,18 @@ class FutureExecutor : public ExecutorImpl {
    */
   template <typename F>
   typename std::enable_if<
-      folly::isFuture<typename std::result_of<F()>::type>::value,
-      typename std::result_of<F()>::type>::type
+      folly::isFuture<invoke_result_t<F>>::value,
+      invoke_result_t<F>>::type
   addFuture(F func) {
-    typedef typename std::result_of<F()>::type::value_type T;
+    using T = typename invoke_result_t<F>::value_type;
     folly::Promise<T> promise;
     auto future = promise.getFuture();
-    ExecutorImpl::add(
-        [ promise = std::move(promise), func = std::move(func) ]() mutable {
-          func().then([promise = std::move(promise)](
-              folly::Try<T> && t) mutable { promise.setTry(std::move(t)); });
-        });
+    ExecutorImpl::add([promise = std::move(promise),
+                       func = std::move(func)]() mutable {
+      func().then([promise = std::move(promise)](folly::Try<T>&& t) mutable {
+        promise.setTry(std::move(t));
+      });
+    });
     return future;
   }
 
@@ -61,16 +64,14 @@ class FutureExecutor : public ExecutorImpl {
    */
   template <typename F>
   typename std::enable_if<
-      !folly::isFuture<typename std::result_of<F()>::type>::value,
-      folly::Future<typename folly::Unit::Lift<
-          typename std::result_of<F()>::type>::type>>::type
+      !folly::isFuture<invoke_result_t<F>>::value,
+      folly::Future<folly::lift_unit_t<invoke_result_t<F>>>>::type
   addFuture(F func) {
-    using T =
-        typename folly::Unit::Lift<typename std::result_of<F()>::type>::type;
+    using T = folly::lift_unit_t<invoke_result_t<F>>;
     folly::Promise<T> promise;
     auto future = promise.getFuture();
     ExecutorImpl::add(
-        [ promise = std::move(promise), func = std::move(func) ]() mutable {
+        [promise = std::move(promise), func = std::move(func)]() mutable {
           promise.setWith(std::move(func));
         });
     return future;

@@ -27,17 +27,21 @@ class UnboundedBlockingQueue : public BlockingQueue<T> {
  public:
   virtual ~UnboundedBlockingQueue() {}
 
-  void add(T item) override {
+  BlockingQueueAddResult add(T item) override {
     queue_.enqueue(std::move(item));
-    sem_.post();
+    return sem_.post();
   }
 
   T take() override {
-    T item;
-    while (!queue_.try_dequeue(item)) {
-      sem_.wait();
+    sem_.wait();
+    return queue_.dequeue();
+  }
+
+  folly::Optional<T> try_take_for(std::chrono::milliseconds time) override {
+    if (!sem_.try_wait_for(time)) {
+      return folly::none;
     }
-    return item;
+    return queue_.dequeue();
   }
 
   size_t size() override {
@@ -46,7 +50,7 @@ class UnboundedBlockingQueue : public BlockingQueue<T> {
 
  private:
   LifoSem sem_;
-  UMPMCQueue<T, false> queue_;
+  UMPMCQueue<T, false, 6> queue_;
 };
 
 } // namespace folly

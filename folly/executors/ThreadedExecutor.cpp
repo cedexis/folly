@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2017-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -96,7 +96,7 @@ void ThreadedExecutor::controlLaunchEnqueuedTasks() {
   with_unique_lock(enqueuedm_, [&] { std::swap(enqueuedt, enqueued_); });
   for (auto& f : enqueuedt) {
     auto th = threadFactory_->newThread(
-        [ this, f = std::move(f) ]() mutable { work(f); });
+        [this, f = std::move(f)]() mutable { work(f); });
     auto id = th.get_id();
     running_[id] = std::move(th);
   }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2015-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,7 +34,6 @@ class TestData : public RequestData {
 };
 
 TEST(Context, basic) {
-
   // Start a new context
   folly::RequestContextScopeGuard rctx;
 
@@ -45,17 +44,17 @@ TEST(Context, basic) {
 
   // Start a future
   Promise<Unit> p;
-  auto future = p.getFuture().then([&]{
+  auto future = p.getFuture().thenValue([&](auto&&) {
     // Check that the context followed the future
     EXPECT_TRUE(RequestContext::get() != nullptr);
-    auto a = dynamic_cast<TestData*>(
-      RequestContext::get()->getContextData("test"));
+    auto a =
+        dynamic_cast<TestData*>(RequestContext::get()->getContextData("test"));
     auto data = a->data_;
     EXPECT_EQ(10, data);
   });
 
   // Clear the context
-  RequestContext::setContext(nullptr);
+  folly::RequestContextScopeGuard rctx2;
 
   EXPECT_EQ(nullptr, RequestContext::get()->getContextData("test"));
 

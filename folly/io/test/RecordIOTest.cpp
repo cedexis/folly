@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2013-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -38,7 +38,9 @@ namespace test {
 
 namespace {
 // shortcut
-StringPiece sp(ByteRange br) { return StringPiece(br); }
+StringPiece sp(ByteRange br) {
+  return StringPiece(br);
+}
 
 template <class T>
 std::unique_ptr<IOBuf> iobufs(std::initializer_list<T> ranges) {
@@ -95,7 +97,7 @@ TEST(RecordIOTest, SmallRecords) {
   TemporaryFile file;
   {
     RecordIOWriter writer(File(file.fd()));
-    for (size_t i = 0; i < kSize; ++i) {  // record of size 0 should be ignored
+    for (size_t i = 0; i < kSize; ++i) { // record of size 0 should be ignored
       writer.write(IOBuf::wrapBuffer(tmp, i));
     }
   }
@@ -125,7 +127,7 @@ TEST(RecordIOTest, MultipleFileIds) {
     writer.write(iobufs({"goodbye"}));
   }
   {
-    RecordIOReader reader(File(file.fd()), 0);  // return all
+    RecordIOReader reader(File(file.fd()), 0); // return all
     auto it = reader.begin();
     ASSERT_FALSE(it == reader.end());
     EXPECT_EQ("hello", sp((it++)->first));
@@ -168,7 +170,7 @@ TEST(RecordIOTest, ExtraMagic) {
   EXPECT_EQ(0, lseek(file.fd(), 0, SEEK_SET));
   EXPECT_EQ(sizeof(buf), read(file.fd(), buf, sizeof(buf)));
   // Append an extra magic
-  const uint32_t magic = recordio_helpers::detail::Header::kMagic;
+  const uint32_t magic = recordio_helpers::recordio_detail::Header::kMagic;
   EXPECT_EQ(sizeof(magic), write(file.fd(), &magic, sizeof(magic)));
   // and an extra record
   EXPECT_EQ(sizeof(buf), write(file.fd(), buf, sizeof(buf)));
@@ -196,8 +198,7 @@ TEST(RecordIOTest, Randomized) {
   SCOPED_TRACE(to<std::string>("Random seed is ", FLAGS_random_seed));
   std::mt19937 rnd(FLAGS_random_seed);
 
-  size_t recordCount =
-    std::uniform_int_distribution<uint32_t>(30, 300)(rnd);
+  size_t recordCount = std::uniform_int_distribution<uint32_t>(30, 300)(rnd);
 
   std::uniform_int_distribution<uint32_t> recordSizeDist(1, 3 << 16);
   std::uniform_int_distribution<uint32_t> charDist(0, 255);
@@ -232,14 +233,12 @@ TEST(RecordIOTest, Randomized) {
             0, recordSize + recordio_helpers::headerSize() - 1);
         off_t corruptRel = corruptByteDist(rnd);
         VLOG(1) << "n=" << records.size() << " bpos=" << beginPos
-                << " rsize=" << record.size()
-                << " corrupt rel=" << corruptRel
+                << " rsize=" << record.size() << " corrupt rel=" << corruptRel
                 << " abs=" << beginPos + corruptRel;
         corruptPositions.push_back(beginPos + corruptRel);
       } else {
         VLOG(2) << "n=" << records.size() << " bpos=" << beginPos
-                << " rsize=" << record.size()
-                << " good";
+                << " rsize=" << record.size() << " good";
         records.emplace_back(std::move(record), beginPos);
       }
     }
@@ -263,11 +262,76 @@ TEST(RecordIOTest, Randomized) {
     EXPECT_EQ(records.size(), i);
   }
 }
+
+TEST(RecordIOTest, validateRecordAPI) {
+  uint32_t hdrSize = recordio_helpers::headerSize();
+  std::vector<uint32_t> testSizes = {
+      0, 1, hdrSize - 1, hdrSize, hdrSize + 1, 2 * hdrSize, 1024};
+  constexpr uint32_t kTestFileId = 100;
+  std::mt19937 rnd(FLAGS_random_seed);
+
+  for (auto& testSize : testSizes) {
+    char testChar = testSize % 26 + 'A';
+    // create a IOBuf of size = testSize
+    auto buf = folly::IOBuf::create(testSize);
+    buf->append(testSize);
+    EXPECT_NE(buf, nullptr);
+    auto wData = buf->writableData();
+    if (testSize > hdrSize) {
+      // if the testSize is more than header size, populate databytes with
+      // testChar
+      buf->trimStart(hdrSize);
+      memset(wData, testChar, buf->length());
+      recordio_helpers::prependHeader(buf, kTestFileId);
+      buf->unshare();
+      buf->coalesce();
+      wData = buf->writableData();
+    }
+    // validate header
+    auto res = recordio_helpers::validateRecordHeader(
+        folly::Range<unsigned char*>(wData, buf->length()), kTestFileId);
+    if (testSize > hdrSize) {
+      // validation should succeed for buffers larger than header size
+      EXPECT_TRUE(res);
+      auto range = folly::Range<unsigned char*>(wData, buf->length());
+      // make sure data validation also succeeds
+      auto dataRes = recordio_helpers::validateRecordData(range);
+      EXPECT_NE(dataRes.fileId, 0);
+
+      // do the entire record validation again
+      auto recRes = recordio_helpers::validateRecord(range, kTestFileId);
+      EXPECT_NE(recRes.fileId, 0);
+
+      std::uniform_int_distribution<uint32_t> dataDist(
+          0, testSize - hdrSize - 1);
+      size_t idx = dataDist(rnd);
+      /* Now corrupt a random byte and expect data validation to fail */
+      wData[hdrSize + idx] = testChar + 1;
+      auto newDataRes = recordio_helpers::validateRecordData(range);
+      EXPECT_EQ(newDataRes.fileId, 0);
+
+      /* header validation should still pass */
+      auto newRes = recordio_helpers::validateRecordHeader(range, kTestFileId);
+      EXPECT_TRUE(newRes);
+
+      /* corrupt a random header byte */
+      std::uniform_int_distribution<uint32_t> hdrDist(0, hdrSize - 1);
+      idx = hdrDist(rnd);
+      wData[idx] = testChar;
+
+      /* header validation should fail now */
+      newRes = recordio_helpers::validateRecordHeader(range, kTestFileId);
+      EXPECT_FALSE(newRes);
+    } else {
+      EXPECT_FALSE(res);
+    }
+  }
+}
+
 } // namespace test
 } // namespace folly
 
-
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
   testing::InitGoogleTest(&argc, argv);
   gflags::ParseCommandLineFlags(&argc, &argv, true);
   return RUN_ALL_TESTS();

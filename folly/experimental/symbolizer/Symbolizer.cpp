@@ -17,6 +17,7 @@
 #include <folly/experimental/symbolizer/Symbolizer.h>
 
 #include <link.h>
+#include <ucontext.h>
 
 #include <climits>
 #include <cstdio>
@@ -37,6 +38,7 @@
 #include <folly/experimental/symbolizer/Dwarf.h>
 #include <folly/experimental/symbolizer/Elf.h>
 #include <folly/experimental/symbolizer/LineReader.h>
+#include <folly/portability/SysMman.h>
 #include <folly/portability/Unistd.h>
 
 /*
@@ -67,7 +69,6 @@ void SymbolizedFrame::set(
   clear();
   found = true;
 
-  address += file->getBaseAddress();
   auto sym = file->getDefinitionByAddress(address);
   if (!sym.first) {
     return;
@@ -79,8 +80,15 @@ void SymbolizedFrame::set(
   Dwarf(file.get()).findAddress(address, location, mode);
 }
 
-Symbolizer::Symbolizer(ElfCacheBase* cache, Dwarf::LocationInfoMode mode)
-    : cache_(cache ? cache : defaultElfCache()), mode_(mode) {}
+Symbolizer::Symbolizer(
+    ElfCacheBase* cache,
+    Dwarf::LocationInfoMode mode,
+    size_t symbolCacheSize)
+    : cache_(cache ? cache : defaultElfCache()), mode_(mode) {
+  if (symbolCacheSize > 0) {
+    symbolCache_.emplace(folly::in_place, symbolCacheSize);
+  }
+}
 
 void Symbolizer::symbolize(
     const uintptr_t* addresses,
@@ -125,13 +133,6 @@ void Symbolizer::symbolize(
       continue;
     }
 
-    // Get the address at which the object is loaded.  We have to use the ELF
-    // header for the running executable, since its `l_addr' is zero, but we
-    // should use `l_addr' for everything else---in particular, if the object
-    // is position-independent, getBaseAddress() (which is p_vaddr) will be 0.
-    auto const base =
-        lmap->l_addr != 0 ? lmap->l_addr : elfFile->getBaseAddress();
-
     for (size_t i = 0; i < addrCount && remaining != 0; ++i) {
       auto& frame = frames[i];
       if (frame.found) {
@@ -139,12 +140,30 @@ void Symbolizer::symbolize(
       }
 
       auto const addr = addresses[i];
-      // Get the unrelocated, ELF-relative address.
-      auto const adjusted = addr - base;
+      if (symbolCache_) {
+        // Need a write lock, because EvictingCacheMap brings found item to
+        // front of eviction list.
+        auto lockedSymbolCache = symbolCache_->wlock();
+
+        auto const iter = lockedSymbolCache->find(addr);
+        if (iter != lockedSymbolCache->end()) {
+          frame = iter->second;
+          continue;
+        }
+      }
+
+      // Get the unrelocated, ELF-relative address by normalizing via the
+      // address at which the object is loaded.
+      auto const adjusted = addr - lmap->l_addr;
 
       if (elfFile->getSectionContainingAddress(adjusted)) {
         frame.set(elfFile, adjusted, mode_);
         --remaining;
+        if (symbolCache_) {
+          // frame may already have been set here.  That's ok, we'll just
+          // overwrite, which doesn't cause a correctness problem.
+          symbolCache_->wlock()->set(addr, frame);
+        }
       }
     }
   }
@@ -296,7 +315,7 @@ void SymbolizePrinter::println(
 namespace {
 
 int getFD(const std::ios& stream) {
-#ifdef __GNUC__
+#if defined(__GNUC__) && FOLLY_HAS_RTTI
   std::streambuf* buf = stream.rdbuf();
   using namespace __gnu_cxx;
 
@@ -312,6 +331,8 @@ int getFD(const std::ios& stream) {
       return sbuf->fd();
     }
   }
+#else
+  (void)stream;
 #endif // __GNUC__
   return -1;
 }
@@ -378,7 +399,9 @@ void StringSymbolizePrinter::doPrint(StringPiece sp) {
   buf_.append(sp.data(), sp.size());
 }
 
-StackTracePrinter::StackTracePrinter(size_t minSignalSafeElfCacheSize, int fd)
+SafeStackTracePrinter::SafeStackTracePrinter(
+    size_t minSignalSafeElfCacheSize,
+    int fd)
     : fd_(fd),
       elfCache_(std::max(countLoadedElfFiles(), minSignalSafeElfCacheSize)),
       printer_(
@@ -387,12 +410,30 @@ StackTracePrinter::StackTracePrinter(size_t minSignalSafeElfCacheSize, int fd)
           size_t(64) << 10), // 64KiB
       addresses_(std::make_unique<FrameArray<kMaxStackTraceDepth>>()) {}
 
-void StackTracePrinter::flush() {
+void SafeStackTracePrinter::flush() {
   printer_.flush();
   fsyncNoInt(fd_);
 }
 
-void StackTracePrinter::printStackTrace(bool symbolize) {
+void SafeStackTracePrinter::printSymbolizedStackTrace() {
+  // This function might run on an alternative stack allocated by
+  // UnsafeSelfAllocateStackTracePrinter. Capturing a stack from
+  // here is probably wrong.
+
+  // Do our best to populate location info, process is going to terminate,
+  // so performance isn't critical.
+  Symbolizer symbolizer(&elfCache_, Dwarf::LocationInfoMode::FULL);
+  symbolizer.symbolize(*addresses_);
+
+  // Skip the top 2 frames captured by printStackTrace:
+  // getStackTraceSafe
+  // SafeStackTracePrinter::printStackTrace (captured stack)
+  //
+  // Leaving signalHandler on the stack for clarity, I think.
+  printer_.println(*addresses_, 2);
+}
+
+void SafeStackTracePrinter::printStackTrace(bool symbolize) {
   SCOPE_EXIT {
     flush();
   };
@@ -401,17 +442,7 @@ void StackTracePrinter::printStackTrace(bool symbolize) {
   if (!getStackTraceSafe(*addresses_)) {
     print("(error retrieving stack trace)\n");
   } else if (symbolize) {
-    // Do our best to populate location info, process is going to terminate,
-    // so performance isn't critical.
-    Symbolizer symbolizer(&elfCache_, Dwarf::LocationInfoMode::FULL);
-    symbolizer.symbolize(*addresses_);
-
-    // Skip the top 2 frames:
-    // getStackTraceSafe
-    // StackTracePrinter::printStackTrace (here)
-    //
-    // Leaving signalHandler on the stack for clarity, I think.
-    printer_.println(*addresses_, 2);
+    printSymbolizedStackTrace();
   } else {
     print("(safe mode, symbolizer not available)\n");
     AddressFormatter formatter;
@@ -419,6 +450,142 @@ void StackTracePrinter::printStackTrace(bool symbolize) {
       print(formatter.format(addresses_->addresses[i]));
       print("\n");
     }
+  }
+}
+
+FastStackTracePrinter::FastStackTracePrinter(
+    std::unique_ptr<SymbolizePrinter> printer,
+    size_t elfCacheSize,
+    size_t symbolCacheSize)
+    : elfCache_(
+          elfCacheSize == 0
+              ? nullptr
+              : new ElfCache{std::max(countLoadedElfFiles(), elfCacheSize)}),
+      printer_(std::move(printer)),
+      symbolizer_(
+          elfCache_ ? elfCache_.get() : defaultElfCache(),
+          Dwarf::LocationInfoMode::FULL,
+          symbolCacheSize) {}
+
+FastStackTracePrinter::~FastStackTracePrinter() {}
+
+void FastStackTracePrinter::printStackTrace(bool symbolize) {
+  SCOPE_EXIT {
+    printer_->flush();
+  };
+
+  FrameArray<kMaxStackTraceDepth> addresses;
+
+  if (!getStackTraceSafe(addresses)) {
+    printer_->print("(error retrieving stack trace)\n");
+  } else if (symbolize) {
+    symbolizer_.symbolize(addresses);
+
+    // Skip the top 2 frames:
+    // getStackTraceSafe
+    // FastStackTracePrinter::printStackTrace (here)
+    printer_->println(addresses, 2);
+  } else {
+    printer_->print("(safe mode, symbolizer not available)\n");
+    AddressFormatter formatter;
+    for (size_t i = 0; i < addresses.frameCount; ++i) {
+      printer_->print(formatter.format(addresses.addresses[i]));
+      printer_->print("\n");
+    }
+  }
+}
+
+void FastStackTracePrinter::flush() {
+  printer_->flush();
+}
+
+// Stack utilities used by UnsafeSelfAllocateStackTracePrinter
+namespace {
+// Size of mmap-allocated stack. Not to confuse with sigaltstack.
+const size_t kMmapStackSize = 1 * 1024 * 1024;
+
+using MmapPtr = std::unique_ptr<char, void (*)(char*)>;
+
+MmapPtr getNull() {
+  return MmapPtr(nullptr, [](char*) {});
+}
+
+// Assign a mmap-allocated stack to oucp.
+// Return a non-empty smart pointer on success.
+MmapPtr allocateStack(ucontext_t* oucp, size_t pageSize) {
+  MmapPtr p(
+      (char*)mmap(
+          nullptr,
+          kMmapStackSize,
+          PROT_WRITE | PROT_READ,
+          MAP_ANONYMOUS | MAP_PRIVATE,
+          /* fd */ -1,
+          /* offset */ 0),
+      [](char* addr) {
+        // Usually runs inside a fatal signal handler.
+        // Error handling is skipped.
+        munmap(addr, kMmapStackSize);
+      });
+
+  if (!p) {
+    return getNull();
+  }
+
+  // Prepare read-only guard pages on both ends
+  if (pageSize * 2 >= kMmapStackSize) {
+    return getNull();
+  }
+  size_t upperBound = ((kMmapStackSize - 1) / pageSize) * pageSize;
+  if (mprotect(p.get(), pageSize, PROT_NONE) != 0) {
+    return getNull();
+  }
+  if (mprotect(p.get() + upperBound, kMmapStackSize - upperBound, PROT_NONE) !=
+      0) {
+    return getNull();
+  }
+
+  oucp->uc_stack.ss_sp = p.get() + pageSize;
+  oucp->uc_stack.ss_size = upperBound - pageSize;
+  oucp->uc_stack.ss_flags = 0;
+
+  return p;
+}
+
+} // namespace
+
+void UnsafeSelfAllocateStackTracePrinter::printSymbolizedStackTrace() {
+  if (pageSizeUnchecked_ <= 0) {
+    return;
+  }
+
+  ucontext_t cur;
+  memset(&cur, 0, sizeof(cur));
+  ucontext_t alt;
+  memset(&alt, 0, sizeof(alt));
+
+  if (getcontext(&alt) != 0) {
+    return;
+  }
+  alt.uc_link = &cur;
+
+  MmapPtr p = allocateStack(&alt, (size_t)pageSizeUnchecked_);
+  if (!p) {
+    return;
+  }
+
+  auto contextStart = [](UnsafeSelfAllocateStackTracePrinter* that) {
+    that->SafeStackTracePrinter::printSymbolizedStackTrace();
+  };
+
+  makecontext(
+      &alt,
+      (void (*)())(void (*)(UnsafeSelfAllocateStackTracePrinter*))(
+          contextStart),
+      /* argc */ 1,
+      /* arg */ this);
+  // NOTE: swapcontext is not async-signal-safe
+  if (swapcontext(&cur, &alt) != 0) {
+    return;
   }
 }
 

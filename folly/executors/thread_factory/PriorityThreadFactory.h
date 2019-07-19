@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2017-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,9 @@
 
 #include <folly/executors/thread_factory/ThreadFactory.h>
 
+#include <glog/logging.h>
+
+#include <folly/String.h>
 #include <folly/portability/SysResource.h>
 #include <folly/portability/SysTime.h>
 
@@ -43,10 +46,10 @@ class PriorityThreadFactory : public ThreadFactory {
 
   std::thread newThread(Func&& func) override {
     int priority = priority_;
-    return factory_->newThread([ priority, func = std::move(func) ]() mutable {
+    return factory_->newThread([priority, func = std::move(func)]() mutable {
       if (setpriority(PRIO_PROCESS, 0, priority) != 0) {
         LOG(ERROR) << "setpriority failed (are you root?) with error " << errno,
-            strerror(errno);
+            errnoStr(errno);
       }
       func();
     });

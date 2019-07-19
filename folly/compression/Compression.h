@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2013-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@
 
 #include <folly/Optional.h>
 #include <folly/Range.h>
+#include <folly/compression/Counters.h>
 #include <folly/io/IOBuf.h>
 
 /**
@@ -62,6 +63,7 @@ enum class CodecType {
   /**
    * Use zlib compression.
    * Levels supported: 0 = no compression, 1 = fast, ..., 9 = best; default = 6
+   * Streaming compression is supported.
    */
   ZLIB = 4,
 
@@ -73,12 +75,16 @@ enum class CodecType {
   /**
    * Use LZMA2 compression.
    * Levels supported: 0 = no compression, 1 = fast, ..., 9 = best; default = 6
+   * Streaming compression is supported.
    */
   LZMA2 = 6,
   LZMA2_VARINT_SIZE = 7,
 
   /**
    * Use ZSTD compression.
+   * Levels supported: 1 = fast, ..., 19 = best; default = 3
+   * Use ZSTD_FAST for the fastest zstd compression (negative levels).
+   * Streaming compression is supported.
    */
   ZSTD = 8,
 
@@ -86,6 +92,7 @@ enum class CodecType {
    * Use gzip compression.  This is the same compression algorithm as ZLIB but
    * gzip-compressed files tend to be easier to work with from the command line.
    * Levels supported: 0 = no compression, 1 = fast, ..., 9 = best; default = 6
+   * Streaming compression is supported.
    */
   GZIP = 9,
 
@@ -98,15 +105,32 @@ enum class CodecType {
   /**
    * Use bzip2 compression.
    * Levels supported: 1 = fast, 9 = best; default = 9
+   * Streaming compression is supported BUT FlushOp::FLUSH does NOT ensure that
+   * the decompressor can read all the data up to that point, due to a bug in
+   * the bzip2 library.
    */
   BZIP2 = 11,
 
-  NUM_CODEC_TYPES = 12,
+  /**
+   * Use ZSTD compression with a negative compression level (1=-1, 2=-2, ...).
+   * Higher compression levels mean faster.
+   * Level 1 is around the same speed as Snappy with better compression.
+   * Level 5 is around the same speed as LZ4 with slightly worse compression.
+   * Each level gains about 6-15% speed and loses 3-7% compression.
+   * Decompression speed improves for each level, and level 1 decompression
+   * speed is around 25% faster than ZSTD.
+   * This codec is fully compatible with ZSTD.
+   * Levels supported: 1 = best, ..., 5 = fast; default = 1
+   * Streaming compression is supported.
+   */
+  ZSTD_FAST = 12,
+
+  NUM_CODEC_TYPES = 13,
 };
 
 class Codec {
  public:
-  virtual ~Codec() { }
+  virtual ~Codec() {}
 
   static constexpr uint64_t UNLIMITED_UNCOMPRESSED_LENGTH = uint64_t(-1);
   /**
@@ -120,7 +144,9 @@ class Codec {
   /**
    * Return the codec's type.
    */
-  CodecType type() const { return type_; }
+  CodecType type() const {
+    return type_;
+  }
 
   /**
    * Does this codec need the exact uncompressed length on decompression?
@@ -185,7 +211,11 @@ class Codec {
       folly::Optional<uint64_t> uncompressedLength = folly::none) const;
 
  protected:
-  explicit Codec(CodecType type);
+  Codec(
+      CodecType type,
+      folly::Optional<int> level = folly::none,
+      folly::StringPiece name = {},
+      bool counters = true);
 
  public:
   /**
@@ -231,6 +261,14 @@ class Codec {
       folly::Optional<uint64_t> uncompressedLength) const;
 
   CodecType type_;
+  folly::detail::CompressionCounter bytesBeforeCompression_;
+  folly::detail::CompressionCounter bytesAfterCompression_;
+  folly::detail::CompressionCounter bytesBeforeDecompression_;
+  folly::detail::CompressionCounter bytesAfterDecompression_;
+  folly::detail::CompressionCounter compressions_;
+  folly::detail::CompressionCounter decompressions_;
+  folly::detail::CompressionCounter compressionMilliseconds_;
+  folly::detail::CompressionCounter decompressionMilliseconds_;
 };
 
 class StreamCodec : public Codec {
@@ -351,7 +389,12 @@ class StreamCodec : public Codec {
       FlushOp flushOp = StreamCodec::FlushOp::NONE);
 
  protected:
-  explicit StreamCodec(CodecType type) : Codec(type) {}
+  StreamCodec(
+      CodecType type,
+      folly::Optional<int> level = folly::none,
+      folly::StringPiece name = {},
+      bool counters = true)
+      : Codec(type, std::move(level), name, counters) {}
 
   // Returns the uncompressed length last passed to resetStream() or none if it
   // hasn't been called yet.

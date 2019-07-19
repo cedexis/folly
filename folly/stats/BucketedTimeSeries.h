@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2012-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -469,12 +469,13 @@ class BucketedTimeSeries {
   TimePoint getEarliestTimeNonEmpty() const;
   size_t updateBuckets(TimePoint now);
 
-  ValueType rangeAdjust(
+  template <typename ReturnType>
+  ReturnType rangeAdjust(
       TimePoint bucketStart,
       TimePoint nextBucketStart,
       TimePoint start,
       TimePoint end,
-      ValueType input) const;
+      ReturnType input) const;
 
   template <typename Function>
   void forEachBucket(TimePoint start, TimePoint end, Function fn) const;

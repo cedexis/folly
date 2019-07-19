@@ -22,9 +22,15 @@
 
 #include <glog/logging.h>
 
+#include <folly/ConstexprMath.h>
+#include <folly/Optional.h>
+#include <folly/Traits.h>
 #include <folly/concurrency/CacheLocality.h>
-#include <folly/experimental/hazptr/hazptr.h>
+#include <folly/lang/Align.h>
+#include <folly/synchronization/Hazptr.h>
 #include <folly/synchronization/SaturatingSemaphore.h>
+#include <folly/synchronization/WaitOptions.h>
+#include <folly/synchronization/detail/Spin.h>
 
 namespace folly {
 
@@ -76,19 +82,25 @@ namespace folly {
 ///
 ///   Consumer operations:
 ///     void dequeue(T&);
+///     T dequeue();
 ///         Extracts an element from the front of the queue. Waits
 ///         until an element is available if needed.
 ///     bool try_dequeue(T&);
+///     folly::Optional<T> try_dequeue();
 ///         Tries to extract an element from the front of the queue
-///         if available. Returns true if successful, false otherwise.
+///         if available.
 ///     bool try_dequeue_until(T&, time_point& deadline);
+///     folly::Optional<T> try_dequeue_until(time_point& deadline);
 ///         Tries to extract an element from the front of the queue
-///         if available until the specified deadline.  Returns true
-///         if successful, false otherwise.
+///         if available until the specified deadline.
 ///     bool try_dequeue_for(T&, duration&);
+///     folly::Optional<T> try_dequeue_for(duration&);
 ///         Tries to extract an element from the front of the queue if
-///         available for until the expiration of the specified
-///         duration.  Returns true if successful, false otherwise.
+///         available until the expiration of the specified duration.
+///     const T* try_peek();
+///         Returns pointer to the element at the front of the queue
+///         if available, or nullptr if the queue is empty. Only for
+///         SPSC and MPSC.
 ///
 ///   Secondary functions:
 ///     size_t size();
@@ -135,21 +147,28 @@ namespace folly {
 ///   corresponds to the producer ticket.
 /// - Segments are organized as a singly linked list.
 /// - The producer with the first ticket in the current producer
-///   segment is solely responsible for allocating and linking the
-///   next segment.
+///   segment has primary responsibility for allocating and linking
+///   the next segment. Other producers and connsumers may help do so
+///   when needed if that thread is delayed.
 /// - The producer with the last ticket in the current producer
-///   segment is solely responsible for advancing the tail pointer to
-///   the next segment.
+///   segment is primarily responsible for advancing the tail pointer
+///   to the next segment. Other producers and consumers may help do
+///   so when needed if that thread is delayed.
 /// - Similarly, the consumer with the last ticket in the current
-///   consumer segment is solely responsible for advancing the head
-///   pointer to the next segment. It must ensure that head never
-///   overtakes tail.
+///   consumer segment is primarily responsible for advancing the head
+///   pointer to the next segment. Other consumers may help do so when
+///   needed if that thread is delayed.
+/// - The tail pointer must not lag behind the head pointer.
+///   Otherwise, the algorithm cannot be certain about the removal of
+///   segment and would have to incur higher costs to ensure safe
+///   reclamation.  Consumers must ensure that head never overtakes
+///   tail.
 ///
 /// Memory Usage:
 /// - An empty queue contains one segment. A nonempty queue contains
 ///   one or two more segment than fits its contents.
 /// - Removed segments are not reclaimed until there are no threads,
-///   producers or consumers, have references to them or their
+///   producers or consumers, with references to them or their
 ///   predecessors. That is, a lagging thread may delay the reclamation
 ///   of a chain of removed segments.
 /// - The template parameter LgAlign can be used to reduce memory usage
@@ -181,9 +200,6 @@ namespace folly {
 /// - If the template parameter LgSegmentSize is changed, it should be
 ///   set adequately high to keep the amortized cost of allocation and
 ///   reclamation low.
-/// - Another consideration is that the queue is guaranteed to have
-///   enough space for a number of consumers equal to 2^LgSegmentSize
-///   for local blocking. Excess waiting consumers spin.
 /// - It is recommended to measure performance with different variants
 ///   when applicable, e.g., UMPMC vs UMPSC. Depending on the use
 ///   case, sometimes the variant with the higher sequential overhead
@@ -197,7 +213,7 @@ template <
     bool SingleConsumer,
     bool MayBlock,
     size_t LgSegmentSize = 8,
-    size_t LgAlign = 7,
+    size_t LgAlign = constexpr_log2(hardware_destructive_interference_size),
     template <typename> class Atom = std::atomic>
 class UnboundedQueue {
   using Ticket = uint64_t;
@@ -216,13 +232,20 @@ class UnboundedQueue {
   static_assert(LgSegmentSize < 32, "LgSegmentSize must be < 32");
   static_assert(LgAlign < 16, "LgAlign must be < 16");
 
+  using Sem = folly::SaturatingSemaphore<MayBlock, Atom>;
+
   struct Consumer {
     Atom<Segment*> head;
     Atom<Ticket> ticket;
+    hazptr_obj_batch<Atom> batch;
+    explicit Consumer(Segment* s) : head(s), ticket(0) {
+      s->set_batch_no_tag(&batch); // defined in hazptr_obj
+    }
   };
   struct Producer {
     Atom<Segment*> tail;
     Atom<Ticket> ticket;
+    explicit Producer(Segment* s) : tail(s), ticket(0) {}
   };
 
   alignas(Align) Consumer c_;
@@ -230,21 +253,14 @@ class UnboundedQueue {
 
  public:
   /** constructor */
-  UnboundedQueue() {
-    setProducerTicket(0);
-    setConsumerTicket(0);
-    Segment* s = new Segment(0);
-    setTail(s);
-    setHead(s);
-  }
+  UnboundedQueue()
+      : c_(new Segment(0)), p_(c_.head.load(std::memory_order_relaxed)) {}
 
   /** destructor */
   ~UnboundedQueue() {
-    Segment* next;
-    for (Segment* s = head(); s; s = next) {
-      next = s->nextSegment();
-      reclaimSegment(s);
-    }
+    cleanUpRemainingItems();
+    c_.batch.shutdown_and_reclaim();
+    reclaimRemainingSegments();
   }
 
   /** enqueue */
@@ -258,12 +274,25 @@ class UnboundedQueue {
 
   /** dequeue */
   FOLLY_ALWAYS_INLINE void dequeue(T& item) noexcept {
-    dequeueImpl(item);
+    item = dequeueImpl();
+  }
+
+  FOLLY_ALWAYS_INLINE T dequeue() noexcept {
+    return dequeueImpl();
   }
 
   /** try_dequeue */
   FOLLY_ALWAYS_INLINE bool try_dequeue(T& item) noexcept {
-    return tryDequeueUntil(item, std::chrono::steady_clock::time_point::min());
+    auto o = try_dequeue();
+    if (LIKELY(o.has_value())) {
+      item = std::move(*o);
+      return true;
+    }
+    return false;
+  }
+
+  FOLLY_ALWAYS_INLINE folly::Optional<T> try_dequeue() noexcept {
+    return tryDequeueUntil(std::chrono::steady_clock::time_point::min());
   }
 
   /** try_dequeue_until */
@@ -271,7 +300,20 @@ class UnboundedQueue {
   FOLLY_ALWAYS_INLINE bool try_dequeue_until(
       T& item,
       const std::chrono::time_point<Clock, Duration>& deadline) noexcept {
-    return tryDequeueUntil(item, deadline);
+    folly::Optional<T> o = try_dequeue_until(deadline);
+
+    if (LIKELY(o.has_value())) {
+      item = std::move(*o);
+      return true;
+    }
+
+    return false;
+  }
+
+  template <typename Clock, typename Duration>
+  FOLLY_ALWAYS_INLINE folly::Optional<T> try_dequeue_until(
+      const std::chrono::time_point<Clock, Duration>& deadline) noexcept {
+    return tryDequeueUntil(deadline);
   }
 
   /** try_dequeue_for */
@@ -279,10 +321,31 @@ class UnboundedQueue {
   FOLLY_ALWAYS_INLINE bool try_dequeue_for(
       T& item,
       const std::chrono::duration<Rep, Period>& duration) noexcept {
-    if (LIKELY(try_dequeue(item))) {
+    folly::Optional<T> o = try_dequeue_for(duration);
+
+    if (LIKELY(o.has_value())) {
+      item = std::move(*o);
       return true;
     }
-    return tryDequeueUntil(item, std::chrono::steady_clock::now() + duration);
+
+    return false;
+  }
+
+  template <typename Rep, typename Period>
+  FOLLY_ALWAYS_INLINE folly::Optional<T> try_dequeue_for(
+      const std::chrono::duration<Rep, Period>& duration) noexcept {
+    folly::Optional<T> o = try_dequeue();
+    if (LIKELY(o.has_value())) {
+      return o;
+    }
+    return tryDequeueUntil(std::chrono::steady_clock::now() + duration);
+  }
+
+  /** try_peek */
+  FOLLY_ALWAYS_INLINE const T* try_peek() noexcept {
+    /* This function is supported only for USPSC and UMPSC queues. */
+    DCHECK(SingleConsumer);
+    return tryPeekUntil(std::chrono::steady_clock::time_point::min());
   }
 
   /** size */
@@ -309,7 +372,7 @@ class UnboundedQueue {
     } else {
       // Using hazptr_holder instead of hazptr_local because it is
       // possible that the T ctor happens to use hazard pointers.
-      folly::hazptr::hazptr_holder hptr;
+      hazptr_holder<Atom> hptr;
       Segment* s = hptr.get_protected(p_.tail);
       enqueueCommon(s, std::forward<Arg>(arg));
     }
@@ -328,7 +391,7 @@ class UnboundedQueue {
     Entry& e = s->entry(idx);
     e.putItem(std::forward<Arg>(arg));
     if (responsibleForAlloc(t)) {
-      allocNextSegment(s, t + SegmentSize);
+      allocNextSegment(s);
     }
     if (responsibleForAdvance(t)) {
       advanceTail(s);
@@ -336,56 +399,55 @@ class UnboundedQueue {
   }
 
   /** dequeueImpl */
-  FOLLY_ALWAYS_INLINE void dequeueImpl(T& item) noexcept {
+  FOLLY_ALWAYS_INLINE T dequeueImpl() noexcept {
     if (SPSC) {
       Segment* s = head();
-      dequeueCommon(s, item);
+      return dequeueCommon(s);
     } else {
       // Using hazptr_holder instead of hazptr_local because it is
       // possible to call the T dtor and it may happen to use hazard
       // pointers.
-      folly::hazptr::hazptr_holder hptr;
+      hazptr_holder<Atom> hptr;
       Segment* s = hptr.get_protected(c_.head);
-      dequeueCommon(s, item);
+      return dequeueCommon(s);
     }
   }
 
   /** dequeueCommon */
-  FOLLY_ALWAYS_INLINE void dequeueCommon(Segment* s, T& item) noexcept {
+  FOLLY_ALWAYS_INLINE T dequeueCommon(Segment* s) noexcept {
     Ticket t = fetchIncrementConsumerTicket();
     if (!SingleConsumer) {
       s = findSegment(s, t);
     }
     size_t idx = index(t);
     Entry& e = s->entry(idx);
-    e.takeItem(item);
+    auto res = e.takeItem();
     if (responsibleForAdvance(t)) {
       advanceHead(s);
     }
+    return res;
   }
 
   /** tryDequeueUntil */
   template <typename Clock, typename Duration>
-  FOLLY_ALWAYS_INLINE bool tryDequeueUntil(
-      T& item,
+  FOLLY_ALWAYS_INLINE folly::Optional<T> tryDequeueUntil(
       const std::chrono::time_point<Clock, Duration>& deadline) noexcept {
     if (SingleConsumer) {
       Segment* s = head();
-      return tryDequeueUntilSC(s, item, deadline);
+      return tryDequeueUntilSC(s, deadline);
     } else {
       // Using hazptr_holder instead of hazptr_local because it is
-      // possible to call ~T() and it may happen to use hazard pointers.
-      folly::hazptr::hazptr_holder hptr;
+      //  possible to call ~T() and it may happen to use hazard pointers.
+      hazptr_holder<Atom> hptr;
       Segment* s = hptr.get_protected(c_.head);
-      return tryDequeueUntilMC(s, item, deadline);
+      return tryDequeueUntilMC(s, deadline);
     }
   }
 
   /** tryDequeueUntilSC */
   template <typename Clock, typename Duration>
-  FOLLY_ALWAYS_INLINE bool tryDequeueUntilSC(
+  FOLLY_ALWAYS_INLINE folly::Optional<T> tryDequeueUntilSC(
       Segment* s,
-      T& item,
       const std::chrono::time_point<Clock, Duration>& deadline) noexcept {
     Ticket t = consumerTicket();
     DCHECK_GE(t, s->minTicket());
@@ -393,45 +455,42 @@ class UnboundedQueue {
     size_t idx = index(t);
     Entry& e = s->entry(idx);
     if (UNLIKELY(!tryDequeueWaitElem(e, t, deadline))) {
-      return false;
+      return folly::Optional<T>();
     }
     setConsumerTicket(t + 1);
-    e.takeItem(item);
+    folly::Optional<T> ret = e.takeItem();
     if (responsibleForAdvance(t)) {
       advanceHead(s);
     }
-    return true;
+    return ret;
   }
 
   /** tryDequeueUntilMC */
   template <typename Clock, typename Duration>
-  FOLLY_ALWAYS_INLINE bool tryDequeueUntilMC(
+  FOLLY_ALWAYS_INLINE folly::Optional<T> tryDequeueUntilMC(
       Segment* s,
-      T& item,
       const std::chrono::time_point<Clock, Duration>& deadline) noexcept {
     while (true) {
       Ticket t = consumerTicket();
       if (UNLIKELY(t >= (s->minTicket() + SegmentSize))) {
-        s = tryGetNextSegmentUntil(s, deadline);
-        if (s == nullptr) {
-          return false; // timed out
-        }
+        s = getAllocNextSegment(s, t);
+        DCHECK(s);
         continue;
       }
       size_t idx = index(t);
       Entry& e = s->entry(idx);
       if (UNLIKELY(!tryDequeueWaitElem(e, t, deadline))) {
-        return false;
+        return folly::Optional<T>();
       }
       if (!c_.ticket.compare_exchange_weak(
               t, t + 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
         continue;
       }
-      e.takeItem(item);
+      folly::Optional<T> ret = e.takeItem();
       if (responsibleForAdvance(t)) {
         advanceHead(s);
       }
-      return true;
+      return ret;
     }
   }
 
@@ -441,91 +500,141 @@ class UnboundedQueue {
       Entry& e,
       Ticket t,
       const std::chrono::time_point<Clock, Duration>& deadline) noexcept {
-    while (true) {
-      if (LIKELY(e.tryWaitUntil(deadline))) {
-        return true;
-      }
-      if (t >= producerTicket()) {
-        return false;
-      }
-      asm_volatile_pause();
+    if (LIKELY(e.tryWaitUntil(deadline))) {
+      return true;
     }
+    return t < producerTicket();
+  }
+
+  /** tryPeekUntil */
+  template <typename Clock, typename Duration>
+  FOLLY_ALWAYS_INLINE const T* tryPeekUntil(
+      const std::chrono::time_point<Clock, Duration>& deadline) noexcept {
+    Segment* s = head();
+    Ticket t = consumerTicket();
+    DCHECK_GE(t, s->minTicket());
+    DCHECK_LT(t, (s->minTicket() + SegmentSize));
+    size_t idx = index(t);
+    Entry& e = s->entry(idx);
+    if (UNLIKELY(!tryDequeueWaitElem(e, t, deadline))) {
+      return nullptr;
+    }
+    return e.peekItem();
   }
 
   /** findSegment */
   FOLLY_ALWAYS_INLINE
-  Segment* findSegment(Segment* s, const Ticket t) const noexcept {
+  Segment* findSegment(Segment* s, const Ticket t) noexcept {
     while (UNLIKELY(t >= (s->minTicket() + SegmentSize))) {
-      auto deadline = std::chrono::steady_clock::time_point::max();
-      s = tryGetNextSegmentUntil(s, deadline);
-      DCHECK(s != nullptr);
+      s = getAllocNextSegment(s, t);
+      DCHECK(s);
     }
     return s;
   }
 
-  /** tryGetNextSegmentUntil */
-  template <typename Clock, typename Duration>
-  Segment* tryGetNextSegmentUntil(
-      Segment* s,
-      const std::chrono::time_point<Clock, Duration>& deadline) const noexcept {
-    // The following loop will not spin indefinitely (as long as the
-    // number of concurrently waiting consumers does not exceeds
-    // SegmentSize and the OS scheduler does not pause ready threads
-    // indefinitely). Under such conditions, the algorithm guarantees
-    // that the producer reponsible for advancing the tail pointer to
-    // the next segment has already acquired its ticket.
-    while (tail() == s) {
-      if (deadline < Clock::time_point::max() && deadline > Clock::now()) {
-        return nullptr;
-      }
-      asm_volatile_pause();
-    }
+  /** getAllocNextSegment */
+  Segment* getAllocNextSegment(Segment* s, Ticket t) noexcept {
     Segment* next = s->nextSegment();
-    DCHECK(next != nullptr);
+    if (!next) {
+      DCHECK_GE(t, s->minTicket() + SegmentSize);
+      auto diff = t - (s->minTicket() + SegmentSize);
+      if (diff > 0) {
+        auto dur = std::chrono::microseconds(diff);
+        auto deadline = std::chrono::steady_clock::now() + dur;
+        WaitOptions opt;
+        opt.spin_max(dur);
+        detail::spin_pause_until(
+            deadline, opt, [s] { return s->nextSegment(); });
+        next = s->nextSegment();
+        if (next) {
+          return next;
+        }
+      }
+      next = allocNextSegment(s);
+    }
+    DCHECK(next);
     return next;
   }
 
   /** allocNextSegment */
-  void allocNextSegment(Segment* s, const Ticket t) {
+  Segment* allocNextSegment(Segment* s) {
+    auto t = s->minTicket() + SegmentSize;
     Segment* next = new Segment(t);
-    if (!SPSC) {
-      next->acquire_ref_safe(); // hazptr
+    next->set_batch_no_tag(&c_.batch); // defined in hazptr_obj
+    next->acquire_ref_safe(); // defined in hazptr_obj_base_linked
+    if (!s->casNextSegment(next)) {
+      delete next;
+      next = s->nextSegment();
     }
-    DCHECK(s->nextSegment() == nullptr);
-    s->setNextSegment(next);
+    DCHECK(next);
+    return next;
   }
 
   /** advanceTail */
   void advanceTail(Segment* s) noexcept {
-    Segment* next = s->nextSegment();
-    if (!SingleProducer) {
-      // The following loop will not spin indefinitely (as long as the
-      // OS scheduler does not pause ready threads indefinitely). The
-      // algorithm guarantees that the producer reponsible for setting
-      // the next pointer has already acquired its ticket.
-      while (next == nullptr) {
-        asm_volatile_pause();
-        next = s->nextSegment();
-      }
+    if (SPSC) {
+      Segment* next = s->nextSegment();
+      DCHECK(next);
+      setTail(next);
+    } else {
+      Ticket t = s->minTicket() + SegmentSize;
+      advanceTailToTicket(t);
     }
-    DCHECK(next != nullptr);
-    setTail(next);
+  }
+
+  /** advanceTailToTicket */
+  void advanceTailToTicket(Ticket t) noexcept {
+    Segment* s = tail();
+    while (s->minTicket() < t) {
+      Segment* next = s->nextSegment();
+      if (!next) {
+        next = allocNextSegment(s);
+      }
+      DCHECK(next);
+      casTail(s, next);
+      s = tail();
+    }
   }
 
   /** advanceHead */
   void advanceHead(Segment* s) noexcept {
-    auto deadline = std::chrono::steady_clock::time_point::max();
-    Segment* next = tryGetNextSegmentUntil(s, deadline);
-    DCHECK(next != nullptr);
-    while (head() != s) {
-      // Wait for head to advance to the current segment first before
-      // advancing head to the next segment. Otherwise, a lagging
-      // consumer responsible for advancing head from an earlier
-      // segment may incorrectly set head back.
-      asm_volatile_pause();
+    if (SPSC) {
+      while (tail() == s) {
+        /* Wait for producer to advance tail. */
+        asm_volatile_pause();
+      }
+      Segment* next = s->nextSegment();
+      DCHECK(next);
+      setHead(next);
+      reclaimSegment(s);
+    } else {
+      Ticket t = s->minTicket() + SegmentSize;
+      advanceHeadToTicket(t);
     }
-    setHead(next);
-    reclaimSegment(s);
+  }
+
+  /** advanceHeadToTicket */
+  void advanceHeadToTicket(Ticket t) noexcept {
+    /* Tail must not lag behind head. Otherwise, the algorithm cannot
+       be certain about removal of segments. */
+    advanceTailToTicket(t);
+    Segment* s = head();
+    if (SingleConsumer) {
+      DCHECK_EQ(s->minTicket() + SegmentSize, t);
+      Segment* next = s->nextSegment();
+      DCHECK(next);
+      setHead(next);
+      reclaimSegment(s);
+    } else {
+      while (s->minTicket() < t) {
+        Segment* next = s->nextSegment();
+        DCHECK(next);
+        if (casHead(s, next)) {
+          reclaimSegment(s);
+          s = next;
+        }
+      }
+    }
   }
 
   /** reclaimSegment */
@@ -533,7 +642,35 @@ class UnboundedQueue {
     if (SPSC) {
       delete s;
     } else {
-      s->retire(); // hazptr
+      s->retire(); // defined in hazptr_obj_base_linked
+    }
+  }
+
+  /** cleanUpRemainingItems */
+  void cleanUpRemainingItems() {
+    auto end = producerTicket();
+    auto s = head();
+    for (auto t = consumerTicket(); t < end; ++t) {
+      if (t >= s->minTicket() + SegmentSize) {
+        s = s->nextSegment();
+      }
+      DCHECK_LT(t, (s->minTicket() + SegmentSize));
+      auto idx = index(t);
+      auto& e = s->entry(idx);
+      e.destroyItem();
+    }
+  }
+
+  /** reclaimRemainingSegments */
+  void reclaimRemainingSegments() {
+    auto h = head();
+    auto s = h->nextSegment();
+    h->setNextSegment(nullptr);
+    reclaimSegment(h);
+    while (s) {
+      auto next = s->nextSegment();
+      delete s;
+      s = next;
     }
   }
 
@@ -566,11 +703,25 @@ class UnboundedQueue {
   }
 
   void setHead(Segment* s) noexcept {
-    c_.head.store(s, std::memory_order_release);
+    DCHECK(SingleConsumer);
+    c_.head.store(s, std::memory_order_relaxed);
   }
 
   void setTail(Segment* s) noexcept {
+    DCHECK(SPSC);
     p_.tail.store(s, std::memory_order_release);
+  }
+
+  bool casHead(Segment*& s, Segment* next) noexcept {
+    DCHECK(!SingleConsumer);
+    return c_.head.compare_exchange_strong(
+        s, next, std::memory_order_release, std::memory_order_acquire);
+  }
+
+  void casTail(Segment*& s, Segment* next) noexcept {
+    DCHECK(!SPSC);
+    p_.tail.compare_exchange_strong(
+        s, next, std::memory_order_release, std::memory_order_relaxed);
   }
 
   FOLLY_ALWAYS_INLINE void setProducerTicket(Ticket t) noexcept {
@@ -605,8 +756,8 @@ class UnboundedQueue {
    *  Entry
    */
   class Entry {
-    folly::SaturatingSemaphore<MayBlock, Atom> flag_;
-    typename std::aligned_storage<sizeof(T), alignof(T)>::type item_;
+    Sem flag_;
+    aligned_storage_for_t<T> item_;
 
    public:
     template <typename Arg>
@@ -615,75 +766,83 @@ class UnboundedQueue {
       flag_.post();
     }
 
-    FOLLY_ALWAYS_INLINE void takeItem(T& item) noexcept {
+    FOLLY_ALWAYS_INLINE T takeItem() noexcept {
       flag_.wait();
-      getItem(item);
+      return getItem();
+    }
+
+    FOLLY_ALWAYS_INLINE const T* peekItem() noexcept {
+      flag_.wait();
+      return itemPtr();
     }
 
     template <typename Clock, typename Duration>
-    FOLLY_ALWAYS_INLINE bool tryWaitUntil(
+    FOLLY_EXPORT FOLLY_ALWAYS_INLINE bool tryWaitUntil(
         const std::chrono::time_point<Clock, Duration>& deadline) noexcept {
-      return flag_.try_wait_until(deadline);
-    }
-
-   private:
-    FOLLY_ALWAYS_INLINE void getItem(T& item) noexcept {
-      item = std::move(*(itemPtr()));
-      destroyItem();
-    }
-
-    FOLLY_ALWAYS_INLINE T* itemPtr() noexcept {
-      return static_cast<T*>(static_cast<void*>(&item_));
+      // wait-options from benchmarks on contended queues:
+      static constexpr auto const opt =
+          Sem::wait_options().spin_max(std::chrono::microseconds(10));
+      return flag_.try_wait_until(deadline, opt);
     }
 
     FOLLY_ALWAYS_INLINE void destroyItem() noexcept {
       itemPtr()->~T();
+    }
+
+   private:
+    FOLLY_ALWAYS_INLINE T getItem() noexcept {
+      T ret = std::move(*(itemPtr()));
+      destroyItem();
+      return ret;
+    }
+
+    FOLLY_ALWAYS_INLINE T* itemPtr() noexcept {
+      return static_cast<T*>(static_cast<void*>(&item_));
     }
   }; // Entry
 
   /**
    *  Segment
    */
-  class Segment : public folly::hazptr::hazptr_obj_base_refcounted<Segment> {
-    Atom<Segment*> next_;
+  class Segment : public hazptr_obj_base_linked<Segment, Atom> {
+    Atom<Segment*> next_{nullptr};
     const Ticket min_;
-    bool marked_; // used for iterative deletion
     alignas(Align) Entry b_[SegmentSize];
 
    public:
-    explicit Segment(const Ticket t)
-        : next_(nullptr), min_(t), marked_(false) {}
-
-    ~Segment() {
-      if (!SPSC && !marked_) {
-        Segment* next = nextSegment();
-        while (next) {
-          if (!next->release_ref()) { // hazptr
-            return;
-          }
-          Segment* s = next;
-          next = s->nextSegment();
-          s->marked_ = true;
-          delete s;
-        }
-      }
-    }
+    explicit Segment(const Ticket t) noexcept : min_(t) {}
 
     Segment* nextSegment() const noexcept {
       return next_.load(std::memory_order_acquire);
     }
 
-    void setNextSegment(Segment* s) noexcept {
-      next_.store(s, std::memory_order_release);
+    void setNextSegment(Segment* next) {
+      next_.store(next, std::memory_order_relaxed);
+    }
+
+    bool casNextSegment(Segment* next) noexcept {
+      Segment* expected = nullptr;
+      return next_.compare_exchange_strong(
+          expected, next, std::memory_order_release, std::memory_order_relaxed);
     }
 
     FOLLY_ALWAYS_INLINE Ticket minTicket() const noexcept {
-      DCHECK_EQ((min_ & (SegmentSize - 1)), 0);
+      DCHECK_EQ((min_ & (SegmentSize - 1)), Ticket(0));
       return min_;
     }
 
     FOLLY_ALWAYS_INLINE Entry& entry(size_t index) noexcept {
       return b_[index];
+    }
+
+    template <typename S>
+    void push_links(bool m, S& s) {
+      if (m == false) { // next_ is immutable
+        auto p = nextSegment();
+        if (p) {
+          s.push(p);
+        }
+      }
     }
   }; // Segment
 
@@ -695,7 +854,7 @@ template <
     typename T,
     bool MayBlock,
     size_t LgSegmentSize = 8,
-    size_t LgAlign = 7,
+    size_t LgAlign = constexpr_log2(hardware_destructive_interference_size),
     template <typename> class Atom = std::atomic>
 using USPSCQueue =
     UnboundedQueue<T, true, true, MayBlock, LgSegmentSize, LgAlign, Atom>;
@@ -704,7 +863,7 @@ template <
     typename T,
     bool MayBlock,
     size_t LgSegmentSize = 8,
-    size_t LgAlign = 7,
+    size_t LgAlign = constexpr_log2(hardware_destructive_interference_size),
     template <typename> class Atom = std::atomic>
 using UMPSCQueue =
     UnboundedQueue<T, false, true, MayBlock, LgSegmentSize, LgAlign, Atom>;
@@ -713,7 +872,7 @@ template <
     typename T,
     bool MayBlock,
     size_t LgSegmentSize = 8,
-    size_t LgAlign = 7,
+    size_t LgAlign = constexpr_log2(hardware_destructive_interference_size),
     template <typename> class Atom = std::atomic>
 using USPMCQueue =
     UnboundedQueue<T, true, false, MayBlock, LgSegmentSize, LgAlign, Atom>;
@@ -722,7 +881,7 @@ template <
     typename T,
     bool MayBlock,
     size_t LgSegmentSize = 8,
-    size_t LgAlign = 7,
+    size_t LgAlign = constexpr_log2(hardware_destructive_interference_size),
     template <typename> class Atom = std::atomic>
 using UMPMCQueue =
     UnboundedQueue<T, false, false, MayBlock, LgSegmentSize, LgAlign, Atom>;

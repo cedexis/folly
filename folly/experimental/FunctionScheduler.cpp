@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2015-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,8 @@
 
 #include <random>
 
+#include <glog/logging.h>
+
 #include <folly/Conv.h>
 #include <folly/Random.h>
 #include <folly/String.h>
@@ -29,6 +31,26 @@ using std::chrono::steady_clock;
 namespace folly {
 
 namespace {
+
+struct ConsistentDelayFunctor {
+  const milliseconds constInterval;
+
+  explicit ConsistentDelayFunctor(milliseconds interval)
+      : constInterval(interval) {
+    if (interval < milliseconds::zero()) {
+      throw std::invalid_argument(
+          "FunctionScheduler: "
+          "time interval must be non-negative");
+    }
+  }
+
+  steady_clock::time_point operator()(
+      steady_clock::time_point curNextRunTime,
+      steady_clock::time_point curTime) const {
+    auto intervalsPassed = (curTime - curNextRunTime) / constInterval;
+    return (intervalsPassed + 1) * constInterval + curNextRunTime;
+  }
+};
 
 struct ConstIntervalFunctor {
   const milliseconds constInterval;
@@ -42,7 +64,9 @@ struct ConstIntervalFunctor {
     }
   }
 
-  milliseconds operator()() const { return constInterval; }
+  milliseconds operator()() const {
+    return constInterval;
+  }
 };
 
 struct PoissonDistributionFunctor {
@@ -58,7 +82,9 @@ struct PoissonDistributionFunctor {
     }
   }
 
-  milliseconds operator()() { return milliseconds(poissonRandom(generator)); }
+  milliseconds operator()() {
+    return milliseconds(poissonRandom(generator));
+  }
 };
 
 struct UniformDistributionFunctor {
@@ -80,7 +106,9 @@ struct UniformDistributionFunctor {
     }
   }
 
-  milliseconds operator()() { return milliseconds(dist(generator)); }
+  milliseconds operator()() {
+    return milliseconds(dist(generator));
+  }
 };
 
 } // namespace
@@ -92,10 +120,11 @@ FunctionScheduler::~FunctionScheduler() {
   shutdown();
 }
 
-void FunctionScheduler::addFunction(Function<void()>&& cb,
-                                    milliseconds interval,
-                                    StringPiece nameID,
-                                    milliseconds startDelay) {
+void FunctionScheduler::addFunction(
+    Function<void()>&& cb,
+    milliseconds interval,
+    StringPiece nameID,
+    milliseconds startDelay) {
   addFunctionInternal(
       std::move(cb),
       ConstIntervalFunctor(interval),
@@ -105,11 +134,12 @@ void FunctionScheduler::addFunction(Function<void()>&& cb,
       false /*runOnce*/);
 }
 
-void FunctionScheduler::addFunction(Function<void()>&& cb,
-                                    milliseconds interval,
-                                    const LatencyDistribution& latencyDistr,
-                                    StringPiece nameID,
-                                    milliseconds startDelay) {
+void FunctionScheduler::addFunction(
+    Function<void()>&& cb,
+    milliseconds interval,
+    const LatencyDistribution& latencyDistr,
+    StringPiece nameID,
+    milliseconds startDelay) {
   if (latencyDistr.isPoisson) {
     addFunctionInternal(
         std::move(cb),
@@ -152,6 +182,20 @@ void FunctionScheduler::addFunctionUniformDistribution(
       false /*runOnce*/);
 }
 
+void FunctionScheduler::addFunctionConsistentDelay(
+    Function<void()>&& cb,
+    milliseconds interval,
+    StringPiece nameID,
+    milliseconds startDelay) {
+  addFunctionInternal(
+      std::move(cb),
+      ConsistentDelayFunctor(interval),
+      nameID.str(),
+      to<std::string>(interval.count(), "ms"),
+      startDelay,
+      false /*runOnce*/);
+}
+
 void FunctionScheduler::addFunctionGenericDistribution(
     Function<void()>&& cb,
     IntervalDistributionFunc&& intervalFunc,
@@ -167,9 +211,25 @@ void FunctionScheduler::addFunctionGenericDistribution(
       false /*runOnce*/);
 }
 
-void FunctionScheduler::addFunctionInternal(
+void FunctionScheduler::addFunctionGenericNextRunTimeFunctor(
     Function<void()>&& cb,
-    IntervalDistributionFunc&& intervalFunc,
+    NextRunTimeFunc&& fn,
+    const std::string& nameID,
+    const std::string& intervalDescr,
+    milliseconds startDelay) {
+  addFunctionInternal(
+      std::move(cb),
+      std::move(fn),
+      nameID,
+      intervalDescr,
+      startDelay,
+      false /*runOnce*/);
+}
+
+template <typename RepeatFuncNextRunTimeFunc>
+void FunctionScheduler::addFunctionToHeapChecked(
+    Function<void()>&& cb,
+    RepeatFuncNextRunTimeFunc&& fn,
     const std::string& nameID,
     const std::string& intervalDescr,
     milliseconds startDelay,
@@ -178,9 +238,10 @@ void FunctionScheduler::addFunctionInternal(
     throw std::invalid_argument(
         "FunctionScheduler: Scheduled function must be set");
   }
-  if (!intervalFunc) {
+  if (!fn) {
     throw std::invalid_argument(
-        "FunctionScheduler: interval distribution function must be set");
+        "FunctionScheduler: "
+        "interval distribution or next run time function must be set");
   }
   if (startDelay < milliseconds::zero()) {
     throw std::invalid_argument(
@@ -204,11 +265,33 @@ void FunctionScheduler::addFunctionInternal(
       l,
       std::make_unique<RepeatFunc>(
           std::move(cb),
-          std::move(intervalFunc),
+          std::forward<RepeatFuncNextRunTimeFunc>(fn),
           nameID,
           intervalDescr,
           startDelay,
           runOnce));
+}
+
+void FunctionScheduler::addFunctionInternal(
+    Function<void()>&& cb,
+    NextRunTimeFunc&& fn,
+    const std::string& nameID,
+    const std::string& intervalDescr,
+    milliseconds startDelay,
+    bool runOnce) {
+  return addFunctionToHeapChecked(
+      std::move(cb), std::move(fn), nameID, intervalDescr, startDelay, runOnce);
+}
+
+void FunctionScheduler::addFunctionInternal(
+    Function<void()>&& cb,
+    IntervalDistributionFunc&& fn,
+    const std::string& nameID,
+    const std::string& intervalDescr,
+    milliseconds startDelay,
+    bool runOnce) {
+  return addFunctionToHeapChecked(
+      std::move(cb), std::move(fn), nameID, intervalDescr, startDelay, runOnce);
 }
 
 bool FunctionScheduler::cancelFunctionWithLock(
@@ -249,15 +332,16 @@ bool FunctionScheduler::cancelFunctionAndWait(StringPiece nameID) {
   }
 
   auto it = functionsMap_.find(nameID);
-    if (it != functionsMap_.end() && it->second->isValid()) {
-      cancelFunction(l, it->second);
-      return true;
-    }
+  if (it != functionsMap_.end() && it->second->isValid()) {
+    cancelFunction(l, it->second);
+    return true;
+  }
   return false;
 }
 
-void FunctionScheduler::cancelFunction(const std::unique_lock<std::mutex>& l,
-                                      RepeatFunc* it) {
+void FunctionScheduler::cancelFunction(
+    const std::unique_lock<std::mutex>& l,
+    RepeatFunc* it) {
   // This function should only be called with mutex_ already locked.
   DCHECK(l.mutex() == &mutex_);
   DCHECK(l.owns_lock());
@@ -303,13 +387,12 @@ bool FunctionScheduler::resetFunctionTimer(StringPiece nameID) {
   // fix the heap ordering if we adjust the key (nextRunTime) for the existing
   // RepeatFunc. Instead, we just cancel it and add an identical object.
   auto it = functionsMap_.find(nameID);
-
   if (it != functionsMap_.end() && it->second->isValid()) {
-    auto funcCopy = std::make_unique<RepeatFunc>(std::move(*(it->second)));
-    it->second->cancel();
-    // This will take care of making sure that functionsMap_[it->first] =
-    // funcCopy.
-    addFunctionToHeap(l, std::move(funcCopy));
+    if (running_) {
+      it->second->resetNextRunTime(steady_clock::now());
+      std::make_heap(functions_.begin(), functions_.end(), fnCmp_);
+      runningCondvar_.notify_one();
+    }
     return true;
   }
   return false;
@@ -395,8 +478,9 @@ void FunctionScheduler::run() {
   }
 }
 
-void FunctionScheduler::runOneFunction(std::unique_lock<std::mutex>& lock,
-                                       steady_clock::time_point now) {
+void FunctionScheduler::runOneFunction(
+    std::unique_lock<std::mutex>& lock,
+    steady_clock::time_point now) {
   DCHECK(lock.mutex() == &mutex_);
   DCHECK(lock.owns_lock());
 
@@ -433,8 +517,8 @@ void FunctionScheduler::runOneFunction(std::unique_lock<std::mutex>& lock,
     VLOG(5) << "Now running " << func->name;
     func->cb();
   } catch (const std::exception& ex) {
-    LOG(ERROR) << "Error running the scheduled function <"
-      << func->name << ">: " << exceptionStr(ex);
+    LOG(ERROR) << "Error running the scheduled function <" << func->name
+               << ">: " << exceptionStr(ex);
   }
 
   // Re-acquire the lock

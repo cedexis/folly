@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright 2014-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -52,7 +52,7 @@ FOLLY_GCC_DISABLE_NEW_SHADOW_WARNINGS
 namespace folly {
 
 #define FOLLY_REQUIRES_DEF(...) \
-  _t<std::enable_if<static_cast<bool>(__VA_ARGS__), long>>
+  std::enable_if_t<static_cast<bool>(__VA_ARGS__), long>
 
 #define FOLLY_REQUIRES(...) FOLLY_REQUIRES_DEF(__VA_ARGS__) = __LINE__
 
@@ -62,17 +62,16 @@ template <template <class> class T, class... As>
 using AllOf = StrictConjunction<T<As>...>;
 
 template <bool If, class T>
-using AddConstIf = _t<std::conditional<If, const T, T>>;
+using AddConstIf = std::conditional_t<If, const T, T>;
 
 template <class Fn, class A>
-FOLLY_ALWAYS_INLINE FOLLY_ATTR_VISIBILITY_HIDDEN
-auto fold(Fn&&, A&& a) {
+FOLLY_ALWAYS_INLINE FOLLY_ATTR_VISIBILITY_HIDDEN auto fold(Fn&&, A&& a) {
   return static_cast<A&&>(a);
 }
 
 template <class Fn, class A, class B, class... Bs>
-FOLLY_ALWAYS_INLINE FOLLY_ATTR_VISIBILITY_HIDDEN
-auto fold(Fn&& fn, A&& a, B&& b, Bs&&... bs) {
+FOLLY_ALWAYS_INLINE FOLLY_ATTR_VISIBILITY_HIDDEN auto
+fold(Fn&& fn, A&& a, B&& b, Bs&&... bs) {
   return fold(
       // This looks like a use of fn after a move of fn, but in reality, this is
       // just a cast and not a move. That's because regardless of which fold
@@ -162,7 +161,7 @@ auto fold(Fn&& fn, A&& a, B&& b, Bs&&... bs) {
 //! \endcode
 class exception_wrapper final {
  private:
-  struct AnyException : std::exception {
+  struct FOLLY_EXPORT AnyException : std::exception {
     std::type_info const* typeinfo_;
     template <class T>
     /* implicit */ AnyException(T&& t) noexcept : typeinfo_(&typeid(t)) {}
@@ -207,12 +206,12 @@ class exception_wrapper final {
   static VTable const uninit_;
 
   template <class Ex>
-  using IsStdException = std::is_base_of<std::exception, _t<std::decay<Ex>>>;
+  using IsStdException = std::is_base_of<std::exception, std::decay_t<Ex>>;
   template <bool B, class T>
   using AddConstIf = exception_wrapper_detail::AddConstIf<B, T>;
   template <class CatchFn>
   using IsCatchAll =
-      std::is_same<arg_type<_t<std::decay<CatchFn>>>, AnyException>;
+      std::is_same<arg_type<std::decay_t<CatchFn>>, AnyException>;
 
   struct Unknown {};
 
@@ -222,7 +221,7 @@ class exception_wrapper final {
   // and runtime_error can be safely stored internally.
   struct Buffer {
     using Storage =
-        _t<std::aligned_storage<2 * sizeof(void*), alignof(std::exception)>>;
+        std::aligned_storage_t<2 * sizeof(void*), alignof(std::exception)>;
     Storage buff_;
 
     Buffer() : buff_{} {}
@@ -240,15 +239,16 @@ class exception_wrapper final {
   struct OnHeapTag {};
 
   template <class T>
-  using PlacementOf = _t<std::conditional<
+  using PlacementOf = std::conditional_t<
       !IsStdException<T>::value,
       ThrownTag,
-      _t<std::conditional<
+      std::conditional_t<
           sizeof(T) <= sizeof(Buffer::Storage) &&
               alignof(T) <= alignof(Buffer::Storage) &&
-              noexcept(T(std::declval<T&&>())),
+              noexcept(T(std::declval<T&&>())) &&
+              noexcept(T(std::declval<T const&>())),
           InSituTag,
-          OnHeapTag>>>>;
+          OnHeapTag>>;
 
   static std::exception const* as_exception_or_null_(std::exception const& ex);
   static std::exception const* as_exception_or_null_(AnyException);
@@ -263,10 +263,10 @@ class exception_wrapper final {
 
     static std::uintptr_t as_int_(
         std::exception_ptr const& ptr,
-        std::exception const& e);
+        std::exception const& e) noexcept;
     static std::uintptr_t as_int_(
         std::exception_ptr const& ptr,
-        AnyException e);
+        AnyException e) noexcept;
     bool has_exception_() const;
     std::exception const* as_exception_() const;
     std::type_info const* as_type_() const;
@@ -314,10 +314,12 @@ class exception_wrapper final {
       static_assert(IsStdException<Ex>::value, "only deriving std::exception");
       Ex ex_;
       Impl() = default;
+      // clang-format off
       template <typename... As>
       explicit Impl(As&&... as)
           : Base{typeid(Ex)}, ex_(std::forward<As>(as)...) {}
       [[noreturn]] void throw_() const override;
+      // clang-format on
       std::exception const* get_exception_() const noexcept override;
       exception_wrapper get_exception_ptr_() const noexcept override;
     };
@@ -390,7 +392,7 @@ class exception_wrapper final {
   //! Copy-constructs an `exception_wrapper`
   //! \post `*this` contains a copy of `that`, and `that` is unmodified
   //! \post `type() == that.type()`
-  exception_wrapper(exception_wrapper const& that);
+  exception_wrapper(exception_wrapper const& that) noexcept;
 
   //! Move-assigns an `exception_wrapper`
   //! \pre `this != &that`
@@ -401,7 +403,7 @@ class exception_wrapper final {
   //! Copy-assigns an `exception_wrapper`
   //! \post `*this` contains a copy of `that`, and `that` is unmodified
   //! \post `type() == that.type()`
-  exception_wrapper& operator=(exception_wrapper const& that);
+  exception_wrapper& operator=(exception_wrapper const& that) noexcept;
 
   ~exception_wrapper();
 
@@ -417,7 +419,7 @@ class exception_wrapper final {
   //! \post `bool(*this)`
   //! \post `type() == typeid(ex)`
   template <class Ex>
-  exception_wrapper(std::exception_ptr ptr, Ex& ex);
+  exception_wrapper(std::exception_ptr ptr, Ex& ex) noexcept;
 
   //! \pre `typeid(ex) == typeid(typename decay<Ex>::type)`
   //! \post `bool(*this)`
@@ -427,7 +429,7 @@ class exception_wrapper final {
   //!     converted to an `exception_wrapper`.
   template <
       class Ex,
-      class Ex_ = _t<std::decay<Ex>>,
+      class Ex_ = std::decay_t<Ex>,
       FOLLY_REQUIRES(
           Conjunction<IsStdException<Ex_>, IsRegularExceptionType<Ex_>>::value)>
   /* implicit */ exception_wrapper(Ex&& ex);
@@ -441,7 +443,7 @@ class exception_wrapper final {
   //!     `folly::in_place` as the first parameter.
   template <
       class Ex,
-      class Ex_ = _t<std::decay<Ex>>,
+      class Ex_ = std::decay_t<Ex>,
       FOLLY_REQUIRES(IsRegularExceptionType<Ex_>::value)>
   exception_wrapper(in_place_t, Ex&& ex);
 
@@ -530,9 +532,16 @@ class exception_wrapper final {
   template <class Ex>
   bool is_compatible_with() const noexcept;
 
-  //! \pre `bool(*this)`
   //! Throws the wrapped expression.
+  //! \pre `bool(*this)`
   [[noreturn]] void throw_exception() const;
+
+  //! Throws the wrapped expression nested into another exception.
+  //! \pre `bool(*this)`
+  //! \tparam ex Exception in *this will be thrown nested into ex;
+  //      see std::throw_with_nested() for details on this semantic.
+  template <class Ex>
+  [[noreturn]] void throw_with_nested(Ex&& ex) const;
 
   //! Call `fn` with the wrapped exception (if any), if `fn` can accept it.
   //! \par Example

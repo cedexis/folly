@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2011-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,72 +22,40 @@
 #include <list>
 #include <map>
 #include <memory>
-
-#include <boost/random.hpp>
+#include <numeric>
 
 #include <folly/FBString.h>
 #include <folly/Random.h>
 #include <folly/Traits.h>
 #include <folly/container/Foreach.h>
 #include <folly/portability/GTest.h>
+#include <folly/test/FBVectorTestUtil.h>
 
 using namespace std;
 using namespace folly;
+using namespace folly::test::detail;
 
-namespace {
+using IntFBVector = fbvector<int>;
+using FBStringFBVector = fbvector<fbstring>;
 
-auto static const seed = randomNumberSeed();
-typedef boost::mt19937 RandomT;
-static RandomT rng(seed);
-
-template <class Integral1, class Integral2>
-Integral2 random(Integral1 low, Integral2 up) {
-  boost::uniform_int<> range(low, up);
-  return range(rng);
-}
-
-template <class String>
-void randomString(String* toFill, unsigned int maxSize = 1000) {
-  assert(toFill);
-  toFill->resize(random(0, maxSize));
-  FOR_EACH (i, *toFill) {
-    *i = random('a', 'z');
-  }
-}
-
-template <class String, class Integral>
-void Num2String(String& str, Integral /* n */) {
-  str.resize(10, '\0');
-  sprintf(&str[0], "%ul", 10);
-  str.resize(strlen(str.c_str()));
-}
-
-template <class T> T randomObject();
-
-template <> int randomObject<int>() {
-  return random(0, 1024);
-}
-} // namespace
-
-////////////////////////////////////////////////////////////////////////////////
-// Tests begin here
-////////////////////////////////////////////////////////////////////////////////
+#define VECTOR IntFBVector
+#include <folly/test/FBVectorTests.cpp.h> // nolint
+#undef VECTOR
+#define VECTOR FBStringFBVector
+#include <folly/test/FBVectorTests.cpp.h> // nolint
+#undef VECTOR
 
 TEST(fbvector, clause_23_3_6_1_3_ambiguity) {
   fbvector<int> v(10, 20);
   EXPECT_EQ(v.size(), 10);
-  FOR_EACH (i, v) {
-    EXPECT_EQ(*i, 20);
-  }
+  FOR_EACH (i, v) { EXPECT_EQ(*i, 20); }
 }
 
 TEST(fbvector, clause_23_3_6_1_11_ambiguity) {
   fbvector<int> v;
   v.assign(10, 20);
   EXPECT_EQ(v.size(), 10);
-  FOR_EACH (i, v) {
-    EXPECT_EQ(*i, 20);
-  }
+  FOR_EACH (i, v) { EXPECT_EQ(*i, 20); }
 }
 
 TEST(fbvector, clause_23_3_6_2_6) {
@@ -112,7 +80,7 @@ TEST(fbvector, clause_23_3_6_4_ambiguity) {
 }
 
 TEST(fbvector, composition) {
-  fbvector< fbvector<double> > matrix(100, fbvector<double>(100));
+  fbvector<fbvector<double>> matrix(100, fbvector<double>(100));
 }
 
 TEST(fbvector, works_with_std_string) {
@@ -122,10 +90,12 @@ TEST(fbvector, works_with_std_string) {
 }
 
 namespace {
-class UserDefinedType { int whatevs_; };
+class UserDefinedType {
+  int whatevs_;
+};
 } // namespace
 
-FOLLY_ASSUME_FBVECTOR_COMPATIBLE(UserDefinedType);
+FOLLY_ASSUME_FBVECTOR_COMPATIBLE(UserDefinedType)
 
 TEST(fbvector, works_with_user_defined_type) {
   fbvector<UserDefinedType> v(10);
@@ -155,25 +125,27 @@ TEST(fbvector, emplace) {
   fbvector<std::string> s(12, "asd");
   EXPECT_EQ(s.size(), 12);
   EXPECT_EQ(s.front(), "asd");
-  s.emplace_back("funk");
+  const auto& emplaced = s.emplace_back("funk");
+  EXPECT_EQ(emplaced, "funk");
   EXPECT_EQ(s.back(), "funk");
+  EXPECT_EQ(std::addressof(emplaced), std::addressof(s.back()));
 }
 
 TEST(fbvector, initializer_lists) {
-  fbvector<int> vec = { 1, 2, 3 };
+  fbvector<int> vec = {1, 2, 3};
   EXPECT_EQ(vec.size(), 3);
   EXPECT_EQ(vec[0], 1);
   EXPECT_EQ(vec[1], 2);
   EXPECT_EQ(vec[2], 3);
 
-  vec = { 0, 0, 12, 16 };
+  vec = {0, 0, 12, 16};
   EXPECT_EQ(vec.size(), 4);
   EXPECT_EQ(vec[0], 0);
   EXPECT_EQ(vec[1], 0);
   EXPECT_EQ(vec[2], 12);
   EXPECT_EQ(vec[3], 16);
 
-  vec.insert(vec.begin() + 1, { 23, 23 });
+  vec.insert(vec.begin() + 1, {23, 23});
   EXPECT_EQ(vec.size(), 6);
   EXPECT_EQ(vec[0], 0);
   EXPECT_EQ(vec[1], 23);
@@ -184,7 +156,7 @@ TEST(fbvector, initializer_lists) {
 }
 
 TEST(fbvector, unique_ptr) {
-  fbvector<std::unique_ptr<int> > v(12);
+  fbvector<std::unique_ptr<int>> v(12);
   std::unique_ptr<int> p(new int(12));
   v.push_back(std::move(p));
   EXPECT_EQ(*v.back(), 12);
@@ -212,29 +184,32 @@ TEST(FBVector, task858056) {
 }
 
 TEST(FBVector, move_iterator) {
-  fbvector<int> base = { 0, 1, 2 };
+  fbvector<int> base = {0, 1, 2};
 
   auto cp1 = base;
-  fbvector<int> fbvi1(std::make_move_iterator(cp1.begin()),
-                      std::make_move_iterator(cp1.end()));
+  fbvector<int> fbvi1(
+      std::make_move_iterator(cp1.begin()), std::make_move_iterator(cp1.end()));
   EXPECT_EQ(fbvi1, base);
 
   auto cp2 = base;
   fbvector<int> fbvi2;
-  fbvi2.assign(std::make_move_iterator(cp2.begin()),
-               std::make_move_iterator(cp2.end()));
+  fbvi2.assign(
+      std::make_move_iterator(cp2.begin()), std::make_move_iterator(cp2.end()));
   EXPECT_EQ(fbvi2, base);
 
   auto cp3 = base;
   fbvector<int> fbvi3;
-  fbvi3.insert(fbvi3.end(),
-               std::make_move_iterator(cp3.begin()),
-               std::make_move_iterator(cp3.end()));
+  fbvi3.insert(
+      fbvi3.end(),
+      std::make_move_iterator(cp3.begin()),
+      std::make_move_iterator(cp3.end()));
   EXPECT_EQ(fbvi3, base);
 }
 
 TEST(FBVector, reserve_consistency) {
-  struct S { int64_t a, b, c, d; };
+  struct S {
+    int64_t a, b, c, d;
+  };
 
   fbvector<S> fb1;
   for (size_t i = 0; i < 1000; ++i) {
@@ -283,4 +258,36 @@ TEST(FBVector, zero_len) {
   std::initializer_list<int> il = {};
   fb6 = il;
   fbvector<int> fb7(fb6.begin(), fb6.end());
+}
+
+#if __cpp_deduction_guides >= 201703
+TEST(FBVector, deduction_guides) {
+  fbvector<int> v(3);
+
+  fbvector x(v.begin(), v.end());
+  EXPECT_TRUE((std::is_same_v<fbvector<int>, decltype(x)>));
+
+  fbvector y{v.begin(), v.end()};
+  EXPECT_TRUE((std::is_same_v<fbvector<fbvector<int>::iterator>, decltype(y)>));
+}
+#endif
+
+TEST(FBVector, erase) {
+  fbvector<int> v(3);
+  std::iota(v.begin(), v.end(), 1);
+  v.push_back(2);
+  erase(v, 2);
+  ASSERT_EQ(2u, v.size());
+  EXPECT_EQ(1u, v[0]);
+  EXPECT_EQ(3u, v[1]);
+}
+
+TEST(FBVector, erase_if) {
+  fbvector<int> v(6);
+  std::iota(v.begin(), v.end(), 1);
+  erase_if(v, [](const auto& x) { return x % 2 == 0; });
+  ASSERT_EQ(3u, v.size());
+  EXPECT_EQ(1u, v[0]);
+  EXPECT_EQ(3u, v[1]);
+  EXPECT_EQ(5u, v[2]);
 }

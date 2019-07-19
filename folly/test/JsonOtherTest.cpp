@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2015-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -51,6 +51,15 @@ constexpr folly::StringPiece kLargeNonAsciiString =
     "qwerty \xc2\x80 \xef\xbf\xbf poiuy"
     "qwerty \xc2\x80 \xef\xbf\xbf poiuy"
     "qwerty \xc2\x80 \xef\xbf\xbf poiuy";
+
+constexpr folly::StringPiece kLargeAsciiStringWithSpecialChars =
+    "<script>foo%@bar.com</script>"
+    "<script>foo%@bar.com</script>"
+    "<script>foo%@bar.com</script>"
+    "<script>foo%@bar.com</script>"
+    "<script>foo%@bar.com</script>"
+    "<script>foo%@bar.com</script>"
+    "<script>foo%@bar.com</script>";
 
 TEST(Json, StripComments) {
   const std::string kTestDir = "folly/test/";
@@ -112,6 +121,18 @@ BENCHMARK(jsonSerializeAsciiWithUtf8Validation, iters) {
   }
 }
 
+BENCHMARK(jsonSerializeWithExtraUnicodeEscapes, iters) {
+  const dynamic obj = kLargeAsciiStringWithSpecialChars;
+
+  folly::json::serialization_opts opts;
+  opts.extra_ascii_to_escape_bitmap =
+      folly::json::buildExtraAsciiToEscapeBitmap("<%@");
+
+  for (size_t i = 0; i < iters; ++i) {
+    folly::json::serialize(obj, opts);
+  }
+}
+
 BENCHMARK(parseSmallStringWithUtf, iters) {
   for (size_t i = 0; i < iters << 4; ++i) {
     parseJson("\"I \\u2665 UTF-8 thjasdhkjh blah blah blah\"");
@@ -134,8 +155,7 @@ BENCHMARK(parseBigString, iters) {
 
 BENCHMARK(toJson, iters) {
   dynamic something = parseJson(
-    "{\"old_value\":40,\"changed\":true,\"opened\":false,\"foo\":[1,2,3,4,5,6]}"
-  );
+      "{\"old_value\":40,\"changed\":true,\"opened\":false,\"foo\":[1,2,3,4,5,6]}");
 
   for (size_t i = 0; i < iters; i++) {
     toJson(something);

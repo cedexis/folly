@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Facebook, Inc.
+ * Copyright 2015-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -42,20 +42,24 @@ class Sleeper {
   uint32_t spinCount;
 
  public:
-  Sleeper() : spinCount(0) {}
+  Sleeper() noexcept : spinCount(0) {}
 
-  void wait() {
+  static void sleep() noexcept {
+    /*
+     * Always sleep 0.5ms, assuming this will make the kernel put
+     * us down for whatever its minimum timer resolution is (in
+     * linux this varies by kernel version from 1ms to 10ms).
+     */
+    struct timespec ts = {0, 500000};
+    nanosleep(&ts, nullptr);
+  }
+
+  void wait() noexcept {
     if (spinCount < kMaxActiveSpin) {
       ++spinCount;
       asm_volatile_pause();
     } else {
-      /*
-       * Always sleep 0.5ms, assuming this will make the kernel put
-       * us down for whatever its minimum timer resolution is (in
-       * linux this varies by kernel version from 1ms to 10ms).
-       */
-      struct timespec ts = {0, 500000};
-      nanosleep(&ts, nullptr);
+      sleep();
     }
   }
 };
