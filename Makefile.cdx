@@ -14,7 +14,7 @@ package : build
 	
 	# Build our FPM docker and use it
 	docker build -f Dockerfile.cdx -t $(LABEL)_fpm .
-	docker run -it -v $$(pwd)/build.cdx:/build -w /build \
+	docker run -v $$(pwd)/build.cdx:/build -w /build \
 		$(LABEL)_fpm \
 		fpm -f -C /install -n cdx-folly \
 		--deb-no-default-config-files \
